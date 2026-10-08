@@ -1,0 +1,14 @@
+{% autoescape off %}New early-access registration #{{ registration.id }}
+
+Name:       {{ registration.name }}
+Email:      {{ registration.email }}
+Company:    {{ registration.company }}
+Phone:      {{ registration.phone|default:"-" }}
+Team size:  {{ registration.team_size }}
+Platforms:  {{ platforms_text|default:"-" }}
+Concerns:   {{ concerns_text|default:"-" }}
+Trial days: {{ registration.trial_days }}
+Status:     {{ registration.status }}
+Submitted:  {{ registration.created_at|date:"Y-m-d H:i T" }}
+IP:         {{ registration.ip|default:"-" }}
+{% endautoescape %}

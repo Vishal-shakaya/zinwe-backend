@@ -1,0 +1,16 @@
+{% autoescape off %}Hi {{ first_name }},
+
+Thanks for signing up for Zinwe early access. Your spot is reserved.
+
+What you get: the full Zinwe plan, free for 3 months ({{ trial_days }} days), for {{ company }}.
+
+What happens next:
+1. We are letting teams in a few at a time. We'll email you here when your workspace is ready.
+2. You'll get a short setup guide for your {{ platforms_text|default:"computers" }}. Most teams are running in under an hour.
+3. Your 3 free months start the day you activate, not today.
+
+Questions? Just reply to this email.
+
+The Zinwe team
+SKYTECHNO, New Delhi
+{% endautoescape %}
