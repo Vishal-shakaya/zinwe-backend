@@ -100,15 +100,30 @@ ASGI_APPLICATION = "config.asgi.application"
 
 # --- Database ---------------------------------------------------------------
 
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
-        # Keep 0 under ASGI: sync views run on a thread pool, so persistent
-        # connections would be held per thread and never reused (Django docs).
-        "CONN_MAX_AGE": 0,
+# Local dev: SQLite. Deployments (dev/prod flavours): PostgreSQL, selected by setting DB_NAME.
+# CONN_MAX_AGE stays 0 under ASGI: sync views run on a thread pool, so persistent
+# connections would be held per thread and never reused (Django docs).
+DB_NAME = env_str("DB_NAME", "")
+if DB_NAME:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": DB_NAME,
+            "USER": env_str("DB_USER", DB_NAME),
+            "PASSWORD": env_str("DB_PASSWORD", ""),
+            "HOST": env_str("DB_HOST", "127.0.0.1"),
+            "PORT": env_str("DB_PORT", "5432"),
+            "CONN_MAX_AGE": 0,
+        }
     }
-}
+else:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
+            "CONN_MAX_AGE": 0,
+        }
+    }
 
 CACHES = {
     "default": {
@@ -187,6 +202,19 @@ CORS_ALLOWED_ORIGINS = env_list(
     "CORS_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"
 )
 
+# --- Deployment security ----------------------------------------------------
+# Off by default so local dev and plain-HTTP servers work. Turn DJANGO_HTTPS on
+# once nginx terminates TLS: secure cookies + trust nginx's X-Forwarded-Proto.
+
+CSRF_TRUSTED_ORIGINS = env_list("DJANGO_CSRF_TRUSTED_ORIGINS", "")
+if env_bool("DJANGO_HTTPS", False):
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SECURE_HSTS_SECONDS = int(env_str("DJANGO_HSTS_SECONDS", "0"))
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = SECURE_HSTS_SECONDS > 0
+SECURE_REFERRER_POLICY = "same-origin"
+
 # --- Email ------------------------------------------------------------------
 
 EMAIL_BACKEND = env_str("EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend")
@@ -215,5 +243,8 @@ LOGGING = {
     "handlers": {"console": {"class": "logging.StreamHandler"}},
     "loggers": {
         "zinwe": {"handlers": ["console"], "level": "INFO" if DEBUG else "WARNING"},
+        # Without this, 500 tracebacks are dropped when DEBUG=False (Django only
+        # logs to console in DEBUG). On servers they land in the systemd journal.
+        "django.request": {"handlers": ["console"], "level": "ERROR", "propagate": False},
     },
 }

@@ -6,3 +6,5 @@ python-dotenv>=1.0,<2
 uvicorn[standard]>=0.30,<1
 # Serves /static/ (admin, DRF) from the app itself, since uvicorn doesn't
 whitenoise>=6.7,<7
+# PostgreSQL driver, used when DB_NAME is set (dev/prod servers)
+psycopg[binary]>=3.2,<4
