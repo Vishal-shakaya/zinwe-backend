@@ -1,23 +1,30 @@
 """
-Business logic for z_auth. Views stay thin and call into here.
+Business logic for z_auth accounts: early access, sign-up / sign-in, plans.
+Company and billing live in `company.py` / `billing.py`. Views stay thin.
 
 Side effects (analytics + notifications) are explicit calls scheduled with
 `transaction.on_commit`, so they only fire once the row is really saved.
 """
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from django.conf import settings
+from django.contrib.auth import authenticate, password_validation
+from django.contrib.auth.models import update_last_login
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
 from django.utils import timezone
+from rest_framework.authtoken.models import Token
 
 from z_analytics.services import track
+from z_main.client import get_client_ip
 from z_notification.services import notify
 
+from . import otp
 from .models import EarlyAccessRegistration as EAR
-from .models import Plan, PlanActivation, User
+from .models import OneTimeCode, Plan, PlanActivation, User
 
 PLATFORM_LABELS = {"windows": "Windows", "linux": "Linux", "macos": "macOS"}
 CONCERN_LABELS = {
@@ -129,15 +136,261 @@ def _after_early_access_created(registration: EAR) -> None:
     )
 
 
-# --- Accounts ---------------------------------------------------------------
+# --- Accounts: sign-up, sign-in, password reset -------------------------------
+
+
+class InvalidCode(Exception):
+    """A one-time code didn't check out (wrong, expired, burnt or no account)."""
+
+    message = "That code is incorrect or has expired."
+
+    def __str__(self) -> str:
+        return self.message
+
+
+class InvalidCredentials(Exception):
+    message = "Email or password is incorrect."
+
+    def __str__(self) -> str:
+        return self.message
+
+
+class EmailNotVerified(Exception):
+    """Right password, but the account never entered its sign-up code."""
+
+    code = "email_not_verified"
+    message = "Verify your email to continue. Enter the code we emailed you."
+
+    def __str__(self) -> str:
+        return self.message
+
+
+class PasswordRejected(Exception):
+    """The new password failed the validators; `messages` are user-facing."""
+
+    def __init__(self, messages: list[str]) -> None:
+        super().__init__(" ".join(messages))
+        self.messages = messages
+
+
+CODE_TEMPLATES = {
+    OneTimeCode.Purpose.SIGNUP: "otp_signup",
+    OneTimeCode.Purpose.LOGIN: "otp_login",
+    OneTimeCode.Purpose.PASSWORD_RESET: "otp_password_reset",
+}
+
+
+def _first_name(user: User | None) -> str:
+    if user is not None and user.full_name.split():
+        return user.full_name.split()[0]
+    return "there"
+
+
+def send_code_email(email: str, purpose: str, code: str, first_name: str = "there") -> None:
+    """Email a one-time code. The logged Notification has the code masked."""
+    notify(
+        "email",
+        email,
+        CODE_TEMPLATES[purpose],
+        {
+            "code": code,
+            "first_name": first_name,
+            "minutes": int(otp.CODE_TTL.total_seconds() // 60),
+        },
+        ref=("z_auth.onetimecode", purpose),
+        redact=[code],
+    )
+
+
+def _issue_and_send(email: str, purpose: str, ip: str | None, recipient: User | None) -> None:
+    """
+    Count a code request and, if there is an eligible `recipient`, email the code.
+
+    The code row is written whether or not anyone receives it, so cooldowns
+    and hourly caps can't reveal whether an account exists. Raises
+    `otp.OtpThrottled`.
+    """
+    code = otp.issue_code(email, purpose, ip=ip)
+    if recipient is not None:
+        first_name = _first_name(recipient)
+        transaction.on_commit(lambda: send_code_email(email, purpose, code, first_name))
+
+
+def _code_recipient(email: str, purpose: str) -> User | None:
+    """The account allowed to receive a code for this purpose, if any."""
+    user = User.objects.filter(email__iexact=otp.normalise_email(email)).first()
+    if user is None:
+        return None
+    if purpose == OneTimeCode.Purpose.SIGNUP:
+        return user if user.is_pending_verification else None
+    return user if user.is_active else None
+
+
+@transaction.atomic
+def signup(full_name: str, email: str, password: str, ip: str | None) -> tuple[User, bool, int]:
+    """
+    Create an unverified account (or refresh an unverified one) and send a code.
+
+    Input is validated (an existing *active* account is rejected by the
+    serializer). Returns (user, otp_sent, resend_in_seconds). Inside the resend
+    cooldown no new code is sent: the earlier one still works.
+    """
+    email = otp.normalise_email(email)
+    user = User.objects.select_for_update().filter(email__iexact=email).first()
+    if user is not None:
+        user.full_name = full_name
+        user.set_password(password)
+        user.save(update_fields=["full_name", "password"])
+    else:
+        user = User.objects.create_user(
+            email=email, password=password, full_name=full_name, is_active=False
+        )
+    transaction.on_commit(lambda: track("auth.signup_started", {}, actor_email=email, ref=user))
+    try:
+        _issue_and_send(email, OneTimeCode.Purpose.SIGNUP, ip, user)
+    except otp.OtpThrottled as exc:
+        return user, False, exc.retry_after
+    return user, True, otp.RESEND_COOLDOWN_SECONDS
+
+
+def verify_signup(email: str, code: str) -> User:
+    """Activate an account with its sign-up code. Raises `InvalidCode`."""
+    if not otp.verify_code(email, OneTimeCode.Purpose.SIGNUP, code):
+        raise InvalidCode()
+    with transaction.atomic():
+        user = (
+            User.objects.select_for_update()
+            .filter(email__iexact=otp.normalise_email(email))
+            .first()
+        )
+        if user is None or not user.is_pending_verification:
+            raise InvalidCode()
+        user.is_active = True
+        user.email_verified_at = timezone.now()
+        user.save(update_fields=["is_active", "email_verified_at"])
+        update_last_login(None, user)
+        transaction.on_commit(lambda: _after_signup_verified(user))
+    return user
+
+
+def _after_signup_verified(user: User) -> None:
+    track("auth.signup_verified", {}, actor_email=user.email, ref=user)
+    notify("email", user.email, "welcome", {"first_name": _first_name(user), "user": user}, ref=user)
+
+
+def resend_code(email: str, purpose: str, ip: str | None) -> None:
+    """Request a code for any purpose. Silent for ineligible addresses. Raises `OtpThrottled`."""
+    with transaction.atomic():
+        _issue_and_send(email, purpose, ip, _code_recipient(email, purpose))
+
+
+def password_login(request: Any, email: str, password: str) -> User:
+    """
+    Email + password sign-in.
+
+    Raises `InvalidCredentials`, or `EmailNotVerified` when the password is
+    right but the account is still unverified (a fresh sign-up code is sent,
+    unless the cooldown / hourly cap says not yet).
+    """
+    email = otp.normalise_email(email)
+    user = authenticate(request, email=email, password=password)
+    if user is not None:
+        update_last_login(None, user)
+        track("auth.login", {"method": "password"}, actor_email=email, ref=user)
+        return user
+    pending = User.objects.filter(email__iexact=email).first()
+    if pending is not None and pending.is_pending_verification and pending.check_password(password):
+        try:
+            with transaction.atomic():
+                _issue_and_send(email, OneTimeCode.Purpose.SIGNUP, get_client_ip(request), pending)
+        except otp.OtpThrottled:
+            pass  # the previous code is still valid
+        raise EmailNotVerified()
+    raise InvalidCredentials()
+
+
+def request_login_code(email: str, ip: str | None) -> None:
+    """Email a sign-in code if an active account exists. Raises `OtpThrottled`."""
+    resend_code(email, OneTimeCode.Purpose.LOGIN, ip)
+
+
+def login_with_code(email: str, code: str) -> User:
+    """Sign in with an emailed code. Raises `InvalidCode`."""
+    if not otp.verify_code(email, OneTimeCode.Purpose.LOGIN, code):
+        raise InvalidCode()
+    user = User.objects.filter(email__iexact=otp.normalise_email(email)).first()
+    if user is None or not user.is_active:
+        raise InvalidCode()
+    _mark_email_verified(user)
+    update_last_login(None, user)
+    track("auth.login", {"method": "otp"}, actor_email=user.email, ref=user)
+    return user
+
+
+def request_password_reset(email: str, ip: str | None) -> None:
+    """Email a reset code if an active account exists. Raises `OtpThrottled`."""
+    resend_code(email, OneTimeCode.Purpose.PASSWORD_RESET, ip)
+
+
+def reset_password(email: str, code: str, new_password: str) -> User:
+    """
+    Set a new password with a reset code and revoke every API token.
+
+    The password is checked first, so a weak password doesn't burn the code.
+    Raises `PasswordRejected` or `InvalidCode`.
+    """
+    email = otp.normalise_email(email)
+    user = User.objects.filter(email__iexact=email).first()
+    try:
+        password_validation.validate_password(new_password, user=user or User(email=email))
+    except DjangoValidationError as exc:
+        raise PasswordRejected(list(exc.messages)) from exc
+    if not otp.verify_code(email, OneTimeCode.Purpose.PASSWORD_RESET, code):
+        raise InvalidCode()
+    if user is None or not user.is_active:
+        raise InvalidCode()
+    with transaction.atomic():
+        user.set_password(new_password)
+        user.save(update_fields=["password"])
+        _mark_email_verified(user)
+        Token.objects.filter(user=user).delete()
+        update_last_login(None, user)
+        transaction.on_commit(lambda: track("auth.password_reset", {}, actor_email=user.email, ref=user))
+    return user
+
+
+def _mark_email_verified(user: User) -> None:
+    """A code that reached the inbox proves the address."""
+    if user.email_verified_at is None:
+        user.email_verified_at = timezone.now()
+        user.save(update_fields=["email_verified_at"])
+
+
+def get_token(user: User) -> str:
+    """The user's API token (created if missing)."""
+    token, _ = Token.objects.get_or_create(user=user)
+    return token.key
+
+
+def logout(user: User, token: Any) -> None:
+    """Delete the token used for this request (or all the user's tokens for session auth)."""
+    if isinstance(token, Token):
+        token.delete()
+    else:
+        Token.objects.filter(user=user).delete()
 
 
 def register_user(
     email: str, password: str, full_name: str, company: str = "", phone: str = ""
 ) -> User:
-    """Create a regular user. Input must already be validated."""
+    """
+    Create an active, verified user. Input must already be validated.
+
+    Deprecated together with `POST register/`: new accounts use `signup()` (email code).
+    """
     return User.objects.create_user(
-        email=email, password=password, full_name=full_name, company=company, phone=phone
+        email=email, password=password, full_name=full_name, company=company, phone=phone,
+        email_verified_at=timezone.now(),
     )
 
 
@@ -149,31 +402,42 @@ class PlanNotAllowed(Exception):
 
 
 @transaction.atomic
-def activate_plan(user: User, plan: Plan, source: str = "self-serve") -> PlanActivation:
+def activate_plan(
+    user: User,
+    plan: Plan,
+    source: str = "self-serve",
+    *,
+    allow_paid: bool = False,
+    ends_at: datetime | None = None,
+) -> PlanActivation:
     """
     Make `plan` the user's single active plan.
 
     Any previously active activation is deactivated. Trial plans
-    (trial_days > 0) get ends_at = now + trial_days; others are open-ended.
+    (trial_days > 0) get ends_at = now + trial_days; others are open-ended
+    unless `ends_at` is given (e.g. a paid month).
 
     Rules:
     - A trial plan can be activated once per user (no restarting the clock).
-    - The early-access plan needs an early-access registration for the
-      user's email; activating it marks that registration as activated.
+    - Paid plans need a verified payment: only billing passes `allow_paid=True`.
+    - The early-access plan no longer needs a waitlist registration; if one
+      exists for the user's email it is marked as activated.
     """
+    if plan.requires_payment and not allow_paid:
+        raise PlanNotAllowed("This plan needs a payment. Choose it on the subscription page.")
+    if plan.trial_days and PlanActivation.objects.filter(user=user, plan=plan).exists():
+        raise PlanNotAllowed("You've already used this trial.")
+
     registration = None
     if plan.code == Plan.EARLY_ACCESS:
         registration = EAR.objects.select_for_update().filter(email=user.email.lower()).first()
-        if registration is None:
-            raise PlanNotAllowed("This plan is only for early-access sign-ups.")
-    if plan.trial_days and PlanActivation.objects.filter(user=user, plan=plan).exists():
-        raise PlanNotAllowed("You've already used this trial.")
 
     now = timezone.now()
     PlanActivation.objects.select_for_update().filter(user=user, is_active=True).update(
         is_active=False
     )
-    ends_at = now + timedelta(days=plan.trial_days) if plan.trial_days else None
+    if ends_at is None and plan.trial_days:
+        ends_at = now + timedelta(days=plan.trial_days)
     activation = PlanActivation.objects.create(
         user=user, plan=plan, starts_at=now, ends_at=ends_at, is_active=True, source=source
     )

@@ -1,6 +1,7 @@
 """Request validation and response shaping for z_auth. No business logic here."""
 from __future__ import annotations
 
+import re
 from typing import Any, Iterable
 
 from django.contrib.auth import password_validation
@@ -9,7 +10,7 @@ from django.utils import timezone
 from rest_framework import serializers
 
 from .models import EarlyAccessRegistration as EAR
-from .models import Plan, PlanActivation, User
+from .models import OneTimeCode, Plan, PlanActivation, User
 
 REQUIRED = "This field is required."
 PICK_ONE = "Pick one option."
@@ -119,9 +120,13 @@ def early_access_payload(registration: EAR, created: bool) -> dict[str, Any]:
 
 
 class UserSerializer(serializers.ModelSerializer):
+    """The `User` shape of portal-v1 §3.1 (the company lives on `Company` now)."""
+
+    email_verified = serializers.BooleanField(read_only=True)
+
     class Meta:
         model = User
-        fields = ("id", "email", "full_name", "company", "phone", "is_staff", "date_joined")
+        fields = ("id", "email", "full_name", "phone", "is_staff", "date_joined", "email_verified")
         read_only_fields = fields
 
 
@@ -157,13 +162,96 @@ class LoginSerializer(serializers.Serializer):
         return value.strip().lower()
 
 
+# --- Sign-up / codes / password reset ----------------------------------------
+
+REQUIRED_MESSAGES = {"required": REQUIRED, "blank": REQUIRED, "null": REQUIRED}
+EMAIL_MESSAGES = {**REQUIRED_MESSAGES, "invalid": "Enter a valid email address."}
+BAD_CODE = "That code is incorrect or has expired."
+
+
+def email_field() -> serializers.EmailField:
+    return serializers.EmailField(max_length=254, error_messages=EMAIL_MESSAGES)
+
+
+class CodeField(serializers.CharField):
+    """A 6-digit code; spaces are ignored. Malformed input gets the same message as a wrong code."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        kwargs.setdefault("max_length", 20)
+        kwargs.setdefault("error_messages", {**REQUIRED_MESSAGES, "max_length": BAD_CODE})
+        super().__init__(**kwargs)
+
+    def to_internal_value(self, data: Any) -> str:
+        value = re.sub(r"\s", "", str(super().to_internal_value(data)))
+        if not re.fullmatch(r"\d{6}", value):
+            raise serializers.ValidationError(BAD_CODE)
+        return value
+
+
+def _check_password(password: str, user: User, field: str) -> None:
+    try:
+        password_validation.validate_password(password, user=user)
+    except DjangoValidationError as exc:
+        raise serializers.ValidationError({field: list(exc.messages)}) from exc
+
+
+class SignupSerializer(serializers.Serializer):
+    full_name = serializers.CharField(max_length=150, error_messages=REQUIRED_MESSAGES)
+    email = email_field()
+    password = serializers.CharField(
+        write_only=True, trim_whitespace=False, max_length=128, error_messages=REQUIRED_MESSAGES
+    )
+
+    def validate_email(self, value: str) -> str:
+        value = value.strip().lower()
+        existing = User.objects.filter(email__iexact=value).first()
+        if existing is not None and not existing.is_pending_verification:
+            raise serializers.ValidationError("An account with this email already exists.")
+        return value
+
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        _check_password(
+            attrs["password"], User(email=attrs["email"], full_name=attrs["full_name"]), "password"
+        )
+        return attrs
+
+
+class EmailSerializer(serializers.Serializer):
+    email = email_field()
+
+    def validate_email(self, value: str) -> str:
+        return value.strip().lower()
+
+
+class EmailCodeSerializer(EmailSerializer):
+    code = CodeField()
+
+
+class ResendCodeSerializer(EmailSerializer):
+    purpose = StrippedChoiceField(
+        choices=OneTimeCode.Purpose.choices,
+        error_messages={**REQUIRED_MESSAGES, "invalid_choice": PICK_ONE},
+    )
+
+
+class PasswordResetSerializer(EmailCodeSerializer):
+    new_password = serializers.CharField(
+        write_only=True, trim_whitespace=False, max_length=128, error_messages=REQUIRED_MESSAGES
+    )
+
+
 # --- Plans ------------------------------------------------------------------
 
 
 class PlanSerializer(serializers.ModelSerializer):
+    requires_payment = serializers.BooleanField(read_only=True)
+
     class Meta:
         model = Plan
-        fields = ("code", "name", "price_inr_monthly", "trial_days")
+        fields = (
+            "code", "name", "tagline", "price_inr_monthly", "trial_days", "max_devices",
+            "features", "is_recommended", "requires_payment", "sort_order",
+        )
         read_only_fields = fields
 
 

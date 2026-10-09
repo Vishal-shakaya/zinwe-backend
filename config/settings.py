@@ -7,6 +7,7 @@ and falls back to a safe *local development* default. See `.env.example`.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -143,6 +144,11 @@ AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
 ]
 
+# The test suite creates many users; PBKDF2 at full strength makes it crawl.
+# Only ever applies to `manage.py test`.
+if sys.argv[1:2] == ["test"]:
+    PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
+
 # --- I18N / time ------------------------------------------------------------
 
 LANGUAGE_CODE = "en-us"
@@ -166,6 +172,16 @@ STORAGES = {
 # Outside DEBUG it serves STATIC_ROOT, so run `manage.py collectstatic` on deploy.
 WHITENOISE_USE_FINDERS = DEBUG
 WHITENOISE_AUTOREFRESH = DEBUG
+
+# --- Media (uploads) -------------------------------------------------------
+# Payment proofs live here. Never served publicly: there is no MEDIA_URL route;
+# staff download through the admin, owners through an authenticated endpoint.
+MEDIA_ROOT = Path(env_str("DJANGO_MEDIA_ROOT", str(BASE_DIR / "media")))
+MEDIA_URL = "media/"
+# Uploads above this size are streamed to a temp file instead of memory.
+FILE_UPLOAD_MAX_MEMORY_SIZE = 2_621_440  # 2.5 MB
+# Non-file request body limit (JSON, form fields). Files don't count towards it.
+DATA_UPLOAD_MAX_MEMORY_SIZE = 2_621_440  # 2.5 MB
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
@@ -193,7 +209,13 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         "early_access": "20/hour",
         "device_enroll": "60/hour",
+        "auth_signup": "10/hour",
+        "auth_login": "20/hour",
+        "auth_otp": "30/hour",
+        "payment_submit": "10/hour",
     },
+    # Adds `retry_after` (seconds) to every 429 body.
+    "EXCEPTION_HANDLER": "z_main.exceptions.exception_handler",
 }
 
 # --- CORS -------------------------------------------------------------------
@@ -225,6 +247,8 @@ EMAIL_PORT = int(env_str("EMAIL_PORT", "25"))
 EMAIL_HOST_USER = env_str("EMAIL_HOST_USER", "")
 EMAIL_HOST_PASSWORD = env_str("EMAIL_HOST_PASSWORD", "")
 EMAIL_USE_TLS = env_bool("EMAIL_USE_TLS", False)
+# Folder for django.core.mail.backends.filebased.EmailBackend (browser end-to-end runs read OTPs here).
+EMAIL_FILE_PATH = env_str("EMAIL_FILE_PATH", str(BASE_DIR / "sent-emails"))
 
 # --- Zinwe ------------------------------------------------------------------
 
@@ -234,6 +258,18 @@ ZINWE_EARLY_ACCESS_TRIAL_DAYS = 90
 # Agent heartbeat cadence; a device is "offline" after 3 missed beats.
 ZINWE_DEVICE_HEARTBEAT_SECONDS = 60
 ZINWE_DEVICE_OFFLINE_AFTER_SECONDS = 3 * ZINWE_DEVICE_HEARTBEAT_SECONDS
+
+# Manual payments (no gateway yet). Shown to owners on the subscribe page.
+# Local defaults are PLACEHOLDERS: set the real values in .env.
+ZINWE_PAYMENT_INSTRUCTIONS = {
+    "upi_id": env_str("ZINWE_PAYMENT_UPI_ID", "placeholder@upi"),
+    "payee_name": env_str("ZINWE_PAYMENT_PAYEE_NAME", "SKYTECHNO"),
+    "bank_name": env_str("ZINWE_PAYMENT_BANK_NAME", "Placeholder Bank"),
+    "account_number": env_str("ZINWE_PAYMENT_ACCOUNT_NUMBER", "000000000000"),
+    "ifsc": env_str("ZINWE_PAYMENT_IFSC", "PLHD0000000"),
+    "note": env_str("ZINWE_PAYMENT_NOTE", "Use your company name as the payment reference."),
+}
+ZINWE_PAYMENT_PROOF_MAX_BYTES = 5 * 1024 * 1024
 
 # --- Logging ----------------------------------------------------------------
 

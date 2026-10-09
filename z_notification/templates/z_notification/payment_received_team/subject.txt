@@ -1,0 +1,1 @@
+{% autoescape off %}Payment to check: {{ company.name|default:owner.email }}, {{ payment.amount_inr }} INR ({{ payment.get_method_display }}){% endautoescape %}

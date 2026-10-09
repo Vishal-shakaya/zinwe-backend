@@ -1,0 +1,32 @@
+{% extends "admin/base_site.html" %}
+{% load i18n admin_urls %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+  <a href="{% url 'admin:index' %}">{% translate 'Home' %}</a>
+  &rsaquo; <a href="{% url 'admin:app_list' app_label=opts.app_label %}">{{ opts.app_config.verbose_name }}</a>
+  &rsaquo; <a href="{% url opts|admin_urlname:'changelist' %}">{{ opts.verbose_name_plural|capfirst }}</a>
+  &rsaquo; Reject payment
+</div>
+{% endblock %}
+
+{% block content %}
+<p>These payments will be marked <strong>rejected</strong>. Each owner gets an email with your reason,
+  and their subscription stays <em>pending payment</em> so they can submit again.</p>
+<ul>
+  {% for payment in payments %}
+    <li>#{{ payment.pk }} &middot; {{ payment.subscription.owner.email }} &middot; {{ payment.amount_inr }} INR
+      &middot; {{ payment.get_method_display }} &middot; ref {{ payment.reference }} ({{ payment.get_status_display }})</li>
+  {% endfor %}
+</ul>
+<form method="post">{% csrf_token %}
+  {{ form.as_p }}
+  {% for payment in payments %}
+    <input type="hidden" name="{{ action_checkbox_name }}" value="{{ payment.pk }}">
+  {% endfor %}
+  <input type="hidden" name="action" value="reject_payments">
+  <input type="hidden" name="apply" value="1">
+  <input type="submit" value="Reject and email the owner{{ payments|length|pluralize }}">
+  <a href="{% url opts|admin_urlname:'changelist' %}" class="button cancel-link">Cancel</a>
+</form>
+{% endblock %}

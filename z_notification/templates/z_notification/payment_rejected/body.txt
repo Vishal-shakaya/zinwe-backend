@@ -1,0 +1,13 @@
+{% autoescape off %}Hi {{ first_name }},
+
+We checked the payment you reported for the {{ plan.name }} plan ({{ payment.amount_inr }} INR, reference {{ payment.reference }}), but we couldn't confirm it.
+
+Reason: {{ reason }}
+
+Your plan is still waiting for payment. You can send the details again from the billing page in your dashboard.
+
+If you think this is a mistake, just reply to this email.
+
+The Zinwe team
+SKYTECHNO, New Delhi
+{% endautoescape %}

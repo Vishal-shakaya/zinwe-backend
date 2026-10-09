@@ -11,7 +11,7 @@ Python packages can't contain hyphens, so the app names map like this:
 
 | Name used in planning | Python package   | What it owns |
 |-----------------------|------------------|--------------|
-| z-auth                | `z_auth`         | `User` (email login), `Plan`, `PlanActivation`, `EarlyAccessRegistration`; register/login/me; plans |
+| z-auth                | `z_auth`         | `User` (email login), `Plan`, `PlanActivation`, `EarlyAccessRegistration`, `OneTimeCode`, `Company`, `Subscription`, `ManualPayment`; sign-up/OTP/login/me/password reset; company; plans; subscription + manual payments |
 | z-anaytics            | `z_analytics`    | `Event` log, `track()`, admin summary endpoint |
 | z-notification        | `z_notification` | Channel registry (email today), `Notification` log, `notify()`, templates |
 | z-main                | `z_main`         | Health check and the home for generic, cross-app APIs/helpers |
@@ -90,11 +90,14 @@ Never create this account on any shared or deployed environment.
 | `ZINWE_TEAM_NOTIFY_EMAIL` | `hello@zinwe.io` (receives new sign-up alerts) |
 | `ZINWE_TRUST_X_FORWARDED_FOR` | `False` (set `True` only behind a trusted reverse proxy) |
 | `EMAIL_HOST/PORT/HOST_USER/HOST_PASSWORD/USE_TLS` | SMTP settings when using the SMTP backend |
+| `EMAIL_FILE_PATH` | `<project>/sent-emails` (used by the file email backend, e.g. for end-to-end runs that read OTPs) |
 | `ZINWE_ASGI_HOST` / `ZINWE_ASGI_PORT` | `127.0.0.1` / `8000` (`manage.py serve`) |
 | `ZINWE_ASGI_WORKERS` | `1` (ignored while reload is on) |
 | `ZINWE_ASGI_RELOAD` | same as `DJANGO_DEBUG` |
 | `ZINWE_ASGI_LOG_LEVEL` | `info` |
 | `ZINWE_FORWARDED_ALLOW_IPS` | `127.0.0.1` (proxy IPs trusted for `X-Forwarded-*`) |
+| `DJANGO_MEDIA_ROOT` | `<project>/media` (payment proofs; gitignored, never served publicly) |
+| `ZINWE_PAYMENT_UPI_ID` / `_PAYEE_NAME` / `_BANK_NAME` / `_ACCOUNT_NUMBER` / `_IFSC` / `_NOTE` | placeholders (`placeholder@upi`, `SKYTECHNO`, ...); shown on the subscribe page |
 
 SQLite (`db.sqlite3`) locally, `TIME_ZONE=Asia/Kolkata`, `USE_TZ=True`.
 DRF: token + session auth, `IsAuthenticated` by default (public endpoints opt
@@ -108,11 +111,24 @@ All endpoints live under `/api/`. Admin site at `/admin/`.
 |--------|------|------|---------|
 | GET  | `/api/health/` | public | `{"status":"ok","service":"zinwe-backend","version":"0.1.0","time":...}` |
 | POST | `/api/auth/early-access/` | public, 20/hour/IP | Join the early-access list |
-| POST | `/api/auth/register/` | public | `{email, password, full_name, company?, phone?}` -> `{token, user}` (201) |
-| POST | `/api/auth/login/` | public | `{email, password}` -> `{token, user}` |
-| GET  | `/api/auth/me/` | token | user fields + `active_plan` (or `null`) |
-| GET  | `/api/auth/plans/` | public | active plans |
-| POST | `/api/auth/plans/activate/` | token | `{"plan": "<code>"}` -> new active `PlanActivation` (201) |
+| POST | `/api/auth/signup/` | public, 10/hour/IP | `{full_name, email, password}` -> 201 `{email, otp_sent, resend_in}`; unverified account + emailed code |
+| POST | `/api/auth/signup/verify/` | public, otp scope | `{email, code}` -> AuthResponse; 400 `{"code": ["That code is incorrect or has expired."]}` |
+| POST | `/api/auth/otp/resend/` | public, otp scope | `{email, purpose: signup\|login\|password_reset}` -> generic 200 `{detail, resend_in}`; 429 cooldown |
+| POST | `/api/auth/login/` | public, 20/hour/IP | `{email, password}` -> AuthResponse; 400 wrong; 403 `{"code": "email_not_verified", ...}` (new code sent) |
+| POST | `/api/auth/login/otp/request/` | public, otp scope | `{email}` -> generic 200 `{detail, resend_in}` |
+| POST | `/api/auth/login/otp/verify/` | public, 20/hour/IP | `{email, code}` -> AuthResponse |
+| POST | `/api/auth/logout/` | token | 204, token deleted |
+| GET  | `/api/auth/me/` | token | User + `onboarding`, `company`, `subscription`, `active_plan` (each may be `null`) |
+| POST | `/api/auth/password/forgot/` | public, otp scope | `{email}` -> generic 200 `{detail, resend_in}` |
+| POST | `/api/auth/password/reset/` | public, otp scope | `{email, code, new_password}` -> AuthResponse; **all old tokens revoked** |
+| GET/POST/PATCH | `/api/auth/company/` | token | the owner's single company: 404 none / 201 created / 409 already registered / 200 patched |
+| GET  | `/api/auth/plans/` | public | active plans by `sort_order` (tagline, max_devices, features, is_recommended, requires_payment) |
+| GET  | `/api/auth/subscription/` | token | `{subscription \| null, instructions}` |
+| POST | `/api/auth/subscription/` | token | `{plan}` -> 201; free/trial `active` now, paid `pending_payment` |
+| POST | `/api/auth/subscription/payment/` | token, 10/hour/IP | **multipart** `method, amount_inr, reference, paid_on, payer_name, proof?` (JPG/PNG/PDF <= 5 MB) -> 201 `submitted` |
+| GET  | `/api/auth/subscription/payment/<id>/proof/` | token | download your own proof (staff: any) |
+| POST | `/api/auth/register/` | public | **Deprecated** (use `signup/`): `{email, password, full_name, company?, phone?}` -> `{token, user}` (201), account verified at once |
+| POST | `/api/auth/plans/activate/` | token | Older endpoint: `{"plan": "<code>"}` -> new active `PlanActivation` (201); refuses paid plans |
 | GET  | `/api/analytics/summary/` | staff | early-access + event counts |
 | POST | `/api/devices/enroll/` | public, 60/hour/IP | Agent: `{enrollment_key, machine_id, hostname, os_version?, agent_version?, platform?}` -> `{device_id, device_token, re_enrolled}` (201 new / 200 re-enrolled; 400 `enrollment_key` = refused) |
 | POST | `/api/devices/heartbeat/` | `Device <token>` | Agent check-in -> `{device_id, server_time, next_heartbeat_seconds, policy_version}`; 401 = removed |
@@ -157,10 +173,56 @@ Responses:
   `"already_registered": true, "message": "You're already on the list."` No new row, no email; tracks `early_access.duplicate`.
 - **400** validation: `{"field": ["message", ...]}`, e.g. `"Enter a valid email address."`,
   `"Pick one option."` (team_size), `"This field is required."`.
-- **429** throttled: `{"detail": "Request was throttled. Expected available in N seconds."}`
+- **429** throttled: `{"detail": "Request was throttled. Expected available in N seconds.", "retry_after": N}`
+  (every 429 in the API carries `retry_after`, via `z_main/exceptions.py`)
 
 Stores the client IP (REMOTE_ADDR; first `X-Forwarded-For` hop only when
 `ZINWE_TRUST_X_FORWARDED_FOR=True`) and the user agent (truncated to 255).
+
+### Accounts, onboarding and billing (owner portal)
+
+The full contract (shapes, messages, step rules) is `zinwe/.cloude/system-design-agent/portal-v1.md`.
+Code: `z_auth/otp.py` (codes), `services.py` (accounts), `company.py`, `billing.py`,
+`onboarding.py`; views in `views.py` (auth) and `portal_views.py` (company/subscription).
+
+- **AuthResponse** = `{token, user, onboarding}`. `onboarding.step` is the first match of:
+  `company` (no Company) -> `plan` (no subscription, or cancelled/expired) -> `payment`
+  (pending, nothing submitted) -> `payment_review` (pending, a payment submitted) -> `complete` (active).
+- **Email codes**: 6 digits, 10 minutes, 5 wrong tries burn the code, 60 s between sends
+  (429 + `retry_after`), at most 5 sends per email + purpose per hour. Only an HMAC-SHA256
+  (keyed with `SECRET_KEY`) is stored; a new code kills older ones. Code rows are written even for
+  unknown addresses, so `otp/resend`, `login/otp/request` and `password/forgot` answer the same way
+  (and hit the same cooldown) whether or not the account exists. The `Notification` log stores the
+  email body with the code masked as `••••••` (`notify(..., redact=[code])`).
+- **Sign-up** creates `is_active=False`, `email_verified_at=null`; the code activates it. Re-submitting
+  sign-up for an unverified email updates name/password; inside the 60 s cooldown it returns
+  `otp_sent: false` and the earlier code still works.
+- **Trials** (trial_days > 0) once per user. Early access no longer needs a waitlist row; a matching
+  one is marked `activated`.
+- An `active` subscription past `ends_at` is flipped to `expired` (and its PlanActivation switched off)
+  the next time it's read, which sends the owner back to the `plan` step.
+- Throttle scopes (per IP): `auth_signup` 10/h, `auth_login` 20/h, `auth_otp` 30/h (shared by the
+  code endpoints), `payment_submit` 10/h.
+- Emails (`z_notification/templates/z_notification/`): `otp_signup`, `otp_login`, `otp_password_reset`,
+  `welcome`, `subscription_active`, `payment_received_team` (to `ZINWE_TEAM_NOTIFY_EMAIL`), `payment_rejected`.
+- Analytics events: `auth.signup_started`, `auth.signup_verified`, `auth.login` (`method`),
+  `auth.password_reset`, `company.registered`, `subscription.created`, `payment.submitted`,
+  `payment.verified`, `payment.rejected`.
+
+#### Verifying a manual payment (Django admin)
+
+1. The team gets a "Payment to check" email. Open **/admin/ -> Manual payments** (filter by
+   *Status: Submitted*). Open a row and use **Download proof** to see the screenshot/receipt
+   (proofs are staff-only; there is no public media URL).
+2. Back on the list, tick the payment(s) and pick an action:
+   - **Verify payment** -> payment `verified`, subscription `active` from now for one month,
+     a PlanActivation for the plan (the owner's only active one), "plan is active" email to the owner.
+   - **Reject payment (asks for a reason)** -> a second page asks for the reason (sent to the owner).
+     The payment becomes `rejected`, the subscription stays `pending_payment`, so the owner can submit again.
+3. Payments that were already reviewed are skipped with a warning.
+
+Pro's price (1999 INR/month, migration `0005_update_plan_catalogue`) is a **placeholder** until the
+founder confirms it; change it in **Plans**.
 
 ### Devices (z-devices)
 
@@ -223,23 +285,24 @@ Stores the client IP (REMOTE_ADDR; first `X-Forwarded-For` hop only when
 
 ## Plans
 
-Seeded by migration `z_auth/0002_seed_plans.py`:
+Seeded by `z_auth/0002_seed_plans.py`, updated by `0005_update_plan_catalogue.py`:
 
-| code | name | price (INR/month) | trial_days | active |
-|------|------|-------------------|------------|--------|
-| `free` | Free | 0 | 0 | yes |
-| `early-access` | Early access — full plan, 3 months free | 0 | 90 | yes |
-| `pro` | Pro | 0 (TODO: real pricing) | 0 | no |
+| code | name | price (INR/month) | trial_days | max PCs | requires payment | sort |
+|------|------|-------------------|------------|---------|------------------|------|
+| `free` | Free | 0 | 0 | 3 | no | 10 |
+| `early-access` | Early access (recommended) | 0 | 90 | 50 | no | 20 |
+| `pro` | Pro | 1999 (**PLACEHOLDER**, to be confirmed) | 0 | 50 | yes | 30 |
 
 Activating a plan deactivates the user's previous active plan. Plans with
 `trial_days > 0` get `ends_at = now + trial_days`; others are open-ended.
 
 ## Notifications
 
-`z_notification.services.notify(channel, recipient, template, context, ref=None)`
+`z_notification.services.notify(channel, recipient, template, context, ref=None, redact=None)`
 renders `z_notification/templates/z_notification/<template>/subject.txt`,
 `body.txt` and (optional) `body.html`, writes a `Notification` row, sends it, and
-records `sent`/`failed`. It never raises to the caller.
+records `sent`/`failed`. It never raises to the caller. Strings in `redact` (e.g. a one-time
+code) are sent but replaced with `••••••` in the logged subject, body and error.
 
 ### Adding a channel (SMS, WhatsApp, Slack, ...)
 
@@ -271,10 +334,12 @@ records `sent`/`failed`. It never raises to the caller.
 
 `z_analytics.services.track(name, properties=None, actor_email="", ref=None)`
 writes an `Event` row and never raises. Current events:
-`early_access.registered`, `early_access.duplicate`, `plan.activated`.
+`early_access.registered`, `early_access.duplicate`, `plan.activated`, plus the account /
+billing events listed under *Accounts, onboarding and billing*.
 
 ## z-main
 
 Put generic, cross-app endpoints and helpers here (health, config/feature flags,
 contact forms, etc.). Shared helpers today: `z_main/refs.py` (loose related-object
-references) and `z_main/client.py` (client IP / user agent).
+references), `z_main/client.py` (client IP / user agent) and `z_main/exceptions.py`
+(DRF exception handler adding `retry_after` to 429s).

@@ -1,0 +1,13 @@
+{% autoescape off %}Hi {{ first_name }},
+
+Here is your code to sign in to Zinwe:
+
+    {{ code }}
+
+It expires in {{ minutes }} minutes. Don't share it with anyone: Zinwe will never ask you for it.
+
+Didn't request this? You can safely ignore this email.
+
+The Zinwe team
+SKYTECHNO, New Delhi
+{% endautoescape %}

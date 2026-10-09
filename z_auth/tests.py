@@ -32,6 +32,8 @@ def valid_payload(**overrides: Any) -> dict[str, Any]:
     return payload
 
 
+# Tests must not depend on the developer's local .env (which may set real addresses).
+@override_settings(ZINWE_TEAM_NOTIFY_EMAIL="hello@zinwe.io", DEFAULT_FROM_EMAIL="Zinwe <hello@zinwe.io>")
 class EarlyAccessTests(APITestCase):
     def setUp(self) -> None:
         cache.clear()  # reset throttle counters between tests
@@ -296,16 +298,20 @@ class PlanTests(APITestCase):
         plans = {p.code: p for p in Plan.objects.all()}
         self.assertEqual(set(plans), {"free", "early-access", "pro"})
         self.assertEqual(plans["early-access"].trial_days, 90)
-        self.assertFalse(plans["pro"].is_active)
+        # portal-v1 §3.6: Pro is live (price is a placeholder until confirmed).
+        self.assertTrue(plans["pro"].is_active)
+        self.assertEqual(str(plans["pro"].price_inr_monthly), "1999.00")
+        self.assertTrue(plans["pro"].requires_payment)
+        self.assertFalse(plans["free"].requires_payment)
 
     def test_plan_list_is_public_and_active_only(self) -> None:
+        Plan.objects.create(code="legacy", name="Legacy", is_active=False)
         self.client.force_authenticate(None)
         response = self.client.get("/api/auth/plans/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         codes = [p["code"] for p in response.json()]
-        self.assertIn("early-access", codes)
-        self.assertIn("free", codes)
-        self.assertNotIn("pro", codes)
+        self.assertEqual(codes, ["free", "early-access", "pro"])  # by sort_order
+        self.assertNotIn("legacy", codes)
 
     def _register_early_access(self, email: str = "owner@acme.in") -> EarlyAccessRegistration:
         return EarlyAccessRegistration.objects.create(
@@ -328,11 +334,21 @@ class PlanTests(APITestCase):
         reg.refresh_from_db()
         self.assertEqual(reg.status, EarlyAccessRegistration.Status.ACTIVATED)
 
-    def test_early_access_requires_registration(self) -> None:
-        self._register_early_access("someone-else@acme.in")
+    def test_early_access_no_longer_requires_registration(self) -> None:
+        other = self._register_early_access("someone-else@acme.in")
         response = self.client.post("/api/auth/plans/activate/", {"plan": "early-access"}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(PlanActivation.objects.get().plan.code, "early-access")
+        other.refresh_from_db()
+        self.assertEqual(other.status, EarlyAccessRegistration.Status.PENDING)
+
+    def test_paid_plan_cannot_be_activated_without_payment(self) -> None:
+        response = self.client.post("/api/auth/plans/activate/", {"plan": "pro"}, format="json")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertEqual(response.json()["plan"], ["This plan is only for early-access sign-ups."])
+        self.assertEqual(
+            response.json()["plan"],
+            ["This plan needs a payment. Choose it on the subscription page."],
+        )
         self.assertFalse(PlanActivation.objects.exists())
 
     def test_trial_cannot_be_restarted(self) -> None:
@@ -356,7 +372,8 @@ class PlanTests(APITestCase):
         self.assertEqual(active.plan.code, "free")
 
     def test_cannot_activate_inactive_or_unknown_plan(self) -> None:
-        for code in ("pro", "does-not-exist"):
+        Plan.objects.create(code="legacy", name="Legacy", is_active=False)
+        for code in ("legacy", "does-not-exist"):
             response = self.client.post("/api/auth/plans/activate/", {"plan": code}, format="json")
             self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
             self.assertIn("plan", response.json())
@@ -401,6 +418,10 @@ class AdminSmokeTests(APITestCase):
             f"/admin/z_auth/earlyaccessregistration/{self.reg.pk}/change/",
             "/admin/z_notification/notification/",
             "/admin/z_analytics/event/",
+            "/admin/z_auth/company/",
+            "/admin/z_auth/subscription/",
+            "/admin/z_auth/manualpayment/",
+            "/admin/z_auth/onetimecode/",
         ]
         for url in urls:
             with self.subTest(url=url):

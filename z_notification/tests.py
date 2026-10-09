@@ -3,7 +3,7 @@ from __future__ import annotations
 from unittest import mock
 
 from django.core import mail
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from .channels import Channel, get_channel, register_channel, registered_channels
 from .channels import _REGISTRY
@@ -29,6 +29,7 @@ class RecordingChannel(Channel):
         self.sent.append((recipient, subject, body, html))
 
 
+@override_settings(DEFAULT_FROM_EMAIL="Zinwe <hello@zinwe.io>")  # independent of the local .env
 class NotifyTests(TestCase):
     def test_email_is_rendered_logged_and_sent(self) -> None:
         notification = notify("email", "asha@acme.in", "early_access_confirmation", CONTEXT, ref=("z_auth.earlyaccessregistration", 7))
@@ -95,3 +96,37 @@ class TeamAlertTemplateTests(TestCase):
         self.assertEqual(notification.status, Notification.Status.SENT)
         self.assertIn("Acme & Sons", notification.subject)  # no HTML escaping in text mail
         self.assertIn("asha@acme.in", notification.body)
+
+
+class RedactTests(TestCase):
+    def test_redacted_values_are_sent_but_not_logged(self) -> None:
+        notification = notify(
+            "email", "asha@acme.in", "otp_login",
+            {"code": "482913", "first_name": "Asha", "minutes": 10},
+            redact=["482913"],
+        )
+        notification.refresh_from_db()
+        self.assertEqual(notification.status, Notification.Status.SENT)
+        self.assertNotIn("482913", notification.body)
+        self.assertNotIn("482913", notification.subject)
+        self.assertIn("•" * 6, notification.body)
+        self.assertIn("482913", mail.outbox[0].body)
+        self.assertIn("482913", mail.outbox[0].alternatives[0][0])
+
+    def test_failure_error_is_redacted_too(self) -> None:
+        with (
+            mock.patch.object(EmailChannel, "send", side_effect=RuntimeError("bad code 482913")),
+            self.assertLogs("zinwe.notification", "ERROR"),
+        ):
+            notification = notify(
+                "email", "asha@acme.in", "otp_login",
+                {"code": "482913", "first_name": "Asha", "minutes": 10},
+                redact=["482913"],
+            )
+        notification.refresh_from_db()
+        self.assertEqual(notification.status, Notification.Status.FAILED)
+        self.assertNotIn("482913", notification.error + notification.body)
+
+    def test_empty_redact_values_are_ignored(self) -> None:
+        notification = notify("email", "x@y.z", "early_access_confirmation", CONTEXT, redact=["", None])
+        self.assertIn("Hi Asha", notification.body)

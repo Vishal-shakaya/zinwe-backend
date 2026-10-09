@@ -1,0 +1,13 @@
+{% autoescape off %}New manual payment #{{ payment.id }} to check.
+
+Owner:      {{ owner.full_name|default:"-" }} <{{ owner.email }}>
+Company:    {{ company.name|default:"-" }}
+Plan:       {{ plan.name }} ({{ plan.code }}), {{ subscription.amount_inr }} INR/month
+Paid:       {{ payment.amount_inr }} INR by {{ payment.get_method_display }} on {{ payment.paid_on|date:"Y-m-d" }}
+Reference:  {{ payment.reference }}
+Payer:      {{ payment.payer_name }}
+Proof:      {% if payment.proof %}attached in admin{% else %}none uploaded{% endif %}
+
+Check it in Django admin: Manual payments -> #{{ payment.id }} (/admin/z_auth/manualpayment/{{ payment.id }}/change/),
+then run "Verify payment" or "Reject payment".
+{% endautoescape %}
