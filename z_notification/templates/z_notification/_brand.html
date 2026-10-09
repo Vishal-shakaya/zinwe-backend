@@ -1,0 +1,3 @@
+{% comment %}Zinwe logo at the top of every HTML email. Image when ZINWE_EMAIL_LOGO_URL is set
+(public URL, deployed); otherwise the wordmark in text with the logo's exact colours.{% endcomment %}
+{% if brand_logo_url %}<img src="{{ brand_logo_url }}" alt="Zinwe" width="98" height="24" style="display:block;border:0;outline:none;height:24px;width:98px;margin:0 0 24px;">{% else %}<p style="margin:0 0 24px;font-family:Segoe UI,Arial,sans-serif;font-size:24px;line-height:1;font-weight:700;letter-spacing:-0.5px;color:#2B2B2A;"><span style="color:#FD6D02;">Z</span>inwe</p>{% endif %}

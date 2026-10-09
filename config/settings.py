@@ -84,7 +84,8 @@ ROOT_URLCONF = "config.urls"
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [],
+        # Project templates first: admin/base_site.html carries the Zinwe branding.
+        "DIRS": [BASE_DIR / "templates"],
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [
@@ -273,6 +274,9 @@ ZINWE_PAYMENT_INSTRUCTIONS = {
     "paypal_url": env_str("ZINWE_PAYMENT_PAYPAL_URL", ""),
     "note": env_str("ZINWE_PAYMENT_NOTE", "Use your company name as the payment reference."),
 }
+# Logo shown at the top of HTML emails. Must be a public https URL (mail clients can't
+# reach localhost), e.g. https://zinwe.io/brand/zinwe-logo-64.png. Empty = text wordmark.
+ZINWE_EMAIL_LOGO_URL = env_str("ZINWE_EMAIL_LOGO_URL", "")
 ZINWE_PAYMENT_PROOF_MAX_BYTES = 5 * 1024 * 1024
 
 # --- Logging ----------------------------------------------------------------

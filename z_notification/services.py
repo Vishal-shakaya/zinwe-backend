@@ -12,6 +12,7 @@ import logging
 from typing import Any, Iterable
 
 from django.template import TemplateDoesNotExist
+from django.conf import settings
 from django.template.loader import render_to_string
 from django.utils import timezone
 
@@ -36,6 +37,7 @@ def redact_text(text: str, secrets: Iterable[str] | None) -> str:
 def render_template(template: str, context: dict[str, Any]) -> tuple[str, str, str | None]:
     """Render (subject, text body, html body or None) for a template folder."""
     base = f"z_notification/{template}"
+    context = {"brand_logo_url": getattr(settings, "ZINWE_EMAIL_LOGO_URL", ""), **context}
     subject = render_to_string(f"{base}/subject.txt", context)
     subject = " ".join(subject.split())[:255]
     body = render_to_string(f"{base}/body.txt", context).strip() + "\n"

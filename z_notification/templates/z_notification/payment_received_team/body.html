@@ -2,6 +2,7 @@
 <html lang="en">
 <body style="margin:0;padding:24px;background:#f6f7f9;font-family:Segoe UI,Arial,sans-serif;color:#1d2433;">
   <div style="max-width:560px;margin:0 auto;background:#ffffff;border-radius:8px;padding:28px;">
+    {% include "z_notification/_brand.html" %}
     <p style="margin:0 0 16px;">New manual payment <strong>#{{ payment.id }}</strong> to check.</p>
     <table style="border-collapse:collapse;margin:0 0 16px;font-size:14px;">
       <tr><td style="padding:2px 12px 2px 0;color:#6b7280;">Owner</td><td>{{ owner.full_name|default:"-" }} &lt;{{ owner.email }}&gt;</td></tr>
