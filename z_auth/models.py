@@ -105,9 +105,12 @@ class User(AbstractBaseUser, PermissionsMixin):
 
 
 class Plan(models.Model):
-    """A product plan. Seeded by migration 0002, catalogue updated by 0005."""
+    """A product plan. Seeded by migration 0002, catalogue updated by 0005 and 0006."""
 
     FREE = "free"
+    STARTUPS = "startups"
+    BUSINESSES = "businesses"
+    # Legacy (inactive since 0006; rows kept because history points at them).
     EARLY_ACCESS = "early-access"
     PRO = "pro"
 
@@ -285,8 +288,8 @@ class Subscription(models.Model):
     """
     An owner's subscription to a plan. The newest row is the current one.
 
-    Free/trial plans start `active`. Paid plans start `pending_payment` and go
-    `active` when staff verify a `ManualPayment` in the admin.
+    Free plans and free trials start `active`. Paid plans start `pending_payment`
+    and go `active` when staff verify a `ManualPayment` in the admin.
     """
 
     class Status(models.TextChoices):
@@ -318,6 +321,9 @@ class Subscription(models.Model):
         PlanActivation, null=True, blank=True, on_delete=models.SET_NULL,
         related_name="subscriptions", help_text="The PlanActivation created when this went active.",
     )
+    is_trial = models.BooleanField(
+        default=False, help_text="A free trial of a paid plan (one per account, ever).",
+    )
     created_at = models.DateTimeField(default=timezone.now)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -342,6 +348,7 @@ class ManualPayment(models.Model):
     class Method(models.TextChoices):
         UPI = "upi", "UPI"
         BANK_TRANSFER = "bank_transfer", "Bank transfer"
+        PAYPAL = "paypal", "PayPal"  # payments from outside India
         CHEQUE = "cheque", "Cheque"
         CASH = "cash", "Cash"
 

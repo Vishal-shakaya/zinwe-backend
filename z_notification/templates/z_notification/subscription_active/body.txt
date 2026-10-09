@@ -1,10 +1,12 @@
 {% autoescape off %}Hi {{ first_name }},
 
-Your {{ plan.name }} plan is now active.
+{% if is_trial %}Your free {{ trial_length }} trial of {{ plan.name }} has started. It ends on {{ subscription.ends_at|date:"j F Y" }}.
+No payment is needed until then.
 
-{% if is_trial %}It's free until {{ subscription.ends_at|date:"j F Y" }} ({{ plan.trial_days }} days).
-{% elif subscription.ends_at %}Paid until {{ subscription.ends_at|date:"j F Y" }}. Thank you for your payment.
-{% endif %}{% if plan.max_devices %}It covers up to {{ plan.max_devices }} PCs.
+{% else %}Your {{ plan.name }} plan is now active.
+
+{% if subscription.ends_at %}Paid until {{ subscription.ends_at|date:"j F Y" }}. Thank you for your payment.
+{% endif %}{% endif %}{% if plan.max_devices %}It covers up to {{ plan.max_devices }} PCs.
 {% endif %}
 Next step: install the Zinwe agent on your team's PCs from your dashboard.
 

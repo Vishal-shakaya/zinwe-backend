@@ -24,7 +24,7 @@ from z_notification.services import notify
 
 from . import otp
 from .models import EarlyAccessRegistration as EAR
-from .models import OneTimeCode, Plan, PlanActivation, User
+from .models import OneTimeCode, Plan, PlanActivation, Subscription, User
 
 PLATFORM_LABELS = {"windows": "Windows", "linux": "Linux", "macos": "macOS"}
 CONCERN_LABELS = {
@@ -401,42 +401,86 @@ class PlanNotAllowed(Exception):
     """Raised when a user may not activate a plan; str(exc) is user-facing."""
 
 
+# --- Free trials: one per account, ever ----------------------------------------
+#
+# A trial is a plan's `trial_days` given away without payment. Since v1.1 the
+# trial lives on a paid plan (Businesses: 90 days); the legacy free
+# `early-access` plan was the same deal, so having used it counts.
+
+
+def trial_used(user: User) -> bool:
+    """True once the account has had any free trial (an `is_trial` subscription or legacy early access)."""
+    return (
+        Subscription.objects.filter(owner=user, is_trial=True).exists()
+        or PlanActivation.objects.filter(user=user, plan__code=Plan.EARLY_ACCESS).exists()
+    )
+
+
+def trial_available(plan: Plan, user: User | None = None) -> bool:
+    """Whether choosing `plan` would start a free trial. Anonymous callers: yes, if the plan has one."""
+    if not plan.trial_days:
+        return False
+    if user is None or not user.is_authenticated:
+        return True
+    return not trial_used(user)
+
+
+def starts_as_trial(user: User, plan: Plan) -> bool:
+    """
+    Should activating `plan` now be a free trial?
+
+    Paid plans with trial_days: only while the account's trial is unused (otherwise
+    the owner pays). Free plans with trial_days (legacy early access) are always a
+    trial, so `activate_plan` refuses them once the trial is used.
+    """
+    if not plan.trial_days:
+        return False
+    if plan.requires_payment:
+        return not trial_used(user)
+    return True
+
+
 @transaction.atomic
 def activate_plan(
     user: User,
     plan: Plan,
     source: str = "self-serve",
     *,
+    trial: bool = False,
     allow_paid: bool = False,
     ends_at: datetime | None = None,
 ) -> PlanActivation:
     """
     Make `plan` the user's single active plan.
 
-    Any previously active activation is deactivated. Trial plans
-    (trial_days > 0) get ends_at = now + trial_days; others are open-ended
-    unless `ends_at` is given (e.g. a paid month).
+    Any previously active activation is deactivated. A trial (`trial=True`)
+    ends after plan.trial_days; anything else is open-ended unless `ends_at`
+    is given (e.g. a paid month).
 
     Rules:
-    - A trial plan can be activated once per user (no restarting the clock).
-    - Paid plans need a verified payment: only billing passes `allow_paid=True`.
-    - The early-access plan no longer needs a waitlist registration; if one
-      exists for the user's email it is marked as activated.
+    - A trial is once per account, ever (`trial_used`), whichever plan it was on.
+      A later *paid* activation of the same plan is fine.
+    - Paid plans need a verified payment (billing passes `allow_paid=True`) or a trial.
+    - Starting a trial marks the owner's early-access waitlist registration (if
+      any) as activated; no registration is needed.
     """
-    if plan.requires_payment and not allow_paid:
+    if trial:
+        if not plan.trial_days:
+            raise PlanNotAllowed("This plan has no free trial.")
+        if trial_used(user):
+            raise PlanNotAllowed("You've already used this trial.")
+    elif plan.requires_payment and not allow_paid:
         raise PlanNotAllowed("This plan needs a payment. Choose it on the subscription page.")
-    if plan.trial_days and PlanActivation.objects.filter(user=user, plan=plan).exists():
-        raise PlanNotAllowed("You've already used this trial.")
 
     registration = None
-    if plan.code == Plan.EARLY_ACCESS:
+    if trial:
         registration = EAR.objects.select_for_update().filter(email=user.email.lower()).first()
 
     now = timezone.now()
     PlanActivation.objects.select_for_update().filter(user=user, is_active=True).update(
         is_active=False
     )
-    if ends_at is None and plan.trial_days:
+    if trial:
         ends_at = now + timedelta(days=plan.trial_days)
     activation = PlanActivation.objects.create(
         user=user, plan=plan, starts_at=now, ends_at=ends_at, is_active=True, source=source

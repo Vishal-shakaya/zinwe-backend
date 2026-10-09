@@ -261,12 +261,16 @@ ZINWE_DEVICE_OFFLINE_AFTER_SECONDS = 3 * ZINWE_DEVICE_HEARTBEAT_SECONDS
 
 # Manual payments (no gateway yet). Shown to owners on the subscribe page.
 # Local defaults are PLACEHOLDERS: set the real values in .env.
+# PaymentInstructions (portal-v1 §3.7). Real values live in the env only, never in code;
+# an empty paypal_url hides the PayPal option (it's for payments from outside India).
 ZINWE_PAYMENT_INSTRUCTIONS = {
-    "upi_id": env_str("ZINWE_PAYMENT_UPI_ID", "placeholder@upi"),
+    "upi_id": env_str("ZINWE_PAYMENT_UPI_ID", ""),
     "payee_name": env_str("ZINWE_PAYMENT_PAYEE_NAME", "SKYTECHNO"),
-    "bank_name": env_str("ZINWE_PAYMENT_BANK_NAME", "Placeholder Bank"),
-    "account_number": env_str("ZINWE_PAYMENT_ACCOUNT_NUMBER", "000000000000"),
-    "ifsc": env_str("ZINWE_PAYMENT_IFSC", "PLHD0000000"),
+    "bank_name": env_str("ZINWE_PAYMENT_BANK_NAME", ""),
+    "account_type": env_str("ZINWE_PAYMENT_ACCOUNT_TYPE", ""),
+    "account_number": env_str("ZINWE_PAYMENT_ACCOUNT_NUMBER", ""),
+    "ifsc": env_str("ZINWE_PAYMENT_IFSC", ""),
+    "paypal_url": env_str("ZINWE_PAYMENT_PAYPAL_URL", ""),
     "note": env_str("ZINWE_PAYMENT_NOTE", "Use your company name as the payment reference."),
 }
 ZINWE_PAYMENT_PROOF_MAX_BYTES = 5 * 1024 * 1024

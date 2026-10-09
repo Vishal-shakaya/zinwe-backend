@@ -69,7 +69,10 @@ class SubscriptionView(APIView):
         subscription = billing.current_subscription(request.user)
         return Response(
             {
-                "subscription": SubscriptionSerializer(subscription).data if subscription else None,
+                "subscription": (
+                    SubscriptionSerializer(subscription, context={"user": request.user}).data
+                    if subscription else None
+                ),
                 "instructions": billing.payment_instructions(),
             }
         )
@@ -85,7 +88,10 @@ class SubscriptionView(APIView):
             return Response({"plan": [str(exc)]}, status=status.HTTP_400_BAD_REQUEST)
         except (billing.AlreadyActive, billing.PaymentUnderReview) as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
-        return Response(SubscriptionSerializer(subscription).data, status=status.HTTP_201_CREATED)
+        return Response(
+            SubscriptionSerializer(subscription, context={"user": request.user}).data,
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class PaymentSubmitView(APIView):

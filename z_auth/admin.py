@@ -134,8 +134,11 @@ class ManualPaymentInline(admin.TabularInline):
 
 @admin.register(Subscription)
 class SubscriptionAdmin(admin.ModelAdmin):
-    list_display = ("id", "owner", "company", "plan", "status", "amount_inr", "starts_at", "ends_at", "created_at")
-    list_filter = ("status", "plan", "billing_cycle", "created_at")
+    list_display = (
+        "id", "owner", "company", "plan", "status", "is_trial", "amount_inr", "starts_at", "ends_at",
+        "created_at",
+    )
+    list_filter = ("status", "is_trial", "plan", "billing_cycle", "created_at")
     search_fields = ("owner__email", "company__name")
     raw_id_fields = ("owner", "company", "activation")
     readonly_fields = ("created_at", "updated_at")

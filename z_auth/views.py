@@ -4,6 +4,8 @@ from __future__ import annotations
 from typing import Any
 
 from rest_framework import status
+from rest_framework.authentication import TokenAuthentication
+from rest_framework.exceptions import AuthenticationFailed
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -250,13 +252,16 @@ class MeView(APIView):
         company = get_company(user)
         subscription = current_subscription(user)
         activation = user.active_plan_activation
+        ctx = {"user": user}
         return Response(
             {
                 **UserSerializer(user).data,
                 "onboarding": onboarding_state(user, company=company, subscription=subscription),
                 "company": CompanySerializer(company).data if company else None,
-                "subscription": SubscriptionSerializer(subscription).data if subscription else None,
-                "active_plan": PlanActivationSerializer(activation).data if activation else None,
+                "subscription": (
+                    SubscriptionSerializer(subscription, context=ctx).data if subscription else None
+                ),
+                "active_plan": PlanActivationSerializer(activation, context=ctx).data if activation else None,
             }
         )
 
@@ -301,14 +306,31 @@ class PasswordResetView(PublicView):
 # --- Plans ----------------------------------------------------------------------
 
 
-class PlanListView(PublicView):
-    """GET /api/auth/plans/ -- public list of active plans, by `sort_order`."""
+class OptionalTokenAuthentication(TokenAuthentication):
+    """Token auth for public pages: a missing, stale or revoked token just means anonymous."""
 
+    def authenticate(self, request: Request) -> Any:
+        try:
+            return super().authenticate(request)
+        except AuthenticationFailed:
+            return None
+
+
+class PlanListView(PublicView):
+    """
+    GET /api/auth/plans/ -- public list of active plans, by `sort_order`.
+
+    The token is optional: with a valid one, `trial_available` reflects the
+    caller's account (one free trial ever). Anonymous callers (or a stale
+    token) see every trial as available.
+    """
+
+    authentication_classes = [OptionalTokenAuthentication]
     throttle_classes: list = []
 
     def get(self, request: Request) -> Response:
         plans = Plan.objects.filter(is_active=True).order_by("sort_order", "code")
-        return Response(PlanSerializer(plans, many=True).data)
+        return Response(PlanSerializer(plans, many=True, context={"user": request.user}).data)
 
 
 class PlanActivateView(APIView):
@@ -323,8 +345,15 @@ class PlanActivateView(APIView):
     def post(self, request: Request) -> Response:
         serializer = PlanActivateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        plan = serializer.validated_data["plan"]
+        # Paid plans (even ones with a trial) are refused here; a free plan with
+        # trial_days (legacy early access) is a trial.
+        trial = bool(plan.trial_days) and not plan.requires_payment
         try:
-            activation = services.activate_plan(request.user, serializer.validated_data["plan"])
+            activation = services.activate_plan(request.user, plan, trial=trial)
         except services.PlanNotAllowed as exc:
             return Response({"plan": [str(exc)]}, status=status.HTTP_400_BAD_REQUEST)
-        return Response(PlanActivationSerializer(activation).data, status=status.HTTP_201_CREATED)
+        return Response(
+            PlanActivationSerializer(activation, context={"user": request.user}).data,
+            status=status.HTTP_201_CREATED,
+        )

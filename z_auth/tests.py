@@ -290,19 +290,59 @@ class AccountTests(APITestCase):
 
 
 class PlanTests(APITestCase):
+    """Catalogue (portal-v1 §3.6, v1.1) and the older `plans/activate/` endpoint."""
+
     def setUp(self) -> None:
         self.user = User.objects.create_user("owner@acme.in", "s3cure-Passphrase!")
         self.client.force_authenticate(self.user)
 
     def test_seeded_plans(self) -> None:
         plans = {p.code: p for p in Plan.objects.all()}
-        self.assertEqual(set(plans), {"free", "early-access", "pro"})
-        self.assertEqual(plans["early-access"].trial_days, 90)
-        # portal-v1 §3.6: Pro is live (price is a placeholder until confirmed).
-        self.assertTrue(plans["pro"].is_active)
-        self.assertEqual(str(plans["pro"].price_inr_monthly), "1999.00")
-        self.assertTrue(plans["pro"].requires_payment)
-        self.assertFalse(plans["free"].requires_payment)
+        # Legacy rows are kept (history points at them) but switched off.
+        self.assertEqual(set(plans), {"free", "startups", "businesses", "early-access", "pro"})
+        active = list(Plan.objects.filter(is_active=True).order_by("sort_order"))
+        self.assertEqual([p.code for p in active], ["free", "startups", "businesses"])
+        self.assertFalse(plans["early-access"].is_active)
+        self.assertFalse(plans["pro"].is_active)
+        self.assertFalse(plans["early-access"].is_recommended)
+
+        rows = {
+            code: (p.name, str(p.price_inr_monthly), p.trial_days, p.max_devices, p.requires_payment,
+                   p.is_recommended, p.sort_order)
+            for code, p in plans.items() if p.is_active
+        }
+        self.assertEqual(
+            rows,
+            {
+                "free": ("Free forever", "0.00", 0, 3, False, False, 10),
+                "startups": ("Startups", "999.00", 0, 10, True, False, 20),
+                "businesses": ("Businesses", "2999.00", 90, 50, True, True, 30),
+            },
+        )
+        self.assertEqual(
+            plans["free"].features,
+            ["Up to 3 PCs", "USB and file-copy alerts", "Plain-English alerts by email", "Guided setup"],
+        )
+        self.assertEqual(
+            plans["startups"].features,
+            [
+                "Up to 10 PCs",
+                "Every monitoring module: USB, remote access, software installs, LAN, email",
+                "Plain-English alerts",
+                "Email support",
+            ],
+        )
+        self.assertEqual(
+            plans["businesses"].features,
+            [
+                "Up to 50 PCs",
+                "Everything in Startups",
+                "DPDP-ready consent & activity logs",
+                "Priority support",
+            ],
+        )
+        for plan in active:
+            self.assertTrue(plan.tagline, plan.code)
 
     def test_plan_list_is_public_and_active_only(self) -> None:
         Plan.objects.create(code="legacy", name="Legacy", is_active=False)
@@ -310,15 +350,32 @@ class PlanTests(APITestCase):
         response = self.client.get("/api/auth/plans/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         codes = [p["code"] for p in response.json()]
-        self.assertEqual(codes, ["free", "early-access", "pro"])  # by sort_order
-        self.assertNotIn("legacy", codes)
+        self.assertEqual(codes, ["free", "startups", "businesses"])  # by sort_order
+        for hidden in ("legacy", "early-access", "pro"):
+            self.assertNotIn(hidden, codes)
+
+    # The older endpoint still handles free plans with trial_days (the legacy
+    # early-access plan); reopen that plan to keep covering it.
+
+    def _reopen_early_access(self) -> None:
+        Plan.objects.filter(code=Plan.EARLY_ACCESS).update(is_active=True)
 
     def _register_early_access(self, email: str = "owner@acme.in") -> EarlyAccessRegistration:
         return EarlyAccessRegistration.objects.create(
             name="Owner", email=email, company="Acme", team_size="1-10"
         )
 
-    def test_activate_trial_plan(self) -> None:
+    def test_activate_free_plan(self) -> None:
+        response = self.client.post("/api/auth/plans/activate/", {"plan": "free"}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        body = response.json()
+        self.assertEqual(body["plan"]["code"], "free")
+        self.assertIsNone(body["ends_at"])
+        self.assertIsNone(body["days_left"])
+        self.assertEqual(self.client.get("/api/auth/me/").json()["active_plan"]["plan"]["code"], "free")
+
+    def test_activate_legacy_trial_plan(self) -> None:
+        self._reopen_early_access()
         reg = self._register_early_access()
         response = self.client.post("/api/auth/plans/activate/", {"plan": "early-access"}, format="json")
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
@@ -335,6 +392,7 @@ class PlanTests(APITestCase):
         self.assertEqual(reg.status, EarlyAccessRegistration.Status.ACTIVATED)
 
     def test_early_access_no_longer_requires_registration(self) -> None:
+        self._reopen_early_access()
         other = self._register_early_access("someone-else@acme.in")
         response = self.client.post("/api/auth/plans/activate/", {"plan": "early-access"}, format="json")
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
@@ -342,16 +400,20 @@ class PlanTests(APITestCase):
         other.refresh_from_db()
         self.assertEqual(other.status, EarlyAccessRegistration.Status.PENDING)
 
-    def test_paid_plan_cannot_be_activated_without_payment(self) -> None:
-        response = self.client.post("/api/auth/plans/activate/", {"plan": "pro"}, format="json")
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertEqual(
-            response.json()["plan"],
-            ["This plan needs a payment. Choose it on the subscription page."],
-        )
+    def test_paid_plans_cannot_be_activated_here(self) -> None:
+        # Businesses has a trial, but trials of paid plans start on the subscription page.
+        for code in ("startups", "businesses"):
+            with self.subTest(code=code):
+                response = self.client.post("/api/auth/plans/activate/", {"plan": code}, format="json")
+                self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+                self.assertEqual(
+                    response.json()["plan"],
+                    ["This plan needs a payment. Choose it on the subscription page."],
+                )
         self.assertFalse(PlanActivation.objects.exists())
 
     def test_trial_cannot_be_restarted(self) -> None:
+        self._reopen_early_access()
         self._register_early_access()
         self.client.post("/api/auth/plans/activate/", {"plan": "early-access"}, format="json")
         self.client.post("/api/auth/plans/activate/", {"plan": "free"}, format="json")
@@ -362,6 +424,7 @@ class PlanTests(APITestCase):
         self.assertEqual(active.plan.code, "free")
 
     def test_only_one_active_activation(self) -> None:
+        self._reopen_early_access()
         self._register_early_access()
         self.client.post("/api/auth/plans/activate/", {"plan": "early-access"}, format="json")
         response = self.client.post("/api/auth/plans/activate/", {"plan": "free"}, format="json")
@@ -373,7 +436,7 @@ class PlanTests(APITestCase):
 
     def test_cannot_activate_inactive_or_unknown_plan(self) -> None:
         Plan.objects.create(code="legacy", name="Legacy", is_active=False)
-        for code in ("legacy", "does-not-exist"):
+        for code in ("legacy", "early-access", "pro", "does-not-exist"):
             response = self.client.post("/api/auth/plans/activate/", {"plan": code}, format="json")
             self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
             self.assertIn("plan", response.json())

@@ -2,8 +2,8 @@
 
 Django + Django REST framework API for **Zinwe** (SMB data-protection / activity
 monitoring, by SKYTECHNO, New Delhi). Pre-launch: it currently powers the
-website's early-access waitlist (full plan free for 3 months = 90 days), basic
-accounts/plans, notifications and analytics.
+website's early-access waitlist, the owner portal (accounts, company, plans with a
+3-month free Businesses trial, manual payments), devices, notifications and analytics.
 
 ## Apps
 
@@ -97,7 +97,9 @@ Never create this account on any shared or deployed environment.
 | `ZINWE_ASGI_LOG_LEVEL` | `info` |
 | `ZINWE_FORWARDED_ALLOW_IPS` | `127.0.0.1` (proxy IPs trusted for `X-Forwarded-*`) |
 | `DJANGO_MEDIA_ROOT` | `<project>/media` (payment proofs; gitignored, never served publicly) |
-| `ZINWE_PAYMENT_UPI_ID` / `_PAYEE_NAME` / `_BANK_NAME` / `_ACCOUNT_NUMBER` / `_IFSC` / `_NOTE` | placeholders (`placeholder@upi`, `SKYTECHNO`, ...); shown on the subscribe page |
+| `ZINWE_PAYMENT_UPI_ID` / `_PAYEE_NAME` / `_BANK_NAME` / `_ACCOUNT_TYPE` / `_ACCOUNT_NUMBER` / `_IFSC` | `""` (payee name: `SKYTECHNO`); real values live in `.env` only, never in code; shown on the subscribe page |
+| `ZINWE_PAYMENT_PAYPAL_URL` | `""`; PayPal link for payments from outside India (an empty value hides PayPal) |
+| `ZINWE_PAYMENT_NOTE` | `Use your company name as the payment reference.` |
 
 SQLite (`db.sqlite3`) locally, `TIME_ZONE=Asia/Kolkata`, `USE_TZ=True`.
 DRF: token + session auth, `IsAuthenticated` by default (public endpoints opt
@@ -122,9 +124,9 @@ All endpoints live under `/api/`. Admin site at `/admin/`.
 | POST | `/api/auth/password/forgot/` | public, otp scope | `{email}` -> generic 200 `{detail, resend_in}` |
 | POST | `/api/auth/password/reset/` | public, otp scope | `{email, code, new_password}` -> AuthResponse; **all old tokens revoked** |
 | GET/POST/PATCH | `/api/auth/company/` | token | the owner's single company: 404 none / 201 created / 409 already registered / 200 patched |
-| GET  | `/api/auth/plans/` | public | active plans by `sort_order` (tagline, max_devices, features, is_recommended, requires_payment) |
-| GET  | `/api/auth/subscription/` | token | `{subscription \| null, instructions}` |
-| POST | `/api/auth/subscription/` | token | `{plan}` -> 201; free/trial `active` now, paid `pending_payment` |
+| GET  | `/api/auth/plans/` | public (token optional) | active plans by `sort_order` (tagline, max_devices, features, is_recommended, requires_payment, `trial_available` for the caller) |
+| GET  | `/api/auth/subscription/` | token | `{subscription \| null, instructions}` (subscription has `is_trial`; instructions include `account_type`, `paypal_url`) |
+| POST | `/api/auth/subscription/` | token | `{plan}` -> 201; free plan or free trial `active` now, paid `pending_payment` |
 | POST | `/api/auth/subscription/payment/` | token, 10/hour/IP | **multipart** `method, amount_inr, reference, paid_on, payer_name, proof?` (JPG/PNG/PDF <= 5 MB) -> 201 `submitted` |
 | GET  | `/api/auth/subscription/payment/<id>/proof/` | token | download your own proof (staff: any) |
 | POST | `/api/auth/register/` | public | **Deprecated** (use `signup/`): `{email, password, full_name, company?, phone?}` -> `{token, user}` (201), account verified at once |
@@ -197,8 +199,15 @@ Code: `z_auth/otp.py` (codes), `services.py` (accounts), `company.py`, `billing.
 - **Sign-up** creates `is_active=False`, `email_verified_at=null`; the code activates it. Re-submitting
   sign-up for an unverified email updates name/password; inside the 60 s cooldown it returns
   `otp_sent: false` and the earlier code still works.
-- **Trials** (trial_days > 0) once per user. Early access no longer needs a waitlist row; a matching
-  one is marked `activated`.
+- **Free trial: one per account, ever** (`services.trial_used`: any `is_trial` subscription, or an
+  activation of the legacy `early-access` plan). Subscribing to a paid plan with `trial_days`
+  (Businesses, 90 days) while the trial is unused starts it at once: `active`, `is_trial`,
+  `amount_inr` 0, ends after `trial_days`, no payment step. After that, the same plan means paying
+  (`pending_payment`), and verifying that payment works normally. Starting a trial marks the owner's
+  early-access waitlist row (if any) `activated`. `GET plans/` reads the token if one is sent:
+  `trial_available` is false once the caller has used their trial (a stale token counts as anonymous).
+- **Payment methods**: UPI, bank transfer, PayPal (payments from outside India; the UI opens
+  `paypal_url`, the owner reports the PayPal transaction ID), cheque, cash.
 - An `active` subscription past `ends_at` is flipped to `expired` (and its PlanActivation switched off)
   the next time it's read, which sends the owner back to the `plan` step.
 - Throttle scopes (per IP): `auth_signup` 10/h, `auth_login` 20/h, `auth_otp` 30/h (shared by the
@@ -221,8 +230,7 @@ Code: `z_auth/otp.py` (codes), `services.py` (accounts), `company.py`, `billing.
      The payment becomes `rejected`, the subscription stays `pending_payment`, so the owner can submit again.
 3. Payments that were already reviewed are skipped with a warning.
 
-Pro's price (1999 INR/month, migration `0005_update_plan_catalogue`) is a **placeholder** until the
-founder confirms it; change it in **Plans**.
+Prices are flat monthly amounts; change them in **Plans** (subscriptions snapshot `amount_inr`).
 
 ### Devices (z-devices)
 
@@ -285,16 +293,21 @@ founder confirms it; change it in **Plans**.
 
 ## Plans
 
-Seeded by `z_auth/0002_seed_plans.py`, updated by `0005_update_plan_catalogue.py`:
+Seeded by `z_auth/0002_seed_plans.py`, updated by `0005_update_plan_catalogue.py` and
+`0006_v1_1_catalogue_trial_paypal.py` (portal v1.1, founder decision 2026-10-09):
 
-| code | name | price (INR/month) | trial_days | max PCs | requires payment | sort |
-|------|------|-------------------|------------|---------|------------------|------|
-| `free` | Free | 0 | 0 | 3 | no | 10 |
-| `early-access` | Early access (recommended) | 0 | 90 | 50 | no | 20 |
-| `pro` | Pro | 1999 (**PLACEHOLDER**, to be confirmed) | 0 | 50 | yes | 30 |
+| code | name | price (INR/month) | trial_days | max PCs | requires payment | recommended | sort |
+|------|------|-------------------|------------|---------|------------------|-------------|------|
+| `free` | Free forever | 0 | 0 | 3 | no | no | 10 |
+| `startups` | Startups | 999 | 0 | 10 | yes | no | 20 |
+| `businesses` | Businesses | 2999 | 90 (free trial, once per account) | 50 | yes | yes | 30 |
 
-Activating a plan deactivates the user's previous active plan. Plans with
-`trial_days > 0` get `ends_at = now + trial_days`; others are open-ended.
+The old `early-access` (free, 90-day trial) and `pro` plans are `is_active=False`; their rows stay
+because subscriptions and activations point at them. Feature lines and taglines are seeded and
+editable in admin.
+
+Activating a plan deactivates the user's previous active plan. A trial ends after `trial_days`,
+a verified payment after one month; the free plan is open-ended.
 
 ## Notifications
 

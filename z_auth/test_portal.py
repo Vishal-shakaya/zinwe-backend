@@ -9,6 +9,7 @@ from pathlib import Path
 
 from django.core import mail
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.template.defaultfilters import date as date_filter
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework import status
@@ -44,7 +45,7 @@ TEAM = "team@zinwe.test"
 def payment_form(**overrides):  # type: ignore[no-untyped-def]
     data = {
         "method": "upi",
-        "amount_inr": "1999",
+        "amount_inr": "999",
         "reference": "UTR123456",
         "paid_on": timezone.localdate().isoformat(),
         "payer_name": "Asha Verma",
@@ -175,22 +176,61 @@ class PlanListTests(PortalTestCase):
         response = self.get(PLANS_URL)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         plans = {p["code"]: p for p in response.json()}
-        self.assertEqual(list(plans), ["free", "early-access", "pro"])
+        self.assertEqual(list(plans), ["free", "startups", "businesses"])
         self.assertEqual(
-            plans["pro"],
+            plans["businesses"],
             {
-                "code": "pro", "name": "Pro", "tagline": "Everything, for growing teams",
-                "price_inr_monthly": "1999.00", "trial_days": 0, "max_devices": 50,
-                "features": plans["pro"]["features"], "is_recommended": False,
-                "requires_payment": True, "sort_order": 30,
+                "code": "businesses", "name": "Businesses", "tagline": plans["businesses"]["tagline"],
+                "price_inr_monthly": "2999.00", "trial_days": 90, "max_devices": 50,
+                "features": plans["businesses"]["features"], "is_recommended": True,
+                "requires_payment": True, "sort_order": 30, "trial_available": True,
             },
         )
-        self.assertTrue(plans["pro"]["features"])
+        self.assertTrue(plans["businesses"]["tagline"])
+        # The trial is a badge driven by trial_available, never a static feature line.
+        self.assertNotIn("First 3 months free", plans["businesses"]["features"])
+        self.assertEqual(len(plans["businesses"]["features"]), 4)
+        self.assertEqual(plans["free"]["name"], "Free forever")
         self.assertEqual(plans["free"]["max_devices"], 3)
         self.assertFalse(plans["free"]["requires_payment"])
-        self.assertTrue(plans["early-access"]["is_recommended"])
-        self.assertEqual(plans["early-access"]["trial_days"], 90)
-        self.assertEqual(plans["early-access"]["name"], "Early access")
+        self.assertFalse(plans["free"]["trial_available"])
+        self.assertEqual(
+            (plans["startups"]["price_inr_monthly"], plans["startups"]["max_devices"]), ("999.00", 10)
+        )
+        self.assertTrue(plans["startups"]["requires_payment"])
+        self.assertFalse(plans["startups"]["trial_available"])  # no trial on Startups
+        self.assertFalse(plans["startups"]["is_recommended"])
+
+    def trial_available(self) -> bool:
+        plans = {p["code"]: p for p in self.get(PLANS_URL).json()}
+        return plans["businesses"]["trial_available"]
+
+    def test_trial_available_anonymous(self) -> None:
+        self.assertTrue(self.trial_available())
+
+    def test_trial_available_until_used(self) -> None:
+        user = self.make_owner()  # client now sends the token
+        self.make_company(user)
+        self.assertTrue(self.trial_available())
+        self.post(SUB_URL, {"plan": "businesses"})
+        self.assertFalse(self.trial_available())
+        # Nested plans in the owner's own subscription agree.
+        self.assertFalse(self.get(SUB_URL).json()["subscription"]["plan"]["trial_available"])
+        self.assertFalse(self.get(ME).json()["subscription"]["plan"]["trial_available"])
+        # Still public: other visitors see the trial.
+        self.use_token(None)
+        self.assertTrue(self.trial_available())
+
+    def test_legacy_early_access_counts_as_trial_used(self) -> None:
+        user = self.make_owner()
+        PlanActivation.objects.create(user=user, plan=Plan.objects.get(code=Plan.EARLY_ACCESS), is_active=False)
+        self.assertFalse(self.trial_available())
+
+    def test_stale_token_is_treated_as_anonymous(self) -> None:
+        self.use_token("0" * 40)
+        response = self.get(PLANS_URL)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue({p["code"]: p for p in response.json()}["businesses"]["trial_available"])
 
 
 # --- Subscription -----------------------------------------------------------------
@@ -215,8 +255,22 @@ class SubscriptionTests(PortalTestCase):
         body = response.json()
         self.assertIsNone(body["subscription"])
         self.assertEqual(
-            set(body["instructions"]), {"upi_id", "payee_name", "bank_name", "account_number", "ifsc", "note"}
+            set(body["instructions"]),
+            {"upi_id", "payee_name", "bank_name", "account_type", "account_number", "ifsc", "paypal_url", "note"},
         )
+
+    @override_settings(
+        ZINWE_PAYMENT_INSTRUCTIONS={
+            "upi_id": "acme@okbank", "payee_name": "SKYTECHNO", "bank_name": "Test Bank",
+            "account_type": "Current", "account_number": "123456789012", "ifsc": "TEST0001234",
+            "paypal_url": "https://paypal.me/zinwetest", "note": "Use your company name.",
+        }
+    )
+    def test_instructions_include_account_type_and_paypal(self) -> None:
+        instructions = self.get(SUB_URL).json()["instructions"]
+        self.assertEqual(instructions["account_type"], "Current")
+        self.assertEqual(instructions["paypal_url"], "https://paypal.me/zinwetest")
+        self.assertEqual(instructions["account_number"], "123456789012")
 
     def test_company_required(self) -> None:
         self.company.delete()
@@ -237,66 +291,125 @@ class SubscriptionTests(PortalTestCase):
         self.assertIsNotNone(body["starts_at"])
         self.assertIsNone(body["ends_at"])
         self.assertIsNone(body["latest_payment"])
+        self.assertFalse(body["is_trial"])
         activation = PlanActivation.objects.get(user=self.user, is_active=True)
         self.assertEqual(activation.plan.code, "free")
         self.assertEqual(Subscription.objects.get().activation, activation)
-        self.assertEqual([m.subject for m in mail.outbox], ["Your Zinwe Free plan is active"])
+        self.assertEqual([m.subject for m in mail.outbox], ["Your Zinwe Free forever plan is active"])
         self.assertEqual(self.step(), "complete")
         self.assertEqual(self.get(SUB_URL).json()["subscription"]["id"], body["id"])
 
-    def test_trial_plan_ends_after_trial_days_and_marks_registration(self) -> None:
+    def test_businesses_starts_as_free_trial(self) -> None:
         reg = EarlyAccessRegistration.objects.create(
             name="Asha", email="owner@acme.in", company="Acme", team_size="1-10"
         )
-        body = self.subscribe("early-access").json()
+        response = self.subscribe("businesses")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.content)
+        body = response.json()
         self.assertEqual(body["status"], "active")
+        self.assertTrue(body["is_trial"])
+        self.assertEqual(body["amount_inr"], "0.00")
+        self.assertEqual(body["plan"]["code"], "businesses")
+        self.assertIsNone(body["latest_payment"])
         ends_at = datetime.fromisoformat(body["ends_at"])
         self.assertLess(abs((ends_at - (timezone.now() + timedelta(days=90))).total_seconds()), 60)
+
+        subscription = Subscription.objects.get()
+        activation = PlanActivation.objects.get(user=self.user, is_active=True)
+        self.assertEqual((activation.plan.code, activation.source), ("businesses", "trial"))
+        self.assertEqual(subscription.activation, activation)
+        self.assertEqual(activation.ends_at, subscription.ends_at)
         reg.refresh_from_db()
         self.assertEqual(reg.status, "activated")
-        self.assertIn("free until", mail.outbox[0].body)
 
-    def test_trial_can_be_used_once(self) -> None:
-        self.subscribe("early-access")
+        self.assertEqual(len(mail.outbox), 1)
+        email = mail.outbox[0]
+        self.assertEqual(email.subject, "Your free Zinwe Businesses trial has started")
+        self.assertIn("Your free 3-month trial of Businesses has started", email.body)
+        self.assertIn(f"It ends on {date_filter(timezone.localtime(subscription.ends_at), 'j F Y')}.", email.body)
+        self.assertNotIn("Paid until", email.body)
+        self.assertEqual(self.step(), "complete")
+        self.assertTrue(Event.objects.filter(name="subscription.created", properties__is_trial=True).exists())
+
+    def test_trial_is_once_per_account(self) -> None:
+        self.subscribe("businesses")
         Subscription.objects.update(ends_at=timezone.now() - timedelta(seconds=1))  # trial over
         self.assertEqual(self.get(SUB_URL).json()["subscription"]["status"], "expired")
         self.assertFalse(PlanActivation.objects.filter(is_active=True).exists())
         self.assertEqual(self.step(), "plan")
 
-        response = self.subscribe("early-access")
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertEqual(response.json(), {"plan": ["You've already used this trial."]})
-        self.assertEqual(self.subscribe("free").status_code, status.HTTP_201_CREATED)
-
-    def test_paid_plan_waits_for_payment(self) -> None:
-        response = self.subscribe("pro")
+        mail.outbox.clear()
+        response = self.subscribe("businesses")  # now it means paying
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         body = response.json()
         self.assertEqual(body["status"], "pending_payment")
-        self.assertEqual(body["amount_inr"], "1999.00")
+        self.assertFalse(body["is_trial"])
+        self.assertEqual(body["amount_inr"], "2999.00")
+        self.assertIsNone(body["starts_at"])
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertEqual(self.step(), "payment")
+        self.assertEqual(Subscription.objects.filter(is_trial=True).count(), 1)
+
+    def test_legacy_early_access_activation_counts_as_trial_used(self) -> None:
+        PlanActivation.objects.create(
+            user=self.user, plan=Plan.objects.get(code=Plan.EARLY_ACCESS), is_active=False
+        )
+        body = self.subscribe("businesses").json()
+        self.assertEqual(body["status"], "pending_payment")
+        self.assertFalse(body["is_trial"])
+        self.assertEqual(body["amount_inr"], "2999.00")
+
+    def test_legacy_free_trial_plan_can_be_used_once(self) -> None:
+        # A free plan with trial_days (the old early-access shape) is a trial too.
+        Plan.objects.filter(code=Plan.EARLY_ACCESS).update(is_active=True)
+        body = self.subscribe("early-access").json()
+        self.assertEqual((body["status"], body["is_trial"]), ("active", True))
+        self.assertIn("Your free 3-month trial of Early access has started", mail.outbox[0].body)
+        Subscription.objects.update(ends_at=timezone.now() - timedelta(seconds=1))
+        self.get(SUB_URL)  # expires it
+
+        response = self.subscribe("early-access")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.json(), {"plan": ["You've already used this trial."]})
+        # ...and the trial on Businesses is gone too: one trial per account.
+        self.assertEqual(self.subscribe("businesses").json()["status"], "pending_payment")
+
+    def test_startups_waits_for_payment(self) -> None:
+        response = self.subscribe("startups")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        body = response.json()
+        self.assertEqual(body["status"], "pending_payment")
+        self.assertFalse(body["is_trial"])
+        self.assertEqual(body["amount_inr"], "999.00")
         self.assertIsNone(body["starts_at"])
         self.assertFalse(PlanActivation.objects.exists())
         self.assertEqual(len(mail.outbox), 0)
         self.assertEqual(self.step(), "payment")
 
     def test_pending_subscription_is_replaced(self) -> None:
-        first = self.subscribe("pro").json()
-        second = self.subscribe("pro").json()
+        first = self.subscribe("startups").json()
+        second = self.subscribe("startups").json()
         self.assertNotEqual(first["id"], second["id"])
         self.assertEqual(Subscription.objects.get(pk=first["id"]).status, "cancelled")
-        third = self.subscribe("free").json()
-        self.assertEqual(third["status"], "active")
+        third = self.subscribe("businesses").json()  # pending -> trial is fine
+        self.assertEqual((third["status"], third["is_trial"]), ("active", True))
         self.assertEqual(Subscription.objects.get(pk=second["id"]).status, "cancelled")
 
     def test_active_subscription_conflicts(self) -> None:
         self.subscribe("free")
-        response = self.subscribe("pro")
-        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
-        self.assertIn("detail", response.json())
+        for code in ("startups", "businesses"):
+            response = self.subscribe(code)
+            self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+            self.assertIn("detail", response.json())
+
+    def test_active_trial_conflicts(self) -> None:
+        self.subscribe("businesses")
+        self.assertEqual(self.subscribe("free").status_code, status.HTTP_409_CONFLICT)
 
     def test_unknown_or_inactive_plan(self) -> None:
         Plan.objects.create(code="legacy", name="Legacy", is_active=False)
-        for code in ("legacy", "nope"):
+        for code in ("legacy", "pro", "early-access", "nope"):
             response = self.subscribe(code)
             self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
             self.assertEqual(response.json(), {"plan": ["That plan doesn't exist or isn't available."]})
@@ -317,7 +430,7 @@ class PaymentTests(MediaMixin, PortalTestCase):
         super().setUp()
         self.user = self.make_owner()
         self.make_company(self.user)
-        self.subscription_id = self.post(SUB_URL, {"plan": "pro"}).json()["id"]
+        self.subscription_id = self.post(SUB_URL, {"plan": "startups"}).json()["id"]
 
     def pay(self, proof: SimpleUploadedFile | None = None, **overrides):  # type: ignore[no-untyped-def]
         data = payment_form(**overrides)
@@ -334,7 +447,7 @@ class PaymentTests(MediaMixin, PortalTestCase):
         self.assertEqual(
             body,
             {
-                "id": payment.id, "method": "upi", "amount_inr": "1999.00", "reference": "UTR123456",
+                "id": payment.id, "method": "upi", "amount_inr": "999.00", "reference": "UTR123456",
                 "paid_on": timezone.localdate().isoformat(), "payer_name": "Asha Verma",
                 "status": "submitted", "rejection_reason": "", "has_proof": True,
                 "submitted_at": body["submitted_at"], "reviewed_at": None,
@@ -385,7 +498,7 @@ class PaymentTests(MediaMixin, PortalTestCase):
 
     def test_field_validation(self) -> None:
         tomorrow = (timezone.localdate() + timedelta(days=1)).isoformat()
-        response = self.pay(method="paypal", amount_inr="0", paid_on=tomorrow, reference="", payer_name=None)
+        response = self.pay(method="crypto", amount_inr="0", paid_on=tomorrow, reference="", payer_name=None)
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         body = response.json()
         self.assertEqual(body["method"], ["Pick one option."])
@@ -394,6 +507,16 @@ class PaymentTests(MediaMixin, PortalTestCase):
         self.assertEqual(body["reference"], ["This field is required."])
         self.assertEqual(body["payer_name"], ["This field is required."])
         self.assertEqual(self.pay(paid_on="09/10/2026").json()["paid_on"], ["Enter the date as YYYY-MM-DD."])
+
+    def test_paypal_is_accepted(self) -> None:
+        response = self.pay(method="paypal", reference="8AB12345CD678901E")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.content)
+        self.assertEqual(response.json()["method"], "paypal")
+        self.assertEqual(ManualPayment.objects.get().get_method_display(), "PayPal")
+        alert = mail.outbox[0]
+        self.assertIn("(PayPal)", alert.subject)
+        self.assertIn("999.00 INR by PayPal", alert.body)
+        self.assertIn("by PayPal", alert.alternatives[0][0])
 
     def test_one_payment_under_review_at_a_time(self) -> None:
         self.pay()
@@ -459,7 +582,7 @@ class AdminReviewTests(MediaMixin, PortalTestCase):
         super().setUp()
         self.owner = self.make_owner()
         self.make_company(self.owner)
-        self.post(SUB_URL, {"plan": "pro"})
+        self.post(SUB_URL, {"plan": "startups"})
         self.payment_id = self.post(
             PAY_URL, {**payment_form(), "proof": SimpleUploadedFile("r.png", PNG)}, fmt="multipart"
         ).json()["id"]
@@ -495,20 +618,49 @@ class AdminReviewTests(MediaMixin, PortalTestCase):
         self.assertEqual(sub.ends_at, add_months(sub.starts_at, 1))
         self.assertLess(abs((sub.starts_at - timezone.now()).total_seconds()), 60)
         activation = PlanActivation.objects.get(user=self.owner, is_active=True)
-        self.assertEqual((activation.plan.code, activation.source), ("pro", "manual-payment"))
+        self.assertEqual((activation.plan.code, activation.source), ("startups", "manual-payment"))
         self.assertEqual(activation.ends_at, sub.ends_at)
         self.assertEqual(sub.activation, activation)
 
         self.assertEqual(len(mail.outbox), 1)
         self.assertEqual(mail.outbox[0].to, ["owner@acme.in"])
-        self.assertEqual(mail.outbox[0].subject, "Your Zinwe Pro plan is active")
+        self.assertEqual(mail.outbox[0].subject, "Your Zinwe Startups plan is active")
         self.assertIn("Paid until", mail.outbox[0].body)
         self.assertTrue(Event.objects.filter(name="payment.verified").exists())
 
         me = self.owner_view(ME)
         self.assertEqual(me["onboarding"], {"step": "complete", "has_company": True, "subscription_status": "active"})
-        self.assertEqual(me["active_plan"]["plan"]["code"], "pro")
+        self.assertEqual(me["active_plan"]["plan"]["code"], "startups")
+        self.assertFalse(me["subscription"]["is_trial"])
         self.assertEqual(me["subscription"]["latest_payment"]["status"], "verified")
+
+    def test_verify_businesses_after_trial(self) -> None:
+        """The one-trial rule must not block paying for the plan the trial was on."""
+        self.client.logout()  # drop the admin session (also clears credentials)
+        other = self.make_owner("trial@acme.in")  # client now uses this owner's token
+        self.make_company(other)
+        self.post(SUB_URL, {"plan": "businesses"})  # free trial
+        Subscription.objects.filter(owner=other).update(ends_at=timezone.now() - timedelta(seconds=1))
+        again = self.post(SUB_URL, {"plan": "businesses"})
+        self.assertEqual(again.json().get("status"), "pending_payment", again.content)
+        payment_id = self.post(
+            PAY_URL, payment_form(amount_inr="2999", method="bank_transfer"), fmt="multipart"
+        ).json()["id"]
+        self.use_token(None)
+        self.client.force_login(self.admin)
+        mail.outbox.clear()
+        with self.captureOnCommitCallbacks(execute=True):
+            self.client.post(ADMIN_PAYMENTS, {"action": "verify_payments", "_selected_action": [payment_id]})
+
+        self.assertEqual(ManualPayment.objects.get(pk=payment_id).status, "verified")
+        paid = Subscription.objects.get(owner=other, status="active")
+        self.assertEqual((paid.plan.code, paid.is_trial, str(paid.amount_inr)), ("businesses", False, "2999.00"))
+        self.assertEqual(paid.ends_at, add_months(paid.starts_at, 1))
+        activation = PlanActivation.objects.get(user=other, is_active=True)
+        self.assertEqual((activation.plan.code, activation.source), ("businesses", "manual-payment"))
+        self.assertEqual(PlanActivation.objects.filter(user=other, plan__code="businesses").count(), 2)
+        self.assertEqual(mail.outbox[0].subject, "Your Zinwe Businesses plan is active")
+        self.assertIn("Paid until", mail.outbox[0].body)
 
     def test_verify_keeps_one_active_plan(self) -> None:
         PlanActivation.objects.create(user=self.owner, plan=Plan.objects.get(code="free"))
@@ -605,7 +757,7 @@ class JourneyTests(MediaMixin, PortalTestCase):
     def test_signup_to_paid_plan_with_admin_verification(self) -> None:
         self.signup_and_verify()
         self.post(COMPANY_URL, COMPANY)
-        self.post(SUB_URL, {"plan": "pro"})
+        self.post(SUB_URL, {"plan": "startups"})
         self.assertEqual(self.step()["step"], "payment")
         response = self.post(
             PAY_URL, {**payment_form(), "proof": SimpleUploadedFile("r.jpg", JPG)}, fmt="multipart"
@@ -625,7 +777,19 @@ class JourneyTests(MediaMixin, PortalTestCase):
         self.client.logout()
         self.client.credentials(HTTP_AUTHORIZATION=token)
         self.assertEqual(self.step(), {"step": "complete", "has_company": True, "subscription_status": "active"})
-        self.assertIn("Your Zinwe Pro plan is active", [m.subject for m in mail.outbox])
+        self.assertIn("Your Zinwe Startups plan is active", [m.subject for m in mail.outbox])
+
+    def test_signup_to_businesses_trial(self) -> None:
+        self.signup_and_verify()
+        self.post(COMPANY_URL, COMPANY)
+        plans = {p["code"]: p for p in self.get(PLANS_URL).json()}
+        self.assertTrue(plans["businesses"]["trial_available"])
+        body = self.post(SUB_URL, {"plan": "businesses"}).json()
+        self.assertEqual((body["status"], body["is_trial"], body["amount_inr"]), ("active", True, "0.00"))
+        self.assertEqual(self.step(), {"step": "complete", "has_company": True, "subscription_status": "active"})
+        plans = {p["code"]: p for p in self.get(PLANS_URL).json()}
+        self.assertFalse(plans["businesses"]["trial_available"])
+        self.assertIn("Your free Zinwe Businesses trial has started", [m.subject for m in mail.outbox])
 
     def test_otp_login_and_password_reset_route_by_step(self) -> None:
         self.signup_and_verify()

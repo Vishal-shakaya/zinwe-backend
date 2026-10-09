@@ -1,7 +1,7 @@
 """
 Subscriptions and manual payments (no payment gateway yet).
 
-Flow: `subscribe()` -> free/trial plans go `active` at once; paid plans wait in
+Flow: `subscribe()` -> free plans and free trials go `active` at once; paid plans wait in
 `pending_payment` -> the owner reports a payment (`submit_payment()`) -> staff
 `verify_payment()` (active for one month) or `reject_payment()` (owner resubmits).
 """
@@ -20,7 +20,7 @@ from z_analytics.services import track
 from z_notification.services import notify
 
 from .models import Company, ManualPayment, Plan, PlanActivation, Subscription, User
-from .services import PlanNotAllowed, activate_plan
+from .services import PlanNotAllowed, activate_plan, starts_as_trial
 
 Status = Subscription.Status
 PaymentStatus = ManualPayment.Status
@@ -102,7 +102,10 @@ def has_payment_under_review(subscription: Subscription) -> bool:
 
 
 def payment_instructions() -> dict[str, str]:
-    """Where to send money (settings / env; placeholders locally)."""
+    """
+    PaymentInstructions (portal-v1 §3.7): UPI, bank account, PayPal link, note.
+    Real values come from the env (`ZINWE_PAYMENT_*`); an empty `paypal_url` hides PayPal.
+    """
     return dict(settings.ZINWE_PAYMENT_INSTRUCTIONS)
 
 
@@ -114,10 +117,15 @@ def subscribe(user: User, plan: Plan) -> Subscription:
     """
     Start a subscription to `plan`.
 
-    Free / trial plans are `active` at once (with a PlanActivation). Paid plans
-    are `pending_payment`. An existing `pending_payment` subscription is
-    replaced (cancelled). Raises `CompanyRequired`, `AlreadyActive`,
-    `PaymentUnderReview` or `PlanNotAllowed` (e.g. a trial used before).
+    - Free trial (plan has trial_days and the account hasn't used its one trial,
+      see `services.starts_as_trial`): `active` at once, `is_trial`, amount 0,
+      ends after trial_days. No payment step.
+    - Other paid plans: `pending_payment` until staff verify a payment.
+    - Free plans: `active` at once, open-ended.
+
+    An existing `pending_payment` subscription is replaced (cancelled). Raises
+    `CompanyRequired`, `AlreadyActive`, `PaymentUnderReview` or `PlanNotAllowed`
+    (a legacy free trial plan whose trial was used before).
     """
     company = Company.objects.filter(owner=user).first()
     if company is None:
@@ -132,23 +140,27 @@ def subscribe(user: User, plan: Plan) -> Subscription:
         current.save(update_fields=["status", "updated_at"])
 
     now = timezone.now()
-    if plan.requires_payment:
+    is_trial = starts_as_trial(user, plan)
+    if plan.requires_payment and not is_trial:
         subscription = Subscription.objects.create(
             owner=user, company=company, plan=plan, status=Status.PENDING_PAYMENT,
             amount_inr=plan.price_inr_monthly, created_at=now,
         )
     else:
-        activation = activate_plan(user, plan, source="subscription")
+        activation = activate_plan(
+            user, plan, source="trial" if is_trial else "subscription", trial=is_trial
+        )
         subscription = Subscription.objects.create(
             owner=user, company=company, plan=plan, status=Status.ACTIVE,
-            amount_inr=plan.price_inr_monthly, starts_at=activation.starts_at,
-            ends_at=activation.ends_at, activation=activation, created_at=now,
+            amount_inr=0 if is_trial else plan.price_inr_monthly, is_trial=is_trial,
+            starts_at=activation.starts_at, ends_at=activation.ends_at,
+            activation=activation, created_at=now,
         )
         transaction.on_commit(lambda: _send_subscription_active(subscription))
     transaction.on_commit(
         lambda: track(
             "subscription.created",
-            {"plan": plan.code, "status": subscription.status},
+            {"plan": plan.code, "status": subscription.status, "is_trial": subscription.is_trial},
             actor_email=user.email,
             ref=subscription,
         )
@@ -299,6 +311,13 @@ def _after_payment_rejected(payment: ManualPayment) -> None:
     )
 
 
+def trial_length(days: int) -> str:
+    """90 -> "3-month", 14 -> "14-day" (for "Your free 3-month trial ...")."""
+    if days and days % 30 == 0:
+        return f"{days // 30}-month"
+    return f"{days}-day"
+
+
 def _send_subscription_active(subscription: Subscription) -> None:
     owner = subscription.owner
     notify(
@@ -309,7 +328,8 @@ def _send_subscription_active(subscription: Subscription) -> None:
             "first_name": owner.get_short_name() if owner.full_name else "there",
             "plan": subscription.plan,
             "subscription": subscription,
-            "is_trial": bool(subscription.plan.trial_days) and not subscription.plan.requires_payment,
+            "is_trial": subscription.is_trial,
+            "trial_length": trial_length(subscription.plan.trial_days),
         },
         ref=subscription,
     )

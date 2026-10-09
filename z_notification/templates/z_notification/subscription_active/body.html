@@ -3,10 +3,11 @@
 <body style="margin:0;padding:24px;background:#f6f7f9;font-family:Segoe UI,Arial,sans-serif;color:#1d2433;">
   <div style="max-width:560px;margin:0 auto;background:#ffffff;border-radius:8px;padding:28px;">
     <p style="margin:0 0 16px;">Hi {{ first_name }},</p>
-    <p style="margin:0 0 16px;">Your <strong>{{ plan.name }}</strong> plan is now active.</p>
-{% if is_trial %}    <p style="margin:0 0 16px;">It's free until <strong>{{ subscription.ends_at|date:"j F Y" }}</strong> ({{ plan.trial_days }} days).</p>
-{% elif subscription.ends_at %}    <p style="margin:0 0 16px;">Paid until <strong>{{ subscription.ends_at|date:"j F Y" }}</strong>. Thank you for your payment.</p>
-{% endif %}
+{% if is_trial %}    <p style="margin:0 0 16px;">Your free {{ trial_length }} trial of <strong>{{ plan.name }}</strong> has started. It ends on <strong>{{ subscription.ends_at|date:"j F Y" }}</strong>.</p>
+    <p style="margin:0 0 16px;">No payment is needed until then.</p>
+{% else %}    <p style="margin:0 0 16px;">Your <strong>{{ plan.name }}</strong> plan is now active.</p>
+{% if subscription.ends_at %}    <p style="margin:0 0 16px;">Paid until <strong>{{ subscription.ends_at|date:"j F Y" }}</strong>. Thank you for your payment.</p>
+{% endif %}{% endif %}
 {% if plan.max_devices %}    <p style="margin:0 0 16px;">It covers up to {{ plan.max_devices }} PCs.</p>
 {% endif %}
     <p style="margin:0 0 16px;">Next step: install the Zinwe agent on your team's PCs from your dashboard.</p>

@@ -11,6 +11,7 @@ from rest_framework import serializers
 
 from .models import EarlyAccessRegistration as EAR
 from .models import OneTimeCode, Plan, PlanActivation, User
+from .services import trial_available
 
 REQUIRED = "This field is required."
 PICK_ONE = "Pick one option."
@@ -244,15 +245,24 @@ class PasswordResetSerializer(EmailCodeSerializer):
 
 
 class PlanSerializer(serializers.ModelSerializer):
+    """
+    Plan (portal-v1 §3.6). `trial_available` is per caller: pass the user as
+    `context={"user": ...}`; without one (or anonymous) every trial counts as available.
+    """
+
     requires_payment = serializers.BooleanField(read_only=True)
+    trial_available = serializers.SerializerMethodField()
 
     class Meta:
         model = Plan
         fields = (
             "code", "name", "tagline", "price_inr_monthly", "trial_days", "max_devices",
-            "features", "is_recommended", "requires_payment", "sort_order",
+            "features", "is_recommended", "requires_payment", "sort_order", "trial_available",
         )
         read_only_fields = fields
+
+    def get_trial_available(self, obj: Plan) -> bool:
+        return trial_available(obj, self.context.get("user"))
 
 
 class PlanActivationSerializer(serializers.ModelSerializer):
