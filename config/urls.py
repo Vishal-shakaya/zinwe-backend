@@ -8,6 +8,7 @@ urlpatterns = [
     path("api/auth/", include("z_auth.urls")),
     path("api/analytics/", include("z_analytics.urls")),
     path("api/devices/", include("z_devices.urls")),
+    path("api/admin/", include("z_adminapi.urls")),
 ]
 
 admin.site.site_header = "Zinwe admin"

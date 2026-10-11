@@ -1,0 +1,16 @@
+{% autoescape off %}Hi {{ first_name }},
+
+Your {{ plan.name }} plan{% if company %} for {{ company.name }}{% endif %} is paid until {{ subscription.ends_at|date:"j F Y" }}{% if days_left <= 0 %}, which is today{% elif days_left == 1 %}, which is tomorrow{% else %}, {{ days_left }} days from now{% endif %}.
+
+To keep your PCs protected without a break, renew from Billing in your dashboard and send the payment reference ({{ subscription.amount_inr|floatformat:0 }} INR for one more month):
+{{ billing_url }}
+
+You can pay early: the new month starts when the current one ends, so you don't lose any days.
+
+If the plan ends, alerts pause until it's renewed. Your devices, rules and history stay saved.
+
+Questions? Just reply to this email.
+
+The Zinwe team
+SKYTECHNO, New Delhi
+{% endautoescape %}

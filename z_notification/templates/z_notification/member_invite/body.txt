@@ -1,0 +1,18 @@
+{% autoescape off %}Hi {{ first_name }},
+
+{{ company }} uses Zinwe to protect company data on work PCs. Please set it up on your PC — it takes about two minutes and needs no technical know-how.
+
+1. Download Zinwe:
+   {{ download_url }}
+2. Run the installer.
+3. Open Zinwe, then on the "Connect this PC" screen enter:
+     Work email: {{ member_email }}
+     Member ID:  {{ member_id }}
+
+That's it — your PC will show as connected to your admin. Keep your Member ID private, like a password.
+
+Zinwe protects company data. It does not record your keystrokes or take screenshots.
+
+The Zinwe team
+SKYTECHNO, New Delhi
+{% endautoescape %}

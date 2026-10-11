@@ -6,6 +6,7 @@ and falls back to a safe *local development* default. See `.env.example`.
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -36,6 +37,18 @@ def env_list(name: str, default: str) -> list[str]:
     return [item.strip() for item in env_str(name, default).split(",") if item.strip()]
 
 
+def env_json_list(name: str) -> list:
+    """Parse an env var holding a JSON array; returns [] when unset or malformed."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return []
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return []
+    return value if isinstance(value, list) else []
+
+
 # --- Core -------------------------------------------------------------------
 
 # INSECURE local-dev fallback. Never used in a real deployment: set DJANGO_SECRET_KEY.
@@ -63,6 +76,7 @@ INSTALLED_APPS = [
     "z_notification",
     "z_main",
     "z_devices",
+    "z_adminapi",
 ]
 
 MIDDLEWARE = [
@@ -213,7 +227,9 @@ REST_FRAMEWORK = {
         "auth_signup": "10/hour",
         "auth_login": "20/hour",
         "auth_otp": "30/hour",
+        "alert_email": "60/hour",
         "payment_submit": "10/hour",
+        "feedback": "20/hour",
     },
     # Adds `retry_after` (seconds) to every 429 body.
     "EXCEPTION_HANDLER": "z_main.exceptions.exception_handler",
@@ -255,10 +271,31 @@ EMAIL_FILE_PATH = env_str("EMAIL_FILE_PATH", str(BASE_DIR / "sent-emails"))
 
 ZINWE_VERSION = "0.1.0"
 ZINWE_TEAM_NOTIFY_EMAIL = env_str("ZINWE_TEAM_NOTIFY_EMAIL", "hello@zinwe.io")
-ZINWE_EARLY_ACCESS_TRIAL_DAYS = 90
+# The customer website/dashboard, for links in emails (prod: https://zinwe.io).
+ZINWE_APP_URL = env_str("ZINWE_APP_URL", "http://localhost:5173").rstrip("/")
+# Renewal reminders (z_auth.renewals): days before a paid plan ends, each sent once per period.
+ZINWE_RENEWAL_REMINDER_DAYS = (7, 1)
+# "How are we doing?" emails (z_auth.feedback_requests): first ask after N days, then at most every M days.
+ZINWE_FEEDBACK_REQUEST_AFTER_DAYS = 14
+ZINWE_FEEDBACK_REQUEST_EVERY_DAYS = 90
+# Early access now starts on Free forever (no time-limited trial since v1.2).
+ZINWE_EARLY_ACCESS_TRIAL_DAYS = 0
 # Agent heartbeat cadence; a device is "offline" after 3 missed beats.
 ZINWE_DEVICE_HEARTBEAT_SECONDS = 60
 ZINWE_DEVICE_OFFLINE_AFTER_SECONDS = 3 * ZINWE_DEVICE_HEARTBEAT_SECONDS
+# Where members download the Windows agent; included in the invite email when a member is added.
+ZINWE_AGENT_DOWNLOAD_URL = env_str("ZINWE_AGENT_DOWNLOAD_URL", "https://zinwe.io/download")
+# Forced upgrade (M12): the minimum agent version allowed to keep working. An agent
+# reporting an older version gets `update_required` + the download link on heartbeat,
+# and pauses the employee's work until it's updated. Empty = no minimum (nothing forced).
+ZINWE_AGENT_MIN_VERSION = env_str("ZINWE_AGENT_MIN_VERSION", "")
+
+# Dashboard notification-bar announcements (M11): the version/offer banners the
+# Zinwe team sets per environment, as a JSON array of
+# {id, kind: "version"|"offer", title, body?, cta_label?, cta_href?, dismissible?}.
+# The "upgrade" nudge is derived live from the owner's plan, not configured here.
+# z_auth.announcements validates and drops malformed entries.
+ZINWE_ANNOUNCEMENTS = env_json_list("ZINWE_ANNOUNCEMENTS")
 
 # Manual payments (no gateway yet). Shown to owners on the subscribe page.
 # Local defaults are PLACEHOLDERS: set the real values in .env.
@@ -274,8 +311,9 @@ ZINWE_PAYMENT_INSTRUCTIONS = {
     "paypal_url": env_str("ZINWE_PAYMENT_PAYPAL_URL", ""),
     "note": env_str("ZINWE_PAYMENT_NOTE", "Use your company name as the payment reference."),
 }
-# Logo shown at the top of HTML emails. Must be a public https URL (mail clients can't
-# reach localhost), e.g. https://zinwe.io/brand/zinwe-logo-64.png. Empty = text wordmark.
+# Logo at the top of every HTML email: a public https URL once deployed (e.g.
+# https://zinwe.io/brand/zinwe-logo-96.png). Empty (default) = the wordmark in text, same colours.
+# Never attach it inline: Gmail accepted and then silently dropped those emails (2026-10-11).
 ZINWE_EMAIL_LOGO_URL = env_str("ZINWE_EMAIL_LOGO_URL", "")
 ZINWE_PAYMENT_PROOF_MAX_BYTES = 5 * 1024 * 1024
 

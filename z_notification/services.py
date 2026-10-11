@@ -37,6 +37,7 @@ def redact_text(text: str, secrets: Iterable[str] | None) -> str:
 def render_template(template: str, context: dict[str, Any]) -> tuple[str, str, str | None]:
     """Render (subject, text body, html body or None) for a template folder."""
     base = f"z_notification/{template}"
+    # A hosted logo image once deployed; otherwise _brand.html draws the wordmark in text.
     context = {"brand_logo_url": getattr(settings, "ZINWE_EMAIL_LOGO_URL", ""), **context}
     subject = render_to_string(f"{base}/subject.txt", context)
     subject = " ".join(subject.split())[:255]

@@ -15,6 +15,7 @@ from rest_framework.views import APIView
 from z_main.client import get_client_ip, get_user_agent
 
 from . import otp, services
+from .announcements import announcements_for
 from .billing import current_subscription
 from .company import get_company
 from .models import Plan, User
@@ -25,6 +26,7 @@ from .serializers import (
     EmailCodeSerializer,
     EmailSerializer,
     LoginSerializer,
+    PasswordChangeSerializer,
     PasswordResetSerializer,
     PlanActivateSerializer,
     PlanActivationSerializer,
@@ -303,6 +305,30 @@ class PasswordResetView(PublicView):
         return Response(auth_response(user))
 
 
+class PasswordChangeView(APIView):
+    """
+    POST /api/auth/password/change/ -- signed in: {current_password, new_password}.
+    Rotates the token (every other device is signed out) and returns a fresh AuthResponse.
+    """
+
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "auth_login"
+
+    def post(self, request: Request) -> Response:
+        serializer = PasswordChangeSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            user = services.change_password(request.user, **serializer.validated_data)
+        except services.WrongPassword:
+            return Response(
+                {"current_password": ["That's not your current password."]}, status=status.HTTP_400_BAD_REQUEST
+            )
+        except services.PasswordRejected as exc:
+            return Response({"new_password": exc.messages}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(auth_response(user))
+
+
 # --- Plans ----------------------------------------------------------------------
 
 
@@ -331,6 +357,19 @@ class PlanListView(PublicView):
     def get(self, request: Request) -> Response:
         plans = Plan.objects.filter(is_active=True).order_by("sort_order", "code")
         return Response(PlanSerializer(plans, many=True, context={"user": request.user}).data)
+
+
+class AnnouncementsView(APIView):
+    """
+    GET /api/auth/announcements/ -- the dashboard notification-bar items for the
+    signed-in owner: configured version/offer banners plus the derived upgrade nudge.
+    """
+
+    permission_classes = [IsAuthenticated]
+    throttle_classes: list = []
+
+    def get(self, request: Request) -> Response:
+        return Response({"announcements": announcements_for(request.user)})
 
 
 class PlanActivateView(APIView):

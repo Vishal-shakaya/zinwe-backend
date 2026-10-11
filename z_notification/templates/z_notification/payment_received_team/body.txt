@@ -3,6 +3,7 @@
 Owner:      {{ owner.full_name|default:"-" }} <{{ owner.email }}>
 Company:    {{ company.name|default:"-" }}
 Plan:       {{ plan.name }} ({{ plan.code }}), {{ subscription.amount_inr }} INR/month
+Type:       {% if payment.upgrade_plan %}Upgrade from {{ plan.name }} to {{ payment.upgrade_plan.name }} ({{ payment.upgrade_plan.price_inr_monthly }} INR/month; approving switches the plan now, paid days left are carried over){% elif payment.is_renewal %}Renewal of an active plan (paid until {{ subscription.ends_at|date:"Y-m-d" }}; approving adds a month){% else %}New plan{% endif %}
 Paid:       {{ payment.amount_inr }} INR by {{ payment.get_method_display }} on {{ payment.paid_on|date:"Y-m-d" }}
 Reference:  {{ payment.reference }}
 Payer:      {{ payment.payer_name }}

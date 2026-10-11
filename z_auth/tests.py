@@ -55,13 +55,13 @@ class EarlyAccessTests(APITestCase):
                 "id": reg.id,
                 "email": "asha@acme.in",
                 "status": "pending",
-                "trial_days": 90,
+                "trial_days": 0,
                 "already_registered": False,
                 "message": "Spot reserved.",
             },
         )
         self.assertEqual(reg.plan.code, Plan.EARLY_ACCESS)
-        self.assertEqual(reg.trial_days, 90)
+        self.assertEqual(reg.trial_days, 0)  # early access starts on Free forever (0007)
         self.assertEqual(reg.ip, "127.0.0.1")
 
         notifications = Notification.objects.order_by("id")
@@ -85,7 +85,8 @@ class EarlyAccessTests(APITestCase):
         self.assertEqual(len(mail.outbox), 2)
         confirmation = mail.outbox[0]
         self.assertEqual(confirmation.to, ["asha@acme.in"])
-        self.assertIn("3 months", confirmation.body)
+        self.assertIn("free forever", confirmation.body)
+        self.assertNotIn("3 months", confirmation.body)
         self.assertIn("Asha", confirmation.body)
         self.assertEqual(len(confirmation.alternatives), 1)  # HTML part
         self.assertIn("Acme Traders", mail.outbox[1].subject)
@@ -140,7 +141,7 @@ class EarlyAccessTests(APITestCase):
                 "id": first["id"],
                 "email": "asha@acme.in",
                 "status": "pending",
-                "trial_days": 90,
+                "trial_days": 0,
                 "already_registered": True,
                 "message": "You're already on the list.",
             },
@@ -316,7 +317,7 @@ class PlanTests(APITestCase):
             {
                 "free": ("Free forever", "0.00", 0, 3, False, False, 10),
                 "startups": ("Startups", "999.00", 0, 10, True, False, 20),
-                "businesses": ("Businesses", "2999.00", 90, 50, True, True, 30),
+                "businesses": ("Businesses", "2999.00", 0, 50, True, True, 30),
             },
         )
         self.assertEqual(
@@ -358,7 +359,8 @@ class PlanTests(APITestCase):
     # early-access plan); reopen that plan to keep covering it.
 
     def _reopen_early_access(self) -> None:
-        Plan.objects.filter(code=Plan.EARLY_ACCESS).update(is_active=True)
+        # Its 90-day trial was zeroed by 0007; the legacy-trial tests below need it back.
+        Plan.objects.filter(code=Plan.EARLY_ACCESS).update(is_active=True, trial_days=90)
 
     def _register_early_access(self, email: str = "owner@acme.in") -> EarlyAccessRegistration:
         return EarlyAccessRegistration.objects.create(
@@ -401,7 +403,7 @@ class PlanTests(APITestCase):
         self.assertEqual(other.status, EarlyAccessRegistration.Status.PENDING)
 
     def test_paid_plans_cannot_be_activated_here(self) -> None:
-        # Businesses has a trial, but trials of paid plans start on the subscription page.
+        # Paid plans (and any trial on one) start on the subscription page.
         for code in ("startups", "businesses"):
             with self.subTest(code=code):
                 response = self.client.post("/api/auth/plans/activate/", {"plan": code}, format="json")

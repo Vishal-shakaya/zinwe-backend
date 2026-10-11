@@ -15,6 +15,7 @@ from . import billing
 from .models import (
     Company,
     EarlyAccessRegistration,
+    Feedback,
     ManualPayment,
     OneTimeCode,
     Plan,
@@ -271,4 +272,21 @@ class OneTimeCodeAdmin(admin.ModelAdmin):
         return False
 
     def has_change_permission(self, request: HttpRequest, obj: object = None) -> bool:
+        return False
+
+
+@admin.register(Feedback)
+class FeedbackAdmin(admin.ModelAdmin):
+    """Read-only: owners write feedback from the dashboard; the team reads it here or in the admin app."""
+
+    list_display = ("owner", "rating", "short_message", "page", "created_at")
+    list_filter = ("rating", "created_at")
+    search_fields = ("owner__email", "message")
+    readonly_fields = ("owner", "rating", "message", "page", "created_at")
+
+    @admin.display(description="Message")
+    def short_message(self, obj: Feedback) -> str:
+        return (obj.message[:80] + "...") if len(obj.message) > 80 else obj.message
+
+    def has_add_permission(self, request: HttpRequest) -> bool:
         return False

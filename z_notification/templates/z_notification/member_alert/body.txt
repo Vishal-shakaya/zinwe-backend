@@ -1,0 +1,13 @@
+{% autoescape off %}Hi {{ first_name }},
+
+{% if suggested %}{{ suggested }}{% else %}Zinwe flagged something on your work PC.{% endif %}
+
+What happened: {{ what }}
+PC: {{ hostname }}
+When: {{ occurred_at|date:"j M Y, g:i A" }}
+
+If you have questions, reply to {{ owner_name }} directly.
+
+Sent by Zinwe for {{ company }}
+SKYTECHNO, New Delhi
+{% endautoescape %}

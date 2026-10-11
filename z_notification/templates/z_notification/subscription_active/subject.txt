@@ -1,1 +1,1 @@
-{% autoescape off %}{% if is_trial %}Your free Zinwe {{ plan.name }} trial has started{% else %}Your Zinwe {{ plan.name }} plan is active{% endif %}{% endautoescape %}
+{% autoescape off %}{% if is_trial %}Your free Zinwe {{ plan.name }} trial has started{% elif is_renewal %}Your Zinwe {{ plan.name }} plan is renewed{% else %}Your Zinwe {{ plan.name }} plan is active{% endif %}{% endautoescape %}

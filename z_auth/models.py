@@ -8,6 +8,7 @@ from typing import Any
 
 from django.contrib.auth.base_user import AbstractBaseUser, BaseUserManager
 from django.contrib.auth.models import PermissionsMixin
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.utils import timezone
 
@@ -192,7 +193,7 @@ class EarlyAccessRegistration(models.Model):
         Plan, null=True, blank=True, on_delete=models.SET_NULL,
         related_name="early_access_registrations",
     )
-    trial_days = models.PositiveIntegerField(default=90)
+    trial_days = models.PositiveIntegerField(default=0)
     ip = models.GenericIPAddressField(null=True, blank=True)
     user_agent = models.CharField(max_length=255, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -379,6 +380,17 @@ class ManualPayment(models.Model):
         "z_auth.User", null=True, blank=True, on_delete=models.SET_NULL,
         related_name="reviewed_payments",
     )
+    is_renewal = models.BooleanField(
+        default=False, help_text="Paid while the plan was already active, to extend it (renewal).",
+    )
+    covers_from = models.DateTimeField(
+        null=True, blank=True, help_text="Start of the period this payment paid for (set when approved).",
+    )
+    covers_until = models.DateTimeField(null=True, blank=True, help_text="End of that period.")
+    upgrade_plan = models.ForeignKey(
+        "z_auth.Plan", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Set when the owner paid to move up to this plan from the dashboard (an upgrade).",
+    )
 
     class Meta:
         ordering = ["-submitted_at", "-id"]
@@ -389,3 +401,71 @@ class ManualPayment(models.Model):
     @property
     def owner(self) -> User:
         return self.subscription.owner
+
+
+class Feedback(models.Model):
+    """What an owner thinks of Zinwe: a 1-10 rating plus an optional note, read by the team in the admin app."""
+
+    RATING_MIN = 1
+    RATING_MAX = 10
+
+    owner = models.ForeignKey(
+        "z_auth.User", on_delete=models.CASCADE, related_name="feedback"
+    )
+    rating = models.PositiveSmallIntegerField(
+        validators=[MinValueValidator(RATING_MIN), MaxValueValidator(RATING_MAX)],
+        help_text="1 (poor) to 10 (excellent).",
+    )
+    message = models.TextField(blank=True, max_length=2000)
+    page = models.CharField(max_length=120, blank=True, help_text="Dashboard page it was sent from.")
+    created_at = models.DateTimeField(default=timezone.now, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        verbose_name_plural = "feedback"
+
+    def __str__(self) -> str:
+        return f"{self.owner} rated {self.rating}/10"
+
+
+class CustomerRemark(models.Model):
+    """The Zinwe team's internal note about a customer (never shown to the customer)."""
+
+    owner = models.OneToOneField(
+        "z_auth.User", on_delete=models.CASCADE, related_name="staff_remark"
+    )
+    text = models.TextField(blank=True, max_length=2000)
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.ForeignKey(
+        "z_auth.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+
+    def __str__(self) -> str:
+        return f"Remark on {self.owner}"
+
+
+class RenewalReminder(models.Model):
+    """
+    One automatic renewal email for one billing period (z_auth.renewals). The unique
+    (subscription, kind, period_end) row is what stops a reminder going out twice; a renewal
+    moves `ends_at`, so the next period gets its own reminders.
+    """
+
+    class Kind(models.TextChoices):
+        DAYS_7 = "7d", "7 days before"
+        DAYS_1 = "1d", "1 day before"
+        EXPIRED = "expired", "Plan expired"
+
+    subscription = models.ForeignKey(Subscription, on_delete=models.CASCADE, related_name="reminders")
+    kind = models.CharField(max_length=10, choices=Kind.choices)
+    period_end = models.DateTimeField(help_text="The plan end date this reminder was about.")
+    sent_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ["-sent_at"]
+        constraints = [
+            models.UniqueConstraint(fields=["subscription", "kind", "period_end"], name="one_reminder_per_period"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.get_kind_display()} reminder for subscription #{self.subscription_id}"

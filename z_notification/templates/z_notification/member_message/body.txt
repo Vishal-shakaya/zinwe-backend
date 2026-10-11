@@ -1,0 +1,13 @@
+{% autoescape off %}Hi {{ first_name }},
+
+{{ company }} sent you a message on Zinwe:
+
+{{ message.title }}
+{% if message.body %}
+{{ message.body }}
+{% endif %}
+You'll also see it in the Zinwe widget on your work PC, where you can reply.
+
+Sent by Zinwe for {{ company }}
+SKYTECHNO, New Delhi
+{% endautoescape %}

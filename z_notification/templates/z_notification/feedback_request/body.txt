@@ -1,0 +1,14 @@
+{% autoescape off %}Hi {{ first_name }},
+
+You've been using Zinwe for a little while now. How is it working for you?
+
+Pick a number from 1 (poor) to 10 (excellent) and tell us what to improve. It takes about 20 seconds:
+{{ feedback_url }}
+
+We read every response, and it decides what we build next.
+
+The Zinwe team
+SKYTECHNO, New Delhi
+
+We ask at most once every few months. If you've already told us, thank you, and please ignore this one.
+{% endautoescape %}

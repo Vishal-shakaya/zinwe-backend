@@ -15,9 +15,10 @@ from rest_framework.views import APIView
 
 from . import billing
 from .company import CompanyExists, get_company, register_company, update_company
-from .models import ManualPayment
+from .models import Feedback, ManualPayment
 from .portal_serializers import (
     CompanySerializer,
+    FeedbackSerializer,
     PaymentSerializer,
     PaymentSubmitSerializer,
     SubscribeSerializer,
@@ -111,6 +112,8 @@ class PaymentSubmitView(APIView):
             payment = billing.submit_payment(request.user, data, proof)
         except (billing.NothingToPay, billing.PaymentUnderReview) as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
+        except billing.UpgradeNotAllowed as exc:
+            return Response({"upgrade_plan": [str(exc)]}, status=status.HTTP_400_BAD_REQUEST)
         return Response(PaymentSerializer(payment).data, status=status.HTTP_201_CREATED)
 
 
@@ -127,6 +130,20 @@ def proof_file_response(payment: ManualPayment) -> FileResponse:
     return FileResponse(handle, as_attachment=True, filename=filename, content_type=content_type)
 
 
+class PaymentHistoryView(APIView):
+    """GET /api/auth/subscription/payments/ -- every payment the owner reported, newest first."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request: Request) -> Response:
+        payments = (
+            ManualPayment.objects.filter(subscription__owner=request.user)
+            .select_related("subscription__plan")
+            .order_by("-submitted_at", "-id")[:50]
+        )
+        return Response(PaymentSerializer(payments, many=True).data)
+
+
 class PaymentProofView(APIView):
     """GET /api/auth/subscription/payment/<id>/proof/ -- the owner's own proof file (staff: any)."""
 
@@ -140,3 +157,27 @@ class PaymentProofView(APIView):
         if payment is None:
             raise Http404("No such payment.")
         return proof_file_response(payment)
+
+
+class FeedbackView(APIView):
+    """
+    GET  /api/auth/feedback/ -- the owner's own feedback, newest first (last 10).
+    POST /api/auth/feedback/ -- {rating 1-10, message?, page?}; the team reads it in the admin app.
+    """
+
+    permission_classes = [IsAuthenticated]
+    throttle_scope = "feedback"
+
+    def get_throttles(self):  # type: ignore[no-untyped-def]
+        # Only sending is rate-limited; reading your own history is not.
+        return [ScopedRateThrottle()] if self.request.method == "POST" else []
+
+    def get(self, request: Request) -> Response:
+        rows = Feedback.objects.filter(owner=request.user)[:10]
+        return Response(FeedbackSerializer(rows, many=True).data)
+
+    def post(self, request: Request) -> Response:
+        serializer = FeedbackSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        feedback = serializer.save(owner=request.user)
+        return Response(FeedbackSerializer(feedback).data, status=status.HTTP_201_CREATED)

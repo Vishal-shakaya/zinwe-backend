@@ -2,8 +2,8 @@
 
 Django + Django REST framework API for **Zinwe** (SMB data-protection / activity
 monitoring, by SKYTECHNO, New Delhi). Pre-launch: it currently powers the
-website's early-access waitlist, the owner portal (accounts, company, plans with a
-3-month free Businesses trial, manual payments), devices, notifications and analytics.
+website's early-access waitlist, the owner portal (accounts, company, plans: Free
+forever, Startups, Businesses; manual payments), devices, notifications and analytics.
 
 ## Apps
 
@@ -169,7 +169,7 @@ protected endpoints get **401**; authenticated non-staff on staff endpoints get 
 
 Responses:
 
-- **201** new: `{"id": 1, "email": "asha@acme.in", "status": "pending", "trial_days": 90, "already_registered": false, "message": "Spot reserved."}`
+- **201** new: `{"id": 1, "email": "asha@acme.in", "status": "pending", "trial_days": 0, "already_registered": false, "message": "Spot reserved."}`
   - after commit: `early_access.registered` event, confirmation email to the registrant, alert email to `ZINWE_TEAM_NOTIFY_EMAIL`.
 - **200** duplicate (case-insensitive email): same shape with the existing record,
   `"already_registered": true, "message": "You're already on the list."` No new row, no email; tracks `early_access.duplicate`.
@@ -199,9 +199,9 @@ Code: `z_auth/otp.py` (codes), `services.py` (accounts), `company.py`, `billing.
 - **Sign-up** creates `is_active=False`, `email_verified_at=null`; the code activates it. Re-submitting
   sign-up for an unverified email updates name/password; inside the 60 s cooldown it returns
   `otp_sent: false` and the earlier code still works.
-- **Free trial: one per account, ever** (`services.trial_used`: any `is_trial` subscription, or an
+- **Free trial (dormant since migration 0007: no plan has `trial_days`)**: one per account, ever (`services.trial_used`: any `is_trial` subscription, or an
   activation of the legacy `early-access` plan). Subscribing to a paid plan with `trial_days`
-  (Businesses, 90 days) while the trial is unused starts it at once: `active`, `is_trial`,
+  (Businesses had 90 days until v1.2) while the trial is unused starts it at once: `active`, `is_trial`,
   `amount_inr` 0, ends after `trial_days`, no payment step. After that, the same plan means paying
   (`pending_payment`), and verifying that payment works normally. Starting a trial marks the owner's
   early-access waitlist row (if any) `activated`. `GET plans/` reads the token if one is sent:

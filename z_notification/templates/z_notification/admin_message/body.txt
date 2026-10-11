@@ -1,0 +1,6 @@
+{% autoescape off %}{{ text_body }}
+
+--
+The Zinwe team
+SKYTECHNO, New Delhi
+{% endautoescape %}

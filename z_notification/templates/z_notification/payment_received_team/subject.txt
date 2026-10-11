@@ -1,1 +1,1 @@
-{% autoescape off %}Payment to check: {{ company.name|default:owner.email }}, {{ payment.amount_inr }} INR ({{ payment.get_method_display }}){% endautoescape %}
+{% autoescape off %}{% if payment.upgrade_plan %}Upgrade{% elif payment.is_renewal %}Renewal{% else %}Payment{% endif %} to check: {{ company.name|default:owner.email }}, {{ payment.amount_inr }} INR ({{ payment.get_method_display }}){% endautoescape %}

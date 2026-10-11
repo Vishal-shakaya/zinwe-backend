@@ -1,0 +1,14 @@
+{% autoescape off %}Hi {{ first_name }},
+
+Your {{ plan.name }} plan{% if company %} for {{ company.name }}{% endif %} ended on {{ subscription.ends_at|date:"j F Y" }}, so monitoring and alerts are paused.
+
+Your devices, rules and history are all saved. Renew to switch everything back on:
+{{ billing_url }}
+
+Or move to Free forever (up to 3 PCs) at no cost.
+
+Questions? Just reply to this email.
+
+The Zinwe team
+SKYTECHNO, New Delhi
+{% endautoescape %}

@@ -1,0 +1,1 @@
+{% autoescape off %}{% if urgent %}Urgent: {% endif %}{{ message.title }} — from {{ company }}{% endautoescape %}

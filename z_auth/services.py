@@ -65,7 +65,7 @@ def register_early_access(
 
     plan = Plan.objects.filter(code=Plan.EARLY_ACCESS).first()
     trial_days = (plan.trial_days if plan and plan.trial_days else None) or getattr(
-        settings, "ZINWE_EARLY_ACCESS_TRIAL_DAYS", 90
+        settings, "ZINWE_EARLY_ACCESS_TRIAL_DAYS", 0
     )
     try:
         with transaction.atomic():
@@ -356,6 +356,32 @@ def reset_password(email: str, code: str, new_password: str) -> User:
         Token.objects.filter(user=user).delete()
         update_last_login(None, user)
         transaction.on_commit(lambda: track("auth.password_reset", {}, actor_email=user.email, ref=user))
+    return user
+
+
+class WrongPassword(Exception):
+    """The current password given to `change_password` doesn't match."""
+
+
+def change_password(user: User, current_password: str, new_password: str) -> User:
+    """
+    Signed-in password change: check the current password, set the new one and
+    rotate the API token, which signs out every other device (the caller gets
+    the new token back). Raises `WrongPassword` or `PasswordRejected`.
+    """
+    if not user.check_password(current_password):
+        raise WrongPassword()
+    try:
+        password_validation.validate_password(new_password, user=user)
+    except DjangoValidationError as exc:
+        raise PasswordRejected(list(exc.messages)) from exc
+    if current_password == new_password:
+        raise PasswordRejected(["Choose a password different from your current one."])
+    with transaction.atomic():
+        user.set_password(new_password)
+        user.save(update_fields=["password"])
+        Token.objects.filter(user=user).delete()
+        transaction.on_commit(lambda: track("auth.password_changed", {}, actor_email=user.email, ref=user))
     return user
 
 

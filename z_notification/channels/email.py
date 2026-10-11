@@ -8,7 +8,11 @@ from .base import Channel
 
 
 class EmailChannel(Channel):
-    """Sends a plain-text email, with an optional HTML alternative."""
+    """Sends a plain-text email, with an optional HTML alternative.
+
+    No attachments or inline images: an inline (cid) logo made Gmail accept and then silently
+    drop messages (2026-10-11). The logo is text, or a hosted image (ZINWE_EMAIL_LOGO_URL).
+    """
 
     name = "email"
 

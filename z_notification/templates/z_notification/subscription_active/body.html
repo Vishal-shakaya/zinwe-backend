@@ -6,7 +6,9 @@
     <p style="margin:0 0 16px;">Hi {{ first_name }},</p>
 {% if is_trial %}    <p style="margin:0 0 16px;">Your free {{ trial_length }} trial of <strong>{{ plan.name }}</strong> has started. It ends on <strong>{{ subscription.ends_at|date:"j F Y" }}</strong>.</p>
     <p style="margin:0 0 16px;">No payment is needed until then.</p>
-{% else %}    <p style="margin:0 0 16px;">Your <strong>{{ plan.name }}</strong> plan is now active.</p>
+{% elif is_renewal %}    <p style="margin:0 0 16px;">Thanks for renewing! Your <strong>{{ plan.name }}</strong> plan has been extended by a month.</p>
+{% if subscription.ends_at %}    <p style="margin:0 0 16px;">It's now paid until <strong>{{ subscription.ends_at|date:"j F Y" }}</strong>. Your PCs stay protected without a break.</p>
+{% endif %}{% else %}    <p style="margin:0 0 16px;">Your <strong>{{ plan.name }}</strong> plan is now active.</p>
 {% if subscription.ends_at %}    <p style="margin:0 0 16px;">Paid until <strong>{{ subscription.ends_at|date:"j F Y" }}</strong>. Thank you for your payment.</p>
 {% endif %}{% endif %}
 {% if plan.max_devices %}    <p style="margin:0 0 16px;">It covers up to {{ plan.max_devices }} PCs.</p>

@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="en">
+<body style="margin:0;padding:24px;background:#f6f7f9;font-family:Segoe UI,Arial,sans-serif;color:#1d2433;">
+  <div style="max-width:560px;margin:0 auto;background:#ffffff;border-radius:8px;padding:28px;font-size:15px;line-height:1.55;">
+    {% include "z_notification/_brand.html" %}
+    {% comment %}html_body is staff-written and already cleaned to an allow-list (z_adminapi.services.clean_email_html).{% endcomment %}
+    <div>{{ html_body|safe }}</div>
+    <p style="margin:24px 0 0;">The Zinwe team<br><span style="color:#6b7280;">SKYTECHNO, New Delhi</span></p>
+  </div>
+</body>
+</html>

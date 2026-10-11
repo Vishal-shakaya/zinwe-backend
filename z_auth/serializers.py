@@ -241,6 +241,15 @@ class PasswordResetSerializer(EmailCodeSerializer):
     )
 
 
+class PasswordChangeSerializer(serializers.Serializer):
+    current_password = serializers.CharField(
+        write_only=True, trim_whitespace=False, max_length=128, error_messages=REQUIRED_MESSAGES
+    )
+    new_password = serializers.CharField(
+        write_only=True, trim_whitespace=False, max_length=128, error_messages=REQUIRED_MESSAGES
+    )
+
+
 # --- Plans ------------------------------------------------------------------
 
 

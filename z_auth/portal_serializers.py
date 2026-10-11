@@ -13,8 +13,8 @@ from django.core.validators import URLValidator
 from django.utils import timezone
 from rest_framework import serializers
 
-from .billing import latest_payment
-from .models import Company, ManualPayment, Plan, Subscription
+from .billing import can_renew, days_left, latest_payment, renewal_period
+from .models import Company, Feedback, ManualPayment, Plan, Subscription
 from .serializers import PICK_ONE, REQUIRED_MESSAGES, PlanSerializer, StrippedChoiceField
 
 GSTIN_RE = re.compile(r"^\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]$")
@@ -87,12 +87,15 @@ class CompanySerializer(serializers.ModelSerializer):
 
 class PaymentSerializer(serializers.ModelSerializer):
     has_proof = serializers.SerializerMethodField()
+    plan_name = serializers.CharField(source="subscription.plan.name", read_only=True)
+    upgrade_plan_name = serializers.CharField(source="upgrade_plan.name", read_only=True, default=None)
 
     class Meta:
         model = ManualPayment
         fields = (
             "id", "method", "amount_inr", "reference", "paid_on", "payer_name", "status",
             "rejection_reason", "has_proof", "submitted_at", "reviewed_at",
+            "is_renewal", "covers_from", "covers_until", "plan_name", "upgrade_plan_name",
         )
         read_only_fields = fields
 
@@ -103,18 +106,37 @@ class PaymentSerializer(serializers.ModelSerializer):
 class SubscriptionSerializer(serializers.ModelSerializer):
     plan = PlanSerializer(read_only=True)
     latest_payment = serializers.SerializerMethodField()
+    days_left = serializers.SerializerMethodField()
+    can_renew = serializers.SerializerMethodField()
+    renewal_period = serializers.SerializerMethodField()
 
     class Meta:
         model = Subscription
         fields = (
             "id", "plan", "status", "amount_inr", "billing_cycle", "starts_at", "ends_at",
-            "created_at", "latest_payment", "is_trial",
+            "created_at", "latest_payment", "is_trial", "days_left", "can_renew", "renewal_period",
         )
         read_only_fields = fields
 
     def get_latest_payment(self, obj: Subscription) -> dict[str, Any] | None:
         payment = latest_payment(obj)
         return PaymentSerializer(payment).data if payment else None
+
+    def get_days_left(self, obj: Subscription) -> int | None:
+        """Whole days until an active plan ends (0 = today); None when open-ended."""
+        return days_left(obj)
+
+    def get_can_renew(self, obj: Subscription) -> bool:
+        """An active paid plan with no payment under review: the owner can pay for next month now."""
+        return can_renew(obj)
+
+    def get_renewal_period(self, obj: Subscription) -> dict[str, Any] | None:
+        """The month a renewal paid now would add (from the current end date: no days lost)."""
+        if not can_renew(obj):
+            return None
+        start, end = renewal_period(obj)
+        as_text = serializers.DateTimeField().to_representation  # same format as ends_at
+        return {"from": as_text(start), "until": as_text(end)}
 
 
 class SubscribeSerializer(serializers.Serializer):
@@ -159,6 +181,11 @@ class PaymentSubmitSerializer(serializers.Serializer):
         error_messages={**REQUIRED_MESSAGES, "invalid": "Enter the date as YYYY-MM-DD."}
     )
     payer_name = _text(120)
+    # Dashboard upgrade: the plan (by code) this payment moves the owner up to.
+    upgrade_plan = serializers.SlugRelatedField(
+        slug_field="code", queryset=Plan.objects.filter(is_active=True), required=False, allow_null=True,
+        error_messages={"does_not_exist": "That plan isn't available.", "invalid": "That plan isn't available."},
+    )
     proof = serializers.FileField(
         required=False, allow_null=True, allow_empty_file=False,
         error_messages={
@@ -188,3 +215,24 @@ class PaymentSubmitSerializer(serializers.Serializer):
         if not any(head.startswith(sig) for sig in signatures):
             raise serializers.ValidationError(BAD_PROOF_TYPE)
         return value
+
+
+class FeedbackSerializer(serializers.ModelSerializer):
+    """POST /api/auth/feedback/ in, and the owner's own past feedback out."""
+
+    rating = serializers.IntegerField(
+        min_value=Feedback.RATING_MIN, max_value=Feedback.RATING_MAX,
+        error_messages={
+            "required": "Pick a rating from 1 to 10.",
+            "min_value": "Pick a rating from 1 to 10.",
+            "max_value": "Pick a rating from 1 to 10.",
+            "invalid": "Pick a rating from 1 to 10.",
+        },
+    )
+    message = serializers.CharField(required=False, allow_blank=True, max_length=2000, trim_whitespace=True)
+    page = serializers.CharField(required=False, allow_blank=True, max_length=120)
+
+    class Meta:
+        model = Feedback
+        fields = ["id", "rating", "message", "page", "created_at"]
+        read_only_fields = ["id", "created_at"]

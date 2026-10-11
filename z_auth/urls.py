@@ -20,8 +20,10 @@ urlpatterns = [
     # Password reset
     path("password/forgot/", views.PasswordForgotView.as_view(), name="password-forgot"),
     path("password/reset/", views.PasswordResetView.as_view(), name="password-reset"),
+    path("password/change/", views.PasswordChangeView.as_view(), name="password-change"),
     # Owner portal
     path("company/", portal_views.CompanyView.as_view(), name="company"),
+    path("announcements/", views.AnnouncementsView.as_view(), name="announcements"),
     path("plans/", views.PlanListView.as_view(), name="plans"),
     path("plans/activate/", views.PlanActivateView.as_view(), name="plan-activate"),
     path("subscription/", portal_views.SubscriptionView.as_view(), name="subscription"),
@@ -30,6 +32,8 @@ urlpatterns = [
         portal_views.PaymentSubmitView.as_view(),
         name="subscription-payment",
     ),
+    path("feedback/", portal_views.FeedbackView.as_view(), name="feedback"),
+    path("subscription/payments/", portal_views.PaymentHistoryView.as_view(), name="subscription-payments"),
     path(
         "subscription/payment/<int:payment_id>/proof/",
         portal_views.PaymentProofView.as_view(),

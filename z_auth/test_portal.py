@@ -42,6 +42,12 @@ JPG = b"\xff\xd8\xff\xe0" + b"\x00" * 64
 TEAM = "team@zinwe.test"
 
 
+def enable_trial(code: str = "businesses", days: int = 90) -> None:
+    """No plan ships a trial since 0007, but the trial code stays (an admin can set
+    trial_days again). Tests of that code switch a trial on first."""
+    Plan.objects.filter(code=code).update(trial_days=days)
+
+
 def payment_form(**overrides):  # type: ignore[no-untyped-def]
     data = {
         "method": "upi",
@@ -181,13 +187,14 @@ class PlanListTests(PortalTestCase):
             plans["businesses"],
             {
                 "code": "businesses", "name": "Businesses", "tagline": plans["businesses"]["tagline"],
-                "price_inr_monthly": "2999.00", "trial_days": 90, "max_devices": 50,
+                "price_inr_monthly": "2999.00", "trial_days": 0, "max_devices": 50,
                 "features": plans["businesses"]["features"], "is_recommended": True,
-                "requires_payment": True, "sort_order": 30, "trial_available": True,
+                "requires_payment": True, "sort_order": 30, "trial_available": False,
             },
         )
         self.assertTrue(plans["businesses"]["tagline"])
-        # The trial is a badge driven by trial_available, never a static feature line.
+        # Free forever is the free way in: no plan offers a time-limited trial.
+        self.assertEqual([p["trial_days"] for p in plans.values()], [0, 0, 0])
         self.assertNotIn("First 3 months free", plans["businesses"]["features"])
         self.assertEqual(len(plans["businesses"]["features"]), 4)
         self.assertEqual(plans["free"]["name"], "Free forever")
@@ -206,9 +213,11 @@ class PlanListTests(PortalTestCase):
         return plans["businesses"]["trial_available"]
 
     def test_trial_available_anonymous(self) -> None:
+        enable_trial()
         self.assertTrue(self.trial_available())
 
     def test_trial_available_until_used(self) -> None:
+        enable_trial()
         user = self.make_owner()  # client now sends the token
         self.make_company(user)
         self.assertTrue(self.trial_available())
@@ -222,11 +231,13 @@ class PlanListTests(PortalTestCase):
         self.assertTrue(self.trial_available())
 
     def test_legacy_early_access_counts_as_trial_used(self) -> None:
+        enable_trial()
         user = self.make_owner()
         PlanActivation.objects.create(user=user, plan=Plan.objects.get(code=Plan.EARLY_ACCESS), is_active=False)
         self.assertFalse(self.trial_available())
 
     def test_stale_token_is_treated_as_anonymous(self) -> None:
+        enable_trial()
         self.use_token("0" * 40)
         response = self.get(PLANS_URL)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -299,7 +310,15 @@ class SubscriptionTests(PortalTestCase):
         self.assertEqual(self.step(), "complete")
         self.assertEqual(self.get(SUB_URL).json()["subscription"]["id"], body["id"])
 
-    def test_businesses_starts_as_free_trial(self) -> None:
+    def test_businesses_waits_for_payment(self) -> None:
+        body = self.subscribe("businesses").json()
+        self.assertEqual((body["status"], body["is_trial"], body["amount_inr"]), ("pending_payment", False, "2999.00"))
+        self.assertFalse(PlanActivation.objects.exists())
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertEqual(self.step(), "payment")
+
+    def test_plan_with_trial_starts_as_free_trial(self) -> None:
+        enable_trial()
         reg = EarlyAccessRegistration.objects.create(
             name="Asha", email="owner@acme.in", company="Acme", team_size="1-10"
         )
@@ -333,6 +352,7 @@ class SubscriptionTests(PortalTestCase):
         self.assertTrue(Event.objects.filter(name="subscription.created", properties__is_trial=True).exists())
 
     def test_trial_is_once_per_account(self) -> None:
+        enable_trial()
         self.subscribe("businesses")
         Subscription.objects.update(ends_at=timezone.now() - timedelta(seconds=1))  # trial over
         self.assertEqual(self.get(SUB_URL).json()["subscription"]["status"], "expired")
@@ -352,6 +372,7 @@ class SubscriptionTests(PortalTestCase):
         self.assertEqual(Subscription.objects.filter(is_trial=True).count(), 1)
 
     def test_legacy_early_access_activation_counts_as_trial_used(self) -> None:
+        enable_trial()
         PlanActivation.objects.create(
             user=self.user, plan=Plan.objects.get(code=Plan.EARLY_ACCESS), is_active=False
         )
@@ -362,6 +383,8 @@ class SubscriptionTests(PortalTestCase):
 
     def test_legacy_free_trial_plan_can_be_used_once(self) -> None:
         # A free plan with trial_days (the old early-access shape) is a trial too.
+        enable_trial()
+        enable_trial(Plan.EARLY_ACCESS)
         Plan.objects.filter(code=Plan.EARLY_ACCESS).update(is_active=True)
         body = self.subscribe("early-access").json()
         self.assertEqual((body["status"], body["is_trial"]), ("active", True))
@@ -388,6 +411,7 @@ class SubscriptionTests(PortalTestCase):
         self.assertEqual(self.step(), "payment")
 
     def test_pending_subscription_is_replaced(self) -> None:
+        enable_trial()
         first = self.subscribe("startups").json()
         second = self.subscribe("startups").json()
         self.assertNotEqual(first["id"], second["id"])
@@ -404,6 +428,7 @@ class SubscriptionTests(PortalTestCase):
             self.assertIn("detail", response.json())
 
     def test_active_trial_conflicts(self) -> None:
+        enable_trial()
         self.subscribe("businesses")
         self.assertEqual(self.subscribe("free").status_code, status.HTTP_409_CONFLICT)
 
@@ -451,6 +476,8 @@ class PaymentTests(MediaMixin, PortalTestCase):
                 "paid_on": timezone.localdate().isoformat(), "payer_name": "Asha Verma",
                 "status": "submitted", "rejection_reason": "", "has_proof": True,
                 "submitted_at": body["submitted_at"], "reviewed_at": None,
+                "is_renewal": False, "covers_from": None, "covers_until": None, "plan_name": "Startups",
+                "upgrade_plan_name": None,
             },
         )
         now = timezone.now()
@@ -636,6 +663,7 @@ class AdminReviewTests(MediaMixin, PortalTestCase):
 
     def test_verify_businesses_after_trial(self) -> None:
         """The one-trial rule must not block paying for the plan the trial was on."""
+        enable_trial()
         self.client.logout()  # drop the admin session (also clears credentials)
         other = self.make_owner("trial@acme.in")  # client now uses this owner's token
         self.make_company(other)
@@ -779,17 +807,15 @@ class JourneyTests(MediaMixin, PortalTestCase):
         self.assertEqual(self.step(), {"step": "complete", "has_company": True, "subscription_status": "active"})
         self.assertIn("Your Zinwe Startups plan is active", [m.subject for m in mail.outbox])
 
-    def test_signup_to_businesses_trial(self) -> None:
+    def test_signup_to_businesses_needs_payment(self) -> None:
         self.signup_and_verify()
         self.post(COMPANY_URL, COMPANY)
         plans = {p["code"]: p for p in self.get(PLANS_URL).json()}
-        self.assertTrue(plans["businesses"]["trial_available"])
-        body = self.post(SUB_URL, {"plan": "businesses"}).json()
-        self.assertEqual((body["status"], body["is_trial"], body["amount_inr"]), ("active", True, "0.00"))
-        self.assertEqual(self.step(), {"step": "complete", "has_company": True, "subscription_status": "active"})
-        plans = {p["code"]: p for p in self.get(PLANS_URL).json()}
         self.assertFalse(plans["businesses"]["trial_available"])
-        self.assertIn("Your free Zinwe Businesses trial has started", [m.subject for m in mail.outbox])
+        body = self.post(SUB_URL, {"plan": "businesses"}).json()
+        self.assertEqual((body["status"], body["is_trial"], body["amount_inr"]), ("pending_payment", False, "2999.00"))
+        self.assertEqual(self.step()["step"], "payment")
+        self.assertNotIn("Your free Zinwe Businesses trial has started", [m.subject for m in mail.outbox])
 
     def test_otp_login_and_password_reset_route_by_step(self) -> None:
         self.signup_and_verify()
@@ -818,3 +844,52 @@ class HelperTests(TestCase):
     def test_plan_requires_payment(self) -> None:
         self.assertTrue(Plan(price_inr_monthly=Decimal("1")).requires_payment)
         self.assertFalse(Plan(price_inr_monthly=Decimal("0")).requires_payment)
+
+
+ANNOUNCE_URL = "/api/auth/announcements/"
+
+
+class AnnouncementsTests(PortalTestCase):
+    """The dashboard notification-bar endpoint (M11): config banners + the upgrade nudge."""
+
+    def test_requires_auth(self) -> None:
+        self.assertEqual(self.get(ANNOUNCE_URL).status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_upgrade_nudge_when_below_top_plan(self) -> None:
+        user = self.make_owner()
+        self.make_company(user)
+        items = self.get(ANNOUNCE_URL).json()["announcements"]
+        upgrade = [a for a in items if a["kind"] == "upgrade"]
+        self.assertEqual(len(upgrade), 1)
+        self.assertEqual(upgrade[0]["cta_href"], "/app/settings/billing")
+        self.assertTrue(upgrade[0]["id"].startswith("upgrade:none:"))
+        self.assertTrue(upgrade[0]["dismissible"])
+
+    def test_no_upgrade_on_top_plan(self) -> None:
+        user = self.make_owner()
+        self.make_company(user)
+        enable_trial()
+        self.post(SUB_URL, {"plan": "businesses"})  # free trial -> active on the top plan
+        items = self.get(ANNOUNCE_URL).json()["announcements"]
+        self.assertEqual([a for a in items if a["kind"] == "upgrade"], [])
+
+    @override_settings(
+        ZINWE_ANNOUNCEMENTS=[
+            {
+                "id": "v-0-2", "kind": "version", "title": "Zinwe 0.2 is out",
+                "cta_label": "What's new", "cta_href": "https://zinwe.io/changelog",
+            },
+            {"kind": "offer", "title": "no id -> dropped"},
+            {"id": "bad-kind", "kind": "banner", "title": "bad kind -> dropped"},
+        ]
+    )
+    def test_config_banners_are_validated(self) -> None:
+        user = self.make_owner()
+        self.make_company(user)
+        items = self.get(ANNOUNCE_URL).json()["announcements"]
+        ids = [a["id"] for a in items]
+        self.assertIn("v-0-2", ids)
+        self.assertNotIn("bad-kind", ids)
+        self.assertEqual(sum(1 for a in items if a["kind"] == "version"), 1)
+        # Config banners come before the derived upgrade nudge.
+        self.assertEqual(items[0]["id"], "v-0-2")

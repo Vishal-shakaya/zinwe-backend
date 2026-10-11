@@ -130,3 +130,37 @@ class RedactTests(TestCase):
     def test_empty_redact_values_are_ignored(self) -> None:
         notification = notify("email", "x@y.z", "early_access_confirmation", CONTEXT, redact=["", None])
         self.assertIn("Hi Asha", notification.body)
+
+
+class EmailLogoTests(TestCase):
+    """Every HTML email shows the Zinwe wordmark: in text by default, the hosted image when configured.
+    Nothing is ever attached (an inline cid logo made Gmail drop the emails)."""
+
+    def send(self):  # type: ignore[no-untyped-def]
+        from django.core import mail as django_mail
+
+        from z_notification.services import notify
+
+        notify("email", "asha@acme.in", "welcome", {"first_name": "Asha"})
+        return django_mail.outbox[0]
+
+    def test_text_wordmark_and_no_attachment_by_default(self) -> None:
+        message = self.send()
+        html = message.alternatives[0][0]
+        self.assertIn('<span style="color:#FD6D02;">Z</span>inwe', html)
+        self.assertNotIn("<img", html)
+        self.assertNotIn("cid:", html)
+        self.assertEqual(message.attachments, [])
+
+    @override_settings(ZINWE_EMAIL_LOGO_URL="https://zinwe.io/brand/zinwe-logo-96.png")
+    def test_hosted_logo_url_is_linked(self) -> None:
+        message = self.send()
+        self.assertIn('src="https://zinwe.io/brand/zinwe-logo-96.png"', message.alternatives[0][0])
+        self.assertEqual(message.attachments, [])
+
+    def test_every_html_template_shows_the_logo(self) -> None:
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent / "templates" / "z_notification"
+        missing = [p.parent.name for p in root.glob("*/body.html") if "_brand.html" not in p.read_text(encoding="utf-8")]
+        self.assertEqual(missing, [])
