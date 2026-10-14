@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 from typing import Any, Iterable
 
+from django.conf import settings
 from django.contrib.auth import password_validation
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.utils import timezone
@@ -124,11 +125,35 @@ class UserSerializer(serializers.ModelSerializer):
     """The `User` shape of portal-v1 §3.1 (the company lives on `Company` now)."""
 
     email_verified = serializers.BooleanField(read_only=True)
+    terms = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ("id", "email", "full_name", "phone", "is_staff", "date_joined", "email_verified")
+        fields = ("id", "email", "full_name", "phone", "is_staff", "date_joined", "email_verified", "terms")
         read_only_fields = fields
+
+    def get_terms(self, user: User) -> dict[str, Any]:
+        """Which Terms version they accepted, and whether they still need to accept the current one."""
+        current = settings.ZINWE_LEGAL_VERSION
+        return {
+            "version": user.terms_version,
+            "accepted_at": user.terms_accepted_at,
+            "current_version": current,
+            "needs_acceptance": user.terms_version != current,
+        }
+
+
+class TermsAcceptSerializer(serializers.Serializer):
+    """The one-time "accept the updated terms" prompt: the box must be ticked."""
+
+    accept_terms = serializers.BooleanField(
+        error_messages={"required": "Please accept the updated Terms to continue.", "invalid": "Please accept the updated Terms to continue."},
+    )
+
+    def validate_accept_terms(self, value: bool) -> bool:
+        if value is not True:
+            raise serializers.ValidationError("Please accept the updated Terms to continue.")
+        return value
 
 
 class RegisterSerializer(serializers.Serializer):
@@ -202,6 +227,15 @@ class SignupSerializer(serializers.Serializer):
     password = serializers.CharField(
         write_only=True, trim_whitespace=False, max_length=128, error_messages=REQUIRED_MESSAGES
     )
+    # The sign-up checkbox: Terms and Conditions + Privacy Policy (must be ticked).
+    accept_terms = serializers.BooleanField(
+        error_messages={"required": "Please accept the Terms and Conditions and Privacy Policy to continue.", "invalid": "Please accept the Terms and Conditions and Privacy Policy to continue."},
+    )
+
+    def validate_accept_terms(self, value: bool) -> bool:
+        if value is not True:
+            raise serializers.ValidationError("Please accept the Terms and Conditions and Privacy Policy to continue.")
+        return value
 
     def validate_email(self, value: str) -> str:
         value = value.strip().lower()

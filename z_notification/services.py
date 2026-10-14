@@ -56,12 +56,14 @@ def notify(
     context: dict[str, Any] | None = None,
     ref: Ref = None,
     redact: Iterable[str] | None = None,
+    headers: dict[str, str] | None = None,
 ) -> Notification | None:
     """
     Render, log and send one notification. Never raises.
 
     `redact`: strings (e.g. a one-time code) that are sent to the recipient but
     replaced with "••••••" in the logged subject and body.
+    `headers`: extra message headers for channels that take them (email: e.g. List-Unsubscribe).
 
     Returns the `Notification` row (status sent/failed), or None if even the
     log row could not be written.
@@ -81,7 +83,8 @@ def notify(
         subject, body, html = render_template(template, context)
         notification.subject = redact_text(subject, redact)
         notification.body = redact_text(body, redact)
-        get_channel(channel).send(recipient, subject, body, html=html)
+        extra = {"headers": headers} if headers else {}  # only channels that support it get the kwarg
+        get_channel(channel).send(recipient, subject, body, html=html, **extra)
         notification.status = Notification.Status.SENT
         notification.sent_at = timezone.now()
         notification.save(update_fields=["subject", "body", "status", "sent_at"])

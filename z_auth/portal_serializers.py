@@ -181,6 +181,10 @@ class PaymentSubmitSerializer(serializers.Serializer):
         error_messages={**REQUIRED_MESSAGES, "invalid": "Enter the date as YYYY-MM-DD."}
     )
     payer_name = _text(120)
+    # The payment-terms checkbox (refund policy and billing terms). Must be ticked.
+    accept_terms = serializers.BooleanField(
+        error_messages={"required": "Please accept the payment terms to continue.", "invalid": "Please accept the payment terms to continue."},
+    )
     # Dashboard upgrade: the plan (by code) this payment moves the owner up to.
     upgrade_plan = serializers.SlugRelatedField(
         slug_field="code", queryset=Plan.objects.filter(is_active=True), required=False, allow_null=True,
@@ -194,6 +198,11 @@ class PaymentSubmitSerializer(serializers.Serializer):
             "no_name": BAD_PROOF_TYPE,
         },
     )
+
+    def validate_accept_terms(self, value: bool) -> bool:
+        if value is not True:
+            raise serializers.ValidationError("Please accept the payment terms to continue.")
+        return value
 
     def validate_paid_on(self, value: Any) -> Any:
         if value > timezone.localdate():

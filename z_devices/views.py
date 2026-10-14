@@ -1,6 +1,7 @@
 """Thin HTTP layer for z_devices. Validation in serializers, logic in services."""
 from __future__ import annotations
 
+from django.http import FileResponse, Http404
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status
@@ -13,7 +14,7 @@ from rest_framework.views import APIView
 from z_main.client import get_client_ip
 
 from . import services
-from .models import DeviceEvent
+from .models import AgentRelease, DeviceEvent, WorkLog
 from .authentication import DeviceTokenAuthentication, IsDevice, IsOwner
 from .serializers import (
     DevicePolicySerializer,
@@ -37,6 +38,7 @@ from .serializers import (
     PolicyUpdateSerializer,
     WorkLogQuerySerializer,
     WorkLogSerializer,
+    BreakDecisionSerializer,
 )
 
 # --- Agent endpoints (called by the Windows agent) --------------------------
@@ -105,6 +107,7 @@ class DeviceMessagesView(APIView):
     permission_classes = [IsDevice]
 
     def get(self, request: Request) -> Response:
+        services.mark_delivered(request.auth)  # the PC has them now: "Delivered" for the admin
         messages = services.messages_for_device(request.auth)
         return Response(MessageSerializer(messages, many=True).data)
 
@@ -118,13 +121,32 @@ class DeviceMessagesView(APIView):
 
 
 class DeviceMessagesReadView(APIView):
-    """POST /api/devices/messages/read/ -- the agent marks the admin's messages seen on the member's PC."""
+    """POST /api/devices/messages/read/ -- the agent reports the member opened the admin's messages."""
 
     authentication_classes = [DeviceTokenAuthentication]
     permission_classes = [IsDevice]
 
     def post(self, request: Request) -> Response:
         return Response({"marked": services.mark_read_by_member(request.auth)})
+
+
+class DeviceReleaseDownloadView(APIView):
+    """
+    GET /api/devices/releases/<id>/download/ (Device auth) -- the release's MSI, for the agent's
+    one-click update. Only enrolled PCs can fetch it; the agent checks the SHA-256 from the heartbeat.
+    """
+
+    authentication_classes = [DeviceTokenAuthentication]
+    permission_classes = [IsDevice]
+
+    def get(self, request: Request, pk: int) -> FileResponse:
+        release = get_object_or_404(AgentRelease, pk=pk, is_active=True)
+        if not release.file:
+            raise Http404("This release is hosted elsewhere.")
+        return FileResponse(
+            release.file.open("rb"), as_attachment=True,
+            filename=f"ZinweAgent-{release.version}.msi", content_type="application/x-msi",
+        )
 
 
 class EventUploadView(APIView):
@@ -352,6 +374,22 @@ class WorkLogView(APIView):
         day = query.validated_data.get("date") or timezone.localdate()
         logs = services.work_log_for_owner(request.user, day, query.validated_data.get("member"))
         return Response({"date": day, "entries": WorkLogSerializer(logs, many=True).data})
+
+
+class BreakDecisionView(APIView):
+    """POST /api/devices/work-log/<id>/decision/ {decision: approved|denied, note?} -- owner's call on a break."""
+
+    permission_classes = [IsOwner]
+
+    def post(self, request: Request, log_id: int) -> Response:
+        log = get_object_or_404(WorkLog.objects.select_related("member", "device"), pk=log_id, owner=request.user)
+        data = BreakDecisionSerializer(data=request.data)
+        data.is_valid(raise_exception=True)
+        try:
+            log = services.decide_break(request.user, log, data.validated_data["decision"], data.validated_data["note"])
+        except services.NotABreak:
+            return Response({"detail": "Only breaks can be approved or denied."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(WorkLogSerializer(log).data)
 
 
 class MetricsFeedView(APIView):

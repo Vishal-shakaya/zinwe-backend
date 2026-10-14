@@ -19,11 +19,14 @@ ME = "/api/auth/me/"
 def payment_form(**overrides):  # type: ignore[no-untyped-def]
     return {
         "method": "upi", "amount_inr": "2999", "reference": "UTR-UP",
-        "paid_on": timezone.localdate().isoformat(), "payer_name": "Asha Verma", **overrides,
+        "paid_on": timezone.localdate().isoformat(), "payer_name": "Asha Verma", "accept_terms": "true",
+        **overrides,
     }
 
 
-class UpgradeTests(PortalTestCase):
+class _UpgradeBase(PortalTestCase):
+    """Shared setup + helpers (no tests of its own, so subclasses don't re-run them)."""
+
     def setUp(self) -> None:
         super().setUp()
         self.owner = self.make_owner()
@@ -41,6 +44,9 @@ class UpgradeTests(PortalTestCase):
     def upgrade(self, plan: str = "businesses"):  # type: ignore[no-untyped-def]
         return self.post(PAY_URL, payment_form(upgrade_plan=plan), fmt="multipart")
 
+
+
+class UpgradeTests(_UpgradeBase):
     def test_upgrade_waits_for_approval_then_switches_with_days_carried_over(self) -> None:
         sub = self.start_startups()
         old_end = sub.ends_at
@@ -111,3 +117,41 @@ class UpgradeTests(PortalTestCase):
         sub.refresh_from_db()
         self.assertEqual((sub.plan.code, sub.status), ("businesses", "active"))
         self.assertLess(abs((sub.ends_at - add_months(sub.starts_at, 1)).total_seconds()), 5)
+
+
+class InvoiceTests(_UpgradeBase):
+    def test_invoice_for_a_confirmed_payment(self) -> None:
+        self.start_startups()
+        payment = ManualPayment.objects.get()
+        body = self.get(f"/api/auth/subscription/payments/{payment.pk}/invoice/").json()
+        self.assertEqual(body["number"], f"ZW-{payment.reviewed_at.year}-{payment.pk:05d}")
+        self.assertEqual(body["total_inr"], "999.00")
+        self.assertIn("Startups", body["lines"][0]["description"])
+        self.assertEqual(body["customer"]["email"], self.owner.email)
+        self.assertEqual(body["seller"]["name"], "SKYTECHNO")
+
+    def test_no_invoice_until_confirmed_or_for_others(self) -> None:
+        self.post(SUB_URL, {"plan": "startups"})
+        self.post(PAY_URL, payment_form(amount_inr="999"), fmt="multipart")
+        payment = ManualPayment.objects.get()
+        url = f"/api/auth/subscription/payments/{payment.pk}/invoice/"
+        self.assertEqual(self.get(url).status_code, status.HTTP_409_CONFLICT)
+        verify_payment(payment.pk, self.staff)
+        other = self.make_owner("rafi@else.in")
+        self.client.force_authenticate(other)
+        self.assertEqual(self.client.get(url).status_code, status.HTTP_404_NOT_FOUND)
+
+
+class PaymentTermsTests(_UpgradeBase):
+    def test_payment_needs_terms_and_records_them(self) -> None:
+        from django.conf import settings
+
+        self.post(SUB_URL, {"plan": "startups"})
+        refused = self.post(PAY_URL, payment_form(amount_inr="999", accept_terms="false"), fmt="multipart")
+        self.assertEqual(refused.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("accept_terms", refused.json())
+        ok = self.post(PAY_URL, payment_form(amount_inr="999"), fmt="multipart")
+        self.assertEqual(ok.status_code, status.HTTP_201_CREATED, ok.content)
+        payment = ManualPayment.objects.get()
+        self.assertEqual(payment.terms_version, settings.ZINWE_LEGAL_VERSION)
+        self.assertIsNotNone(payment.terms_accepted_at)

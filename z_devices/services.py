@@ -5,12 +5,15 @@ Side effects (analytics) are scheduled with `transaction.on_commit`, as in z_aut
 """
 from __future__ import annotations
 
+import hashlib
+import re
 from datetime import timedelta
 from typing import Any
 
 from django.conf import settings
 from django.db import IntegrityError, transaction
-from django.db.models import QuerySet, Sum
+from django.db.models import F, QuerySet, Sum, Value
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from z_analytics.services import track
@@ -19,6 +22,7 @@ from z_notification.services import notify
 
 from .events import build_title
 from .models import (
+    AgentRelease,
     Device,
     DeviceEvent,
     EnrollmentKey,
@@ -327,13 +331,33 @@ def messages_for_device(device: Device) -> QuerySet:
     )[:MESSAGE_FEED_LIMIT]
 
 
-def mark_read_by_member(device: Device) -> int:
-    """Mark the admin's messages to this member as seen by the member. Returns how many."""
+def mark_delivered(device: Device) -> int:
+    """
+    Stamp the admin's messages as delivered: the member's PC has pulled them (called on the
+    agent's poll). Only undelivered rows are touched, so a poll with nothing new writes nothing.
+    """
     if device.member_id is None:
         return 0
     return Message.objects.filter(
+        member_id=device.member_id, sender=Message.Sender.OWNER, delivered_at__isnull=True
+    ).update(delivered_at=timezone.now())
+
+
+def mark_read_by_member(device: Device) -> int:
+    """
+    Mark the admin's messages to this member as read (the agent calls this once the member
+    opened them in the widget's chat). Returns how many. A read message is also delivered.
+    """
+    if device.member_id is None:
+        return 0
+    now = timezone.now()
+    return Message.objects.filter(
         member_id=device.member_id, sender=Message.Sender.OWNER, read_by_member=False
-    ).update(read_by_member=True)
+    ).update(
+        read_by_member=True,
+        read_by_member_at=now,
+        delivered_at=Coalesce(F("delivered_at"), Value(now)),
+    )
 
 
 def thread_for_owner(owner: User, member: Member) -> QuerySet:
@@ -431,6 +455,18 @@ def enroll_device(data: dict[str, Any], ip: str | None) -> tuple[Device, str, bo
     return device, token, created
 
 
+def _record_consent(device: Device, data: dict[str, Any], now: Any) -> None:
+    """Keep the member's consent (version + when) from the widget; an implausible time becomes now."""
+    version = (data.get("consent_version") or "").strip()[:20]
+    if not version or version == device.consent_version:
+        return
+    at = data.get("consent_at") or now
+    if at > now:
+        at = now
+    device.consent_version = version
+    device.consent_at = at
+
+
 LOGGED_WORK_STATES = {Device.WorkState.WORKING, Device.WorkState.ON_BREAK, Device.WorkState.ENDED}
 
 
@@ -446,11 +482,93 @@ def _log_work_change(device: Device, data: dict[str, Any], now: Any) -> WorkLog 
     at = data.get("work_changed_at") or now
     if at > now or at < now - timedelta(days=1):
         at = now
-    reason = (data.get("break_reason") or "").strip()[:120] if new_state == Device.WorkState.ON_BREAK else ""
+    on_break = new_state == Device.WorkState.ON_BREAK
+    # A break carries the break reason/note; logging out carries its own (the widget asks for both).
+    prefix = "break" if on_break else "end" if new_state == Device.WorkState.ENDED else None
+    reason = (data.get(f"{prefix}_reason") or "").strip()[:120] if prefix else ""
+    note = (data.get(f"{prefix}_note") or "").strip()[:280] if prefix else ""
     return WorkLog.objects.create(
         owner_id=device.owner_id, device=device, member_id=device.member_id,
-        state=new_state, previous_state=device.work_state or "", at=at, reason=reason,
+        state=new_state, previous_state=device.work_state or "", at=at, reason=reason, note=note,
+        approval=WorkLog.Approval.PENDING if on_break else "",
     )
+
+
+WORK_EVENT_MAX_AGE = timedelta(days=7)
+WORK_EVENT_MAX_SKEW = timedelta(minutes=5)
+WORK_EVENT_SAME_WITHIN = timedelta(seconds=2)
+
+
+def _log_work_events(device: Device, events: list[dict[str, Any]], now: Any) -> int:
+    """
+    Record each change the widget logged (log in, break, back, log out) at its exact time, once.
+
+    Newer agents send every change since the last heartbeat they got through, so a 20-second
+    break or changes made while offline all reach Activity. Re-sent events (a lost response, a
+    retry) are skipped by their timestamp; so are ones far in the past or the future. The
+    `previous_state` is whatever this PC's log said just before, which tells "logged in" from
+    "back from break". Returns how many rows were added.
+    """
+    added = 0
+    for event in sorted(events, key=lambda e: e["at"]):
+        at, state = event["at"], event["state"]
+        if at > now + WORK_EVENT_MAX_SKEW or at < now - WORK_EVENT_MAX_AGE:
+            continue
+        # Same change already recorded (a retry, or the older state-diff path saw it): same state within
+        # a couple of seconds of the same moment.
+        if WorkLog.objects.filter(
+            device=device, state=state, at__range=(at - WORK_EVENT_SAME_WITHIN, at + WORK_EVENT_SAME_WITHIN)
+        ).exists():
+            continue
+        previous = (
+            WorkLog.objects.filter(device=device, at__lt=at)
+            .order_by("-at", "-id")
+            .values_list("state", flat=True)
+            .first()
+        ) or ""
+        if previous == state:
+            continue
+        on_break = state == Device.WorkState.ON_BREAK
+        explained = state in (Device.WorkState.ON_BREAK, Device.WorkState.ENDED)
+        WorkLog.objects.create(
+            owner_id=device.owner_id, device=device, member_id=device.member_id,
+            state=state, previous_state=previous, at=at,
+            reason=(event.get("reason") or "").strip()[:120] if explained else "",
+            note=(event.get("note") or "").strip()[:280] if explained else "",
+            approval=WorkLog.Approval.PENDING if on_break else "",
+        )
+        added += 1
+    return added
+
+
+class NotABreak(Exception):
+    """Only breaks can be approved or denied."""
+
+
+def decide_break(owner: User, log: WorkLog, decision: str, note: str = "") -> WorkLog:
+    """
+    Approve or deny a break (after the fact: the member isn't blocked). The member is told
+    in their Zinwe widget, with the owner's note if any. Deciding again overwrites.
+    """
+    if log.owner_id != owner.id:
+        raise PermissionError("Not your team's break.")
+    if log.state != WorkLog.State.ON_BREAK:
+        raise NotABreak()
+    log.approval = decision
+    log.decision_note = note.strip()[:280]
+    log.decided_at = timezone.now()
+    log.save(update_fields=["approval", "decision_note", "decided_at"])
+    if log.member_id and log.member and log.member.is_active:
+        what = f"{log.reason} break" if log.reason else "break"
+        when = timezone.localtime(log.at).strftime("%I:%M %p").lstrip("0")
+        approved = decision == WorkLog.Approval.APPROVED
+        send_message(
+            owner, log.member,
+            title=(f"Your {what} at {when} was approved" if approved else f"Your {what} at {when} wasn't approved")[:120],
+            body=log.decision_note,
+            severity=Message.Severity.INFO if approved else Message.Severity.WARNING,
+        )
+    return log
 
 
 def work_log_for_owner(owner: User, day: Any, member_id: int | None = None) -> QuerySet:
@@ -470,8 +588,13 @@ def record_heartbeat(device: Device, data: dict[str, Any], ip: str | None) -> di
         if data.get(field):
             setattr(device, field, data[field])
     # Work status (M6). The serializer supplies sane defaults for an older agent
-    # that omits these, so validated_data always carries them.
-    _log_work_change(device, data, now)
+    # that omits these, so validated_data always carries them. A newer agent sends the
+    # exact list of changes; an older one only its current state (we log what changed).
+    if data.get("work_events") is not None:
+        _log_work_events(device, data["work_events"], now)
+    else:
+        _log_work_change(device, data, now)
+    _record_consent(device, data, now)
     device.work_state = data["work_state"]
     device.worked_seconds = data["worked_seconds"]
     device.break_seconds = data["break_seconds"]
@@ -480,6 +603,7 @@ def record_heartbeat(device: Device, data: dict[str, Any], ip: str | None) -> di
         update_fields=[
             "last_seen_at", "last_ip", "agent_version", "os_version", "hostname",
             "work_state", "worked_seconds", "break_seconds", "work_updated_at",
+            "consent_version", "consent_at",
         ]
     )
     response = {
@@ -489,35 +613,133 @@ def record_heartbeat(device: Device, data: dict[str, Any], ip: str | None) -> di
         # The agent re-fetches GET policy/current/ whenever this differs from its cache.
         "policy_version": get_policy(device.owner).version,
     }
-    # Forced upgrade (M12): tell an out-of-date agent to update and where to get it.
+    # Updates (M12 + Releases): a newer published release is offered to the agent ("update"),
+    # and a required one (or the env minimum) also pauses the member's work ("update_required").
     # Keys are omitted entirely when no update is due, so the response shape is unchanged.
-    if update_required(device.agent_version):
-        response["update_required"] = True
-        response["download_url"] = settings.ZINWE_AGENT_DOWNLOAD_URL
+    update = pending_update(device.agent_version)
+    if update is not None:
+        response["update"] = update
+        if update["required"]:
+            response["update_required"] = True
+            response["download_url"] = settings.ZINWE_AGENT_DOWNLOAD_URL
     return response
 
 
+VERSION_PARTS = 4
+
+
 def _parse_version(value: str) -> tuple[int, ...]:
-    """Dotted numeric version to a tuple; stops at the first non-numeric part ("" -> ())."""
+    """
+    "0.3.0" -> (0, 3, 0, 0). Build metadata / pre-release tags are dropped ("0.3.0+abc12" is 0.3.0),
+    and the tuple is padded so "0.3" == "0.3.0". "" or garbage -> () (older than everything).
+    """
+    core = (value or "").strip().split("+", 1)[0].split("-", 1)[0]
     parts: list[int] = []
-    for chunk in (value or "").split("."):
+    for chunk in core.split("."):
         chunk = chunk.strip()
         if not chunk.isdigit():
             break
         parts.append(int(chunk))
-    return tuple(parts)
+    if not parts:
+        return ()
+    return tuple(parts[:VERSION_PARTS]) + (0,) * (VERSION_PARTS - min(len(parts), VERSION_PARTS))
+
+
+def is_valid_version(value: str) -> bool:
+    """A release version the agent can compare: 2-4 dotted numbers, e.g. 0.3.0."""
+    return bool(re.fullmatch(r"\d+(\.\d+){1,3}", (value or "").strip()))
 
 
 def update_required(agent_version: str) -> bool:
-    """True when `agent_version` is below the configured minimum ("" minimum = never)."""
+    """True when `agent_version` is below the env minimum ZINWE_AGENT_MIN_VERSION ("" = never)."""
     minimum = _parse_version(settings.ZINWE_AGENT_MIN_VERSION)
-    if not minimum:
-        return False
+    return bool(minimum) and _parse_version(agent_version) < minimum
+
+
+def release_download_path(release: AgentRelease) -> str:
+    """Where the agent downloads the MSI: our device-authenticated endpoint, or the external URL."""
+    if release.file:
+        return f"/api/devices/releases/{release.pk}/download/"
+    return release.download_url
+
+
+def pending_update(agent_version: str) -> dict[str, Any] | None:
+    """
+    What to offer an agent running `agent_version`: the newest active release above it, required
+    if ANY newer release is required (skipping a required release must not dodge it) or the agent
+    is below the env minimum. None when it's up to date.
+    """
     current = _parse_version(agent_version)
-    length = max(len(current), len(minimum))
-    current += (0,) * (length - len(current))
-    minimum += (0,) * (length - len(minimum))
-    return current < minimum
+    newer = [r for r in AgentRelease.objects.filter(is_active=True) if _parse_version(r.version) > current]
+    below_floor = update_required(agent_version)
+    if not newer:
+        if not below_floor:
+            return None
+        # Only the env minimum applies (no release uploaded): manual download, as before.
+        return {"version": settings.ZINWE_AGENT_MIN_VERSION, "notes": "", "required": True,
+                "download_url": "", "sha256": "", "size": None}
+    latest = max(newer, key=lambda r: _parse_version(r.version))
+    return {
+        "version": latest.version,
+        "notes": latest.notes,
+        "required": below_floor or any(r.required for r in newer),
+        "download_url": release_download_path(latest),
+        "sha256": latest.sha256,
+        "size": latest.size,
+    }
+
+
+class ReleaseRefused(Exception):
+    """The release can't be published as given (bad version, duplicate, no file/hash)."""
+
+
+def publish_release(
+    staff: User, version: str, notes: str, required: bool,
+    upload: Any = None, download_url: str = "", sha256: str = "",
+) -> AgentRelease:
+    """
+    Publish a new agent release. With an uploaded MSI we compute its SHA-256 and size ourselves;
+    with an external `download_url` the operator supplies the SHA-256. PCs see it on their next
+    heartbeat (within a minute).
+    """
+    version = (version or "").strip()
+    if not is_valid_version(version):
+        raise ReleaseRefused("Version must look like 0.3.0.")
+    if AgentRelease.objects.filter(version=version).exists():
+        raise ReleaseRefused(f"Version {version} is already published.")
+    release = AgentRelease(version=version, notes=(notes or "").strip(), required=required, published_by=staff)
+    if upload is not None:
+        if not upload.name.lower().endswith(".msi"):
+            raise ReleaseRefused("Upload the Zinwe Agent installer (.msi).")
+        digest = hashlib.sha256()
+        for chunk in upload.chunks():
+            digest.update(chunk)
+        upload.seek(0)
+        release.sha256 = digest.hexdigest()
+        release.size = upload.size
+        release.file.save(f"ZinweAgent-{version}.msi", upload, save=False)
+    else:
+        sha256 = (sha256 or "").strip().lower()
+        if not download_url or not re.fullmatch(r"[0-9a-f]{64}", sha256):
+            raise ReleaseRefused("Upload the .msi, or give a download URL and its SHA-256.")
+        release.download_url = download_url
+        release.sha256 = sha256
+    release.save()
+    transaction.on_commit(lambda: track(
+        "agent.release_published", {"version": version, "required": required}, actor_email=staff.email, ref=release
+    ))
+    return release
+
+
+def release_adoption(release: AgentRelease) -> dict[str, int]:
+    """How many active PCs already run this release (or newer), out of all active PCs."""
+    target = _parse_version(release.version)
+    versions = Device.objects.filter(is_revoked=False).values_list("agent_version", flat=True)
+    total = updated = 0
+    for v in versions:
+        total += 1
+        updated += _parse_version(v) >= target
+    return {"updated": updated, "total": total}
 
 
 # --- Policy -----------------------------------------------------------------

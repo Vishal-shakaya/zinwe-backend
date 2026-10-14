@@ -1090,7 +1090,45 @@ class ChatThreadTests(DeviceTestCase):
         self._send()
         self.as_device(self.token)
         self.client.post(MESSAGES_READ_URL)
-        self.assertTrue(Message.objects.get(sender="owner").read_by_member)
+        message = Message.objects.get(sender="owner")
+        self.assertTrue(message.read_by_member)
+        self.assertIsNotNone(message.read_by_member_at)
+        self.assertIsNotNone(message.delivered_at)  # read implies delivered, even if never polled
+
+    def _thread(self) -> list[dict]:
+        self.as_owner()
+        return self.client.get(f"{MEMBERS_URL}{self.member.id}/messages/").json()
+
+    def test_receipts_go_sent_then_delivered_then_seen(self) -> None:
+        self._send()
+        sent = self._thread()[0]
+        self.assertIsNone(sent["delivered_at"])
+        self.assertIsNone(sent["read_by_member_at"])
+
+        # The PC pulls the conversation: delivered, not yet read.
+        self.as_device(self.token)
+        self.client.get(MESSAGES_URL)
+        delivered = self._thread()[0]
+        self.assertIsNotNone(delivered["delivered_at"])
+        self.assertFalse(delivered["read_by_member"])
+
+        # The member opens the chat: the agent reports it read.
+        self.as_device(self.token)
+        self.client.post(MESSAGES_READ_URL)
+        seen = self._thread()[0]
+        self.assertTrue(seen["read_by_member"])
+        self.assertIsNotNone(seen["read_by_member_at"])
+        self.assertEqual(seen["delivered_at"], delivered["delivered_at"])  # first delivery time kept
+
+    def test_polling_again_keeps_the_first_delivery_time_and_skips_replies(self) -> None:
+        self._send()
+        self.as_device(self.token)
+        self.client.get(MESSAGES_URL)
+        first = Message.objects.get(sender="owner").delivered_at
+        self.client.post(MESSAGES_URL, {"body": "ok"}, format="json")
+        self.client.get(MESSAGES_URL)
+        self.assertEqual(Message.objects.get(sender="owner").delivered_at, first)
+        self.assertIsNone(Message.objects.get(sender="member").delivered_at)  # receipts are for the admin's lines
 
     def test_empty_reply_rejected(self) -> None:
         self.as_device(self.token)
@@ -1132,8 +1170,10 @@ class MessageTests(DeviceTestCase):
         created = response.json()
         self.assertEqual(
             set(created),
-            {"id", "sender", "title", "body", "severity", "created_at", "read_by_owner", "read_by_member"},
+            {"id", "sender", "title", "body", "severity", "created_at", "read_by_owner", "read_by_member",
+             "delivered_at", "read_by_member_at"},
         )
+        self.assertIsNone(created["delivered_at"])  # not on the PC yet
         self.assertEqual(created["sender"], "owner")
         self.assertTrue(created["read_by_owner"])
         self.assertFalse(created["read_by_member"])
@@ -1155,7 +1195,11 @@ class MessageTests(DeviceTestCase):
         self.as_device(self.token)
         feed = self.client.get(MESSAGES_URL)
         self.assertEqual(feed.status_code, status.HTTP_200_OK)
-        self.assertEqual(feed.json(), [created])
+        [line] = feed.json()
+        # Pulling it is what delivers it; everything else is the line the owner created.
+        self.assertIsNotNone(line.pop("delivered_at"))
+        created.pop("delivered_at")
+        self.assertEqual(line, created)
 
     def test_body_defaults_null_and_severity_defaults_info(self) -> None:
         self.as_owner()

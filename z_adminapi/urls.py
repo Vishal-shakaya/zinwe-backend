@@ -22,4 +22,6 @@ urlpatterns = [
     path("payments/<int:pk>/approve/", views.PaymentApproveView.as_view(), name="payment-approve"),
     path("payments/<int:pk>/reject/", views.PaymentRejectView.as_view(), name="payment-reject"),
     path("feedback/", views.FeedbackListView.as_view(), name="feedback"),
+    path("releases/", views.ReleaseListView.as_view(), name="releases"),
+    path("releases/<int:pk>/", views.ReleaseDetailView.as_view(), name="release-detail"),
 ]

@@ -62,6 +62,12 @@ class User(AbstractBaseUser, PermissionsMixin):
         null=True, blank=True,
         help_text="When the owner proved they control this email (signup code). Empty = unverified.",
     )
+    terms_accepted_at = models.DateTimeField(
+        null=True, blank=True, help_text="When the owner accepted the Terms and Privacy Policy (sign-up checkbox).",
+    )
+    terms_version = models.CharField(
+        max_length=20, blank=True, help_text="Which version of the Terms they accepted (ZINWE_LEGAL_VERSION).",
+    )
 
     objects = UserManager()
 
@@ -391,6 +397,10 @@ class ManualPayment(models.Model):
         "z_auth.Plan", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
         help_text="Set when the owner paid to move up to this plan from the dashboard (an upgrade).",
     )
+    terms_accepted_at = models.DateTimeField(
+        null=True, blank=True, help_text="When the owner accepted the payment terms (refund policy) for this payment.",
+    )
+    terms_version = models.CharField(max_length=20, blank=True)
 
     class Meta:
         ordering = ["-submitted_at", "-id"]

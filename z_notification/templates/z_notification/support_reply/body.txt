@@ -1,0 +1,11 @@
+{% autoescape off %}Hi {{ first_name }},
+
+The Zinwe team answered your support request "{{ ticket.subject }}":
+
+{{ message.body }}
+
+You can reply from the Support chat in your dashboard: {{ dashboard_url }}
+
+The Zinwe team
+SKYTECHNO, New Delhi
+{% endautoescape %}

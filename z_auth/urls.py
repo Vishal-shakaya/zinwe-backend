@@ -17,6 +17,7 @@ urlpatterns = [
     path("login/otp/verify/", views.LoginCodeVerifyView.as_view(), name="login-otp-verify"),
     path("logout/", views.LogoutView.as_view(), name="logout"),
     path("me/", views.MeView.as_view(), name="me"),
+    path("terms/accept/", views.TermsAcceptView.as_view(), name="terms-accept"),
     # Password reset
     path("password/forgot/", views.PasswordForgotView.as_view(), name="password-forgot"),
     path("password/reset/", views.PasswordResetView.as_view(), name="password-reset"),
@@ -34,6 +35,11 @@ urlpatterns = [
     ),
     path("feedback/", portal_views.FeedbackView.as_view(), name="feedback"),
     path("subscription/payments/", portal_views.PaymentHistoryView.as_view(), name="subscription-payments"),
+    path(
+        "subscription/payments/<int:payment_id>/invoice/",
+        portal_views.InvoiceView.as_view(),
+        name="subscription-payment-invoice",
+    ),
     path(
         "subscription/payment/<int:payment_id>/proof/",
         portal_views.PaymentProofView.as_view(),

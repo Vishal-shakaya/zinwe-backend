@@ -1,0 +1,13 @@
+{% autoescape off %}{{ article.title }}
+{% if article.summary %}
+{{ article.summary }}
+{% endif %}{% if full %}
+{{ body_text }}
+
+Read it on the website: {{ article_url }}{% else %}
+Read the {{ article.get_type_display|lower }}: {{ article_url }}{% endif %}
+
+--
+The Zinwe team · SKYTECHNO, New Delhi
+You get this because you subscribed to the Zinwe blog. Unsubscribe: {{ unsubscribe_url }}
+{% endautoescape %}

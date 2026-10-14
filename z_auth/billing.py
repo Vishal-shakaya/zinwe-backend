@@ -171,6 +171,47 @@ def next_period(payment: ManualPayment, now: datetime | None = None) -> tuple[da
     return now, add_months(now, 1)
 
 
+def invoice_number(payment: ManualPayment) -> str:
+    """Stable per payment: ZW-<year confirmed>-<payment id>, e.g. ZW-2026-00042."""
+    year = (payment.reviewed_at or payment.submitted_at).year
+    return f"ZW-{year}-{payment.pk:05d}"
+
+
+def invoice_for(payment: ManualPayment) -> dict[str, Any]:
+    """Everything the printable invoice shows. Only for verified payments (the caller checks)."""
+    subscription = payment.subscription
+    plan = payment.upgrade_plan or subscription.plan
+    company = subscription.company
+    owner = subscription.owner
+    seller = dict(settings.ZINWE_INVOICE_SELLER)
+    kind = "Upgrade" if payment.upgrade_plan_id else ("Renewal" if payment.is_renewal else "Subscription")
+    return {
+        "number": invoice_number(payment),
+        "issued_on": (payment.reviewed_at or payment.submitted_at).date(),
+        "paid_on": payment.paid_on,
+        "status": "paid",
+        "seller": seller,
+        "customer": {
+            "name": company.name if company else (owner.full_name or owner.email),
+            "contact": owner.full_name,
+            "email": owner.email,
+            "address": ", ".join(p for p in [getattr(company, "city", ""), getattr(company, "state", ""),
+                                             getattr(company, "country", "")] if p),
+            "gstin": getattr(company, "gstin", "") or "",
+        },
+        "lines": [{
+            "description": f"Zinwe {plan.name} plan — {kind.lower()}, 1 month"
+                           + (f" (up to {plan.max_devices} PCs)" if plan.max_devices else ""),
+            "period_from": payment.covers_from.date() if payment.covers_from else None,
+            "period_until": payment.covers_until.date() if payment.covers_until else None,
+            "amount_inr": str(payment.amount_inr),
+        }],
+        "total_inr": str(payment.amount_inr),
+        "payment": {"method": payment.get_method_display(), "reference": payment.reference, "payer": payment.payer_name},
+        "note": "Prices include any applicable taxes." if not seller.get("gstin") else "",
+    }
+
+
 def payment_instructions() -> dict[str, str]:
     """
     PaymentInstructions (portal-v1 §3.7): UPI, bank account, PayPal link, note.
@@ -255,6 +296,7 @@ def submit_payment(
     `PaymentUnderReview` (one is already `submitted`) or `UpgradeNotAllowed`.
     """
     upgrade_plan: Plan | None = data.pop("upgrade_plan", None)
+    accepted_terms = bool(data.pop("accept_terms", False))
     subscription = current_subscription(user)
     if subscription is None:
         raise NothingToPay()
@@ -280,6 +322,9 @@ def submit_payment(
     if has_payment_under_review(subscription):
         raise PaymentUnderReview()
     payment = ManualPayment(subscription=subscription, is_renewal=renewal, upgrade_plan=upgrade_plan, **data)
+    if accepted_terms:
+        payment.terms_accepted_at = timezone.now()
+        payment.terms_version = settings.ZINWE_LEGAL_VERSION
     if proof is not None:
         payment.proof = proof
     payment.save()

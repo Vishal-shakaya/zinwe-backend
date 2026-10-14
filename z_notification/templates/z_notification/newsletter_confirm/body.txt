@@ -1,0 +1,14 @@
+{% autoescape off %}Hi,
+
+Someone (hopefully you) asked to get the Zinwe blog by email: practical guides, product releases
+and news about keeping a small business's data safe. Usually one or two emails a month.
+
+Confirm here:
+{{ confirm_url }}
+
+If it wasn't you, ignore this email. Nothing happens until the link is opened.
+
+--
+The Zinwe team
+SKYTECHNO, New Delhi
+{% endautoescape %}

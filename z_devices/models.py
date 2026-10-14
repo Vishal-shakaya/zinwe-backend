@@ -138,6 +138,11 @@ class Device(models.Model):
     break_seconds = models.PositiveIntegerField(default=0)
     work_updated_at = models.DateTimeField(null=True, blank=True)
 
+    # The member's own consent to monitoring on this PC (DPDP: free, specific, informed,
+    # affirmative), given on the Zinwe widget's consent screen and reported on the heartbeat.
+    consent_version = models.CharField(max_length=20, blank=True)
+    consent_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         ordering = ["hostname"]
         constraints = [
@@ -254,6 +259,10 @@ class Message(models.Model):
     # Delivery/seen state, per side. Set true for the side that wrote the line.
     read_by_owner = models.BooleanField(default=False)
     read_by_member = models.BooleanField(default=False)
+    # Receipts for the admin's lines (shown in the dashboard chat): when the member's PC first
+    # pulled it, and when the member opened it in the widget's chat. Null = not yet / older rows.
+    delivered_at = models.DateTimeField(null=True, blank=True)
+    read_by_member_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -352,7 +361,22 @@ class WorkLog(models.Model):
     state = models.CharField(max_length=16, choices=State.choices)
     previous_state = models.CharField(max_length=16, blank=True)
     at = models.DateTimeField(db_index=True)
-    reason = models.CharField(max_length=120, blank=True, help_text="Break reason the member picked.")
+    reason = models.CharField(
+        max_length=120, blank=True, help_text="Reason the member picked for a break or for logging out."
+    )
+    note = models.CharField(
+        max_length=280, blank=True, help_text="Message the member added to a break or to logging out."
+    )
+
+    class Approval(models.TextChoices):
+        PENDING = "pending", "Waiting for you"
+        APPROVED = "approved", "Approved"
+        DENIED = "denied", "Not approved"
+
+    # Breaks only: the owner approves or denies after the fact (the member is told in their widget).
+    approval = models.CharField(max_length=10, choices=Approval.choices, blank=True)
+    decided_at = models.DateTimeField(null=True, blank=True)
+    decision_note = models.CharField(max_length=280, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -361,3 +385,40 @@ class WorkLog(models.Model):
 
     def __str__(self) -> str:
         return f"{self.member or self.device}: {self.state} @ {self.at:%Y-%m-%d %H:%M}"
+
+
+def agent_release_upload_to(instance: "AgentRelease", filename: str) -> str:
+    return f"agent-releases/{instance.version}/ZinweAgent-{instance.version}.msi"
+
+
+class AgentRelease(models.Model):
+    """
+    A Windows agent version the Zinwe team published from the admin app (Releases page).
+
+    Every PC running an older version is offered it on its next heartbeat: it shows an
+    "Update now" button and installs it in one click. A `required` release (the default)
+    also pauses the member's log in / break / log out until they've updated. The MSI is
+    either uploaded here (downloaded by enrolled PCs only, device-authenticated) or hosted
+    elsewhere (`download_url`); either way the agent checks `sha256` before installing.
+    """
+
+    version = models.CharField(max_length=32, unique=True, help_text="e.g. 0.3.0 - must match the MSI's version.")
+    notes = models.TextField(blank=True, help_text="What's new, shown to the member above the Update button.")
+    required = models.BooleanField(
+        default=True, help_text="Older PCs pause log in / break / log out until they install it."
+    )
+    is_active = models.BooleanField(default=True, help_text="Withdrawn releases are no longer offered.")
+    file = models.FileField(upload_to=agent_release_upload_to, blank=True)
+    download_url = models.URLField(blank=True, help_text="Hosted elsewhere instead of uploaded.")
+    sha256 = models.CharField(max_length=64)
+    size = models.BigIntegerField(null=True, blank=True)
+    published_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+    published_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-published_at", "-id"]
+
+    def __str__(self) -> str:
+        return f"Zinwe Agent {self.version}{' (required)' if self.required else ''}"

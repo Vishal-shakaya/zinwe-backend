@@ -89,6 +89,8 @@ class MemberSerializer(serializers.Serializer):
             "work_state": device.work_state,
             "worked_seconds": device.worked_seconds,
             "break_seconds": device.break_seconds,
+            "consent_version": device.consent_version,
+            "consent_at": device.consent_at,
         }
 
 
@@ -125,7 +127,10 @@ class MessageSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Message
-        fields = ["id", "sender", "title", "body", "severity", "created_at", "read_by_owner", "read_by_member"]
+        fields = [
+            "id", "sender", "title", "body", "severity", "created_at", "read_by_owner", "read_by_member",
+            "delivered_at", "read_by_member_at",
+        ]
 
     def get_body(self, obj: Message) -> str | None:
         return obj.body or None
@@ -135,6 +140,21 @@ class MemberReplySerializer(serializers.Serializer):
     """POST /api/devices/messages/ (Device auth) -- the member replies in the thread."""
 
     body = serializers.CharField(max_length=2000, trim_whitespace=True)
+
+
+MAX_WORK_EVENTS = 200
+
+
+class WorkEventSerializer(serializers.Serializer):
+    """One change the member made in their widget (log in, break, back, log out), as it happened."""
+
+    at = serializers.DateTimeField()
+    state = serializers.ChoiceField(
+        choices=[Device.WorkState.WORKING, Device.WorkState.ON_BREAK, Device.WorkState.ENDED]
+    )
+    # The break reason/note for a break, the log-out reason/note for a log out; empty otherwise.
+    reason = serializers.CharField(max_length=120, required=False, allow_blank=True, allow_null=True, default="")
+    note = serializers.CharField(max_length=280, required=False, allow_blank=True, allow_null=True, default="")
 
 
 class HeartbeatSerializer(serializers.Serializer):
@@ -153,9 +173,31 @@ class HeartbeatSerializer(serializers.Serializer):
     # When the widget's current state began, and the reason picked for a break.
     # Optional (older agents): we fall back to "now" and no reason.
     work_changed_at = serializers.DateTimeField(required=False, allow_null=True, default=None)
+    # The member's consent on the widget (which policy version, and when). Optional: older agents omit it.
+    consent_version = serializers.CharField(max_length=20, required=False, allow_blank=True, allow_null=True, default="")
+    consent_at = serializers.DateTimeField(required=False, allow_null=True, default=None)
     break_reason = serializers.CharField(
         max_length=120, required=False, allow_blank=True, allow_null=True, default=""
     )
+    break_note = serializers.CharField(
+        max_length=280, required=False, allow_blank=True, allow_null=True, default=""
+    )
+    # Why the member logged out (picked in the widget) and their note. Optional (older agents).
+    end_reason = serializers.CharField(
+        max_length=120, required=False, allow_blank=True, allow_null=True, default=""
+    )
+    end_note = serializers.CharField(
+        max_length=280, required=False, allow_blank=True, allow_null=True, default=""
+    )
+    # Every log in / break / back / log out the widget recorded since the last heartbeat, with its exact
+    # time (newer agents). When present it replaces the "state changed between heartbeats" guess, so short
+    # changes and ones made while offline are not lost. Absent/null = older agent.
+    work_events = WorkEventSerializer(many=True, required=False, allow_null=True)
+
+    def validate_work_events(self, value: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
+        if value is not None and len(value) > MAX_WORK_EVENTS:
+            raise serializers.ValidationError(f"Send at most {MAX_WORK_EVENTS} work events per heartbeat.")
+        return value
 
 
 class WorkLogQuerySerializer(serializers.Serializer):
@@ -165,13 +207,23 @@ class WorkLogQuerySerializer(serializers.Serializer):
     member = serializers.IntegerField(min_value=1, required=False)
 
 
+class BreakDecisionSerializer(serializers.Serializer):
+    """POST /api/devices/work-log/<id>/decision/ -- approve or deny one break."""
+
+    decision = serializers.ChoiceField(choices=[("approved", "Approve"), ("denied", "Deny")])
+    note = serializers.CharField(max_length=280, required=False, allow_blank=True, default="")
+
+
 class WorkLogSerializer(serializers.ModelSerializer):
     hostname = serializers.CharField(source="device.hostname", read_only=True)
     member_name = serializers.SerializerMethodField()
 
     class Meta:
         model = WorkLog
-        fields = ["id", "device_id", "hostname", "member_id", "member_name", "state", "previous_state", "at", "reason"]
+        fields = [
+            "id", "device_id", "hostname", "member_id", "member_name", "state", "previous_state", "at",
+            "reason", "note", "approval", "decided_at", "decision_note",
+        ]
 
     def get_member_name(self, obj: WorkLog) -> str | None:
         return obj.member.name if obj.member_id else None

@@ -227,7 +227,17 @@ def _code_recipient(email: str, purpose: str) -> User | None:
 
 
 @transaction.atomic
-def signup(full_name: str, email: str, password: str, ip: str | None) -> tuple[User, bool, int]:
+def accept_terms(user: User) -> User:
+    """Record that the owner accepted the current Terms (the dashboard's updated-terms prompt)."""
+    user.terms_accepted_at = timezone.now()
+    user.terms_version = settings.ZINWE_LEGAL_VERSION
+    user.save(update_fields=["terms_accepted_at", "terms_version"])
+    return user
+
+
+def signup(
+    full_name: str, email: str, password: str, ip: str | None, accepted_terms: bool = False
+) -> tuple[User, bool, int]:
     """
     Create an unverified account (or refresh an unverified one) and send a code.
 
@@ -236,14 +246,19 @@ def signup(full_name: str, email: str, password: str, ip: str | None) -> tuple[U
     cooldown no new code is sent: the earlier one still works.
     """
     email = otp.normalise_email(email)
+    terms = (
+        {"terms_accepted_at": timezone.now(), "terms_version": settings.ZINWE_LEGAL_VERSION} if accepted_terms else {}
+    )
     user = User.objects.select_for_update().filter(email__iexact=email).first()
     if user is not None:
         user.full_name = full_name
         user.set_password(password)
-        user.save(update_fields=["full_name", "password"])
+        for field, value in terms.items():
+            setattr(user, field, value)
+        user.save(update_fields=["full_name", "password", *terms.keys()])
     else:
         user = User.objects.create_user(
-            email=email, password=password, full_name=full_name, is_active=False
+            email=email, password=password, full_name=full_name, is_active=False, **terms
         )
     transaction.on_commit(lambda: track("auth.signup_started", {}, actor_email=email, ref=user))
     try:

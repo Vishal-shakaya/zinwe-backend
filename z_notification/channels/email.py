@@ -16,12 +16,15 @@ class EmailChannel(Channel):
 
     name = "email"
 
-    def send(self, recipient: str, subject: str, body: str, html: str | None = None) -> None:
+    def send(
+        self, recipient: str, subject: str, body: str, html: str | None = None, headers: dict[str, str] | None = None
+    ) -> None:
         message = EmailMultiAlternatives(
             subject=subject,
             body=body,
             from_email=settings.DEFAULT_FROM_EMAIL,
             to=[recipient],
+            headers=headers or None,
         )
         if html:
             message.attach_alternative(html, "text/html")

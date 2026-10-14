@@ -3,16 +3,22 @@ from __future__ import annotations
 
 from django.shortcuts import get_object_or_404
 from rest_framework import status
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import IsAdminUser
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from z_auth.models import ManualPayment, Plan, User
+from z_devices.models import AgentRelease
+from z_devices.services import ReleaseRefused, publish_release
 
 from . import services
 from .serializers import (
     ChangePlanSerializer,
+    PublishReleaseSerializer,
+    ReleaseRowSerializer,
+    UpdateReleaseSerializer,
     FeedbackRowSerializer,
     PaymentQueueSerializer,
     PlanSummarySerializer,
@@ -253,3 +259,42 @@ class FeedbackListView(StaffView):
                 "rows": FeedbackRowSerializer(services.feedback_rows(), many=True).data,
             }
         )
+
+
+class ReleaseListView(StaffView):
+    """
+    GET /api/admin/releases/ -- every published Windows agent release (newest first) + PC adoption.
+    POST (multipart) -- publish one: {version, notes, required, file} or {..., download_url, sha256}.
+    PCs below it are offered the update on their next heartbeat; `required` pauses their work until updated.
+    """
+
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def get(self, request: Request) -> Response:
+        return Response(ReleaseRowSerializer(AgentRelease.objects.select_related("published_by"), many=True).data)
+
+    def post(self, request: Request) -> Response:
+        data = PublishReleaseSerializer(data=request.data)
+        data.is_valid(raise_exception=True)
+        v = data.validated_data
+        try:
+            release = publish_release(
+                request.user, v["version"], v["notes"], v["required"],
+                upload=v.get("file"), download_url=v["download_url"], sha256=v["sha256"],
+            )
+        except ReleaseRefused as exc:
+            return _refused(exc)
+        return Response(ReleaseRowSerializer(release).data, status=status.HTTP_201_CREATED)
+
+
+class ReleaseDetailView(StaffView):
+    """PATCH /api/admin/releases/<id>/ -- {required?, is_active?, notes?}."""
+
+    def patch(self, request: Request, pk: int) -> Response:
+        release = get_object_or_404(AgentRelease, pk=pk)
+        data = UpdateReleaseSerializer(data=request.data)
+        data.is_valid(raise_exception=True)
+        for field, value in data.validated_data.items():
+            setattr(release, field, value.strip() if isinstance(value, str) else value)
+        release.save(update_fields=list(data.validated_data) or None)
+        return Response(ReleaseRowSerializer(release).data)

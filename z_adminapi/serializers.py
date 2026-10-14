@@ -7,6 +7,8 @@ from rest_framework import serializers
 
 from z_auth import billing
 from z_auth.models import Feedback, ManualPayment
+from z_devices.models import AgentRelease
+from z_devices.services import release_adoption
 from z_notification.models import Notification
 
 
@@ -41,6 +43,8 @@ def payment_dict(pay: ManualPayment, cycle: int | None) -> dict[str, Any]:
         "upgrade_from": pay.subscription.plan.name if pay.upgrade_plan_id else None,
         "cycle": cycle,
         "is_renewal": pay.is_renewal,
+        "terms_accepted_at": pay.terms_accepted_at,
+        "terms_version": pay.terms_version,
         # The period it paid for (approved), or would pay for if approved now (waiting).
         "covers_from": pay.covers_from,
         "covers_until": pay.covers_until,
@@ -75,6 +79,11 @@ class SubscriberSerializer(serializers.Serializer):
     remark = serializers.SerializerMethodField()
     emails = serializers.SerializerMethodField()
     team = serializers.SerializerMethodField()
+    terms = serializers.SerializerMethodField()
+
+    def get_terms(self, obj: Any) -> dict[str, Any]:
+        """When the customer accepted the Terms and Privacy Policy at sign-up, and which version."""
+        return {"accepted_at": obj.user.terms_accepted_at, "version": obj.user.terms_version}
 
     def get_company(self, obj: Any) -> dict[str, Any] | None:
         if obj.company is None:
@@ -134,6 +143,8 @@ class SubscriberSerializer(serializers.Serializer):
                     "is_active": m.is_active,
                     "devices": getattr(m, "device_count", 0),
                     "created_at": m.created_at,
+                    # Their consent on the Zinwe widget (latest PC that reported one).
+                    "consent": _member_consent(m),
                 }
                 for m in obj.members
             ],
@@ -153,6 +164,14 @@ class SubscriberSerializer(serializers.Serializer):
             "updated_at": r.updated_at,
             "updated_by": r.updated_by.email if r.updated_by_id else None,
         }
+
+
+def _member_consent(member: Any) -> dict[str, Any] | None:
+    device = (
+        member.devices.filter(is_revoked=False).exclude(consent_version="").order_by("-consent_at").first()
+        if hasattr(member, "devices") else None
+    )
+    return {"version": device.consent_version, "at": device.consent_at} if device else None
 
 
 class PaymentQueueSerializer(serializers.Serializer):
@@ -225,3 +244,57 @@ class SentEmailSerializer(serializers.ModelSerializer):
 
     def get_automatic(self, obj: Notification) -> bool:
         return obj.template != "admin_message"
+
+
+# --- Agent releases (Releases page) ------------------------------------------------
+
+
+class ReleaseRowSerializer(serializers.ModelSerializer):
+    """One published Windows agent release, with how many PCs already run it."""
+
+    hosted = serializers.SerializerMethodField()
+    published_by = serializers.SerializerMethodField()
+    adoption = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AgentRelease
+        fields = [
+            "id", "version", "notes", "required", "is_active", "hosted", "download_url",
+            "sha256", "size", "published_at", "published_by", "adoption",
+        ]
+
+    def get_hosted(self, obj: Any) -> str:
+        return "upload" if obj.file else "link"
+
+    def get_published_by(self, obj: Any) -> str:
+        return obj.published_by.email if obj.published_by else ""
+
+    def get_adoption(self, obj: Any) -> dict[str, int]:
+        return release_adoption(obj)
+
+
+class PublishReleaseSerializer(serializers.Serializer):
+    """POST /api/admin/releases/ (multipart): the MSI upload, or an external link + its SHA-256."""
+
+    version = serializers.CharField(max_length=32)
+    notes = serializers.CharField(max_length=2000, required=False, allow_blank=True, default="")
+    required = serializers.BooleanField(required=False, default=True)
+    file = serializers.FileField(required=False, allow_null=True, max_length=200)
+    download_url = serializers.URLField(required=False, allow_blank=True, default="")
+    sha256 = serializers.CharField(max_length=64, required=False, allow_blank=True, default="")
+
+    def validate_file(self, value: Any) -> Any:
+        if value is not None and value.size > MAX_RELEASE_BYTES:
+            raise serializers.ValidationError("The installer is larger than 300 MB.")
+        return value
+
+
+MAX_RELEASE_BYTES = 300 * 1024 * 1024
+
+
+class UpdateReleaseSerializer(serializers.Serializer):
+    """PATCH /api/admin/releases/<id>/: make required/optional, withdraw/restore, edit notes."""
+
+    required = serializers.BooleanField(required=False)
+    is_active = serializers.BooleanField(required=False)
+    notes = serializers.CharField(max_length=2000, required=False, allow_blank=True)

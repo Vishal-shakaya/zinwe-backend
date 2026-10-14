@@ -93,7 +93,8 @@ class PortalTestCase(APITestCase):
     ) -> dict[str, Any]:
         """Run the sign-up + code flow; returns the AuthResponse and authenticates the client."""
         response = self.post(
-            "/api/auth/signup/", {"full_name": full_name, "email": email, "password": STRONG_PASSWORD}
+            "/api/auth/signup/",
+            {"full_name": full_name, "email": email, "password": STRONG_PASSWORD, "accept_terms": True},
         )
         assert response.status_code == 201, response.content
         response = self.post("/api/auth/signup/verify/", {"email": email, "code": last_code(email)})

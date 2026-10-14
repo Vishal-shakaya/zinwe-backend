@@ -5,6 +5,7 @@ import mimetypes
 import os
 
 from django.http import FileResponse, Http404
+from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
@@ -115,6 +116,26 @@ class PaymentSubmitView(APIView):
         except billing.UpgradeNotAllowed as exc:
             return Response({"upgrade_plan": [str(exc)]}, status=status.HTTP_400_BAD_REQUEST)
         return Response(PaymentSerializer(payment).data, status=status.HTTP_201_CREATED)
+
+
+class InvoiceView(APIView):
+    """
+    GET /api/auth/subscription/payments/<id>/invoice/ -- the invoice for one confirmed payment
+    (seller, customer, plan, period, amount). The dashboard renders it as a printable page.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request: Request, payment_id: int) -> Response:
+        payment = get_object_or_404(
+            ManualPayment.objects.select_related("subscription__plan", "subscription__company", "upgrade_plan"),
+            pk=payment_id, subscription__owner=request.user,
+        )
+        if payment.status != ManualPayment.Status.VERIFIED:
+            return Response(
+                {"detail": "An invoice is ready once the payment is confirmed."}, status=status.HTTP_409_CONFLICT
+            )
+        return Response(billing.invoice_for(payment))
 
 
 def proof_file_response(payment: ManualPayment) -> FileResponse:

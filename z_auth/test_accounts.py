@@ -35,7 +35,10 @@ FRESH_ONBOARDING = {"step": "company", "has_company": False, "subscription_statu
 
 
 def signup_payload(**overrides):  # type: ignore[no-untyped-def]
-    return {"full_name": "Asha Verma", "email": "asha@acme.in", "password": STRONG_PASSWORD, **overrides}
+    return {
+        "full_name": "Asha Verma", "email": "asha@acme.in", "password": STRONG_PASSWORD, "accept_terms": True,
+        **overrides,
+    }
 
 
 class SignupTests(PortalTestCase):
@@ -153,7 +156,7 @@ class SignupVerifyTests(PortalTestCase):
         self.assertEqual(body["token"], Token.objects.get(user=user).key)
         self.assertEqual(
             set(body["user"]),
-            {"id", "email", "full_name", "phone", "is_staff", "date_joined", "email_verified"},
+            {"id", "email", "full_name", "phone", "is_staff", "date_joined", "email_verified", "terms"},
         )
         self.assertTrue(body["user"]["email_verified"])
         self.assertEqual(body["onboarding"], FRESH_ONBOARDING)
@@ -370,7 +373,7 @@ class LogoutAndMeTests(PortalTestCase):
         self.assertEqual(
             set(body),
             {
-                "id", "email", "full_name", "phone", "is_staff", "date_joined", "email_verified",
+                "id", "email", "full_name", "phone", "is_staff", "date_joined", "email_verified", "terms",
                 "onboarding", "company", "subscription", "active_plan",
             },
         )
@@ -461,3 +464,44 @@ class EarlyAccessThrottleBodyTests(PortalTestCase):
         response = self.post("/api/auth/early-access/", {})
         self.assertEqual(response.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
         self.assertGreater(response.json()["retry_after"], 0)
+
+
+class TermsAcceptanceTests(PortalTestCase):
+    def test_signup_requires_and_records_terms(self) -> None:
+        from django.conf import settings
+
+        response = self.post(SIGNUP, signup_payload(accept_terms=False))
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("accept_terms", response.json())
+        payload = signup_payload()
+        payload.pop("accept_terms")
+        self.assertIn("accept_terms", self.post(SIGNUP, payload).json())
+
+        self.assertEqual(self.post(SIGNUP, signup_payload()).status_code, status.HTTP_201_CREATED)
+        user = User.objects.get(email="asha@acme.in")
+        self.assertIsNotNone(user.terms_accepted_at)
+        self.assertEqual(user.terms_version, settings.ZINWE_LEGAL_VERSION)
+
+    def test_existing_owner_is_asked_once_to_accept_updated_terms(self) -> None:
+        from django.conf import settings
+
+        owner = self.make_owner(terms_version="2000-01-01")
+        terms = self.get("/api/auth/me/").json()["terms"]
+        self.assertTrue(terms["needs_acceptance"])
+        self.assertEqual(terms["current_version"], settings.ZINWE_LEGAL_VERSION)
+
+        response = self.post("/api/auth/terms/accept/", {"accept_terms": False})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("accept_terms", response.json())
+
+        response = self.post("/api/auth/terms/accept/", {"accept_terms": True})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.json()["terms"]["needs_acceptance"])
+        owner.refresh_from_db()
+        self.assertEqual(owner.terms_version, settings.ZINWE_LEGAL_VERSION)
+        self.assertIsNotNone(owner.terms_accepted_at)
+        self.assertFalse(self.get("/api/auth/me/").json()["terms"]["needs_acceptance"])
+
+    def test_accepting_terms_needs_sign_in(self) -> None:
+        response = self.client.post("/api/auth/terms/accept/", {"accept_terms": True}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)

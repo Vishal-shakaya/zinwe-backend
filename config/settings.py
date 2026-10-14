@@ -77,6 +77,8 @@ INSTALLED_APPS = [
     "z_main",
     "z_devices",
     "z_adminapi",
+    "z_support",
+    "z_blog",
 ]
 
 MIDDLEWARE = [
@@ -228,6 +230,7 @@ REST_FRAMEWORK = {
         "auth_login": "20/hour",
         "auth_otp": "30/hour",
         "alert_email": "60/hour",
+        "support": "30/hour",
         "payment_submit": "10/hour",
         "feedback": "20/hour",
     },
@@ -273,6 +276,21 @@ ZINWE_VERSION = "0.1.0"
 ZINWE_TEAM_NOTIFY_EMAIL = env_str("ZINWE_TEAM_NOTIFY_EMAIL", "hello@zinwe.io")
 # The customer website/dashboard, for links in emails (prod: https://zinwe.io).
 ZINWE_APP_URL = env_str("ZINWE_APP_URL", "http://localhost:5173").rstrip("/")
+# Version (date) of the Terms, Privacy, Refund, Cookie, Disclaimer and Acceptable Use policies that
+# owners accept at sign-up and with each payment. Bump it when the Terms change: every owner on an
+# older version is then asked once, in the dashboard, to accept the new one (POST auth/terms/accept/).
+ZINWE_LEGAL_VERSION = "2026-10-15"
+# Who issues invoices (shown on the printable invoice in Billing). Set the real values in .env.
+ZINWE_INVOICE_SELLER = {
+    "name": env_str("ZINWE_INVOICE_SELLER_NAME", "SKYTECHNO"),
+    "address": env_str("ZINWE_INVOICE_SELLER_ADDRESS", "New Delhi, India"),
+    "email": env_str("ZINWE_INVOICE_SELLER_EMAIL", "hello@zinwe.io"),
+    "gstin": env_str("ZINWE_INVOICE_SELLER_GSTIN", ""),
+}
+# The internal admin app, for links in team emails (support tickets).
+# The built website (zinwe-frontend dist/index.html), used to pre-render /blog pages (z_blog/prerender.py).
+ZINWE_FRONTEND_INDEX = env_str("ZINWE_FRONTEND_INDEX", str(BASE_DIR.parent / "zinwe-frontend" / "dist" / "index.html"))
+ZINWE_ADMIN_URL = env_str("ZINWE_ADMIN_URL", "http://localhost:5174").rstrip("/")
 # Renewal reminders (z_auth.renewals): days before a paid plan ends, each sent once per period.
 ZINWE_RENEWAL_REMINDER_DAYS = (7, 1)
 # "How are we doing?" emails (z_auth.feedback_requests): first ask after N days, then at most every M days.

@@ -8,6 +8,11 @@ urlpatterns = [
     path("api/auth/", include("z_auth.urls")),
     path("api/analytics/", include("z_analytics.urls")),
     path("api/devices/", include("z_devices.urls")),
+    path("api/support/", include("z_support.urls")),
+    path("api/admin/support/", include("z_support.staff_urls")),
+    path("api/blog/", include("z_blog.urls")),
+    path("api/admin/blog/", include("z_blog.staff_urls")),
+    path("", include("z_blog.site_urls")),  # /blog pre-rendered for search engines
     path("api/admin/", include("z_adminapi.urls")),
 ]
 

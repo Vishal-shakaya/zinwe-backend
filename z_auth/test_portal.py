@@ -55,6 +55,7 @@ def payment_form(**overrides):  # type: ignore[no-untyped-def]
         "reference": "UTR123456",
         "paid_on": timezone.localdate().isoformat(),
         "payer_name": "Asha Verma",
+        "accept_terms": "true",
     }
     data.update(overrides)
     return {k: v for k, v in data.items() if v is not None}

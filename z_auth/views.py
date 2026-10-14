@@ -34,6 +34,7 @@ from .serializers import (
     RegisterSerializer,
     ResendCodeSerializer,
     SignupSerializer,
+    TermsAcceptSerializer,
     UserSerializer,
     early_access_payload,
 )
@@ -112,7 +113,7 @@ class SignupView(PublicView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
         user, sent, resend_in = services.signup(
-            data["full_name"], data["email"], data["password"], ip=get_client_ip(request)
+            data["full_name"], data["email"], data["password"], ip=get_client_ip(request), accepted_terms=True,
         )
         return Response(
             {"email": user.email, "otp_sent": sent, "resend_in": resend_in},
@@ -266,6 +267,20 @@ class MeView(APIView):
                 "active_plan": PlanActivationSerializer(activation, context=ctx).data if activation else None,
             }
         )
+
+
+class TermsAcceptView(APIView):
+    """
+    POST /api/auth/terms/accept/ -- signed in: {accept_terms: true}. Records the current Terms
+    version for an owner who signed up before it (or before the Terms changed). Returns the user.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request: Request) -> Response:
+        TermsAcceptSerializer(data=request.data).is_valid(raise_exception=True)
+        user = services.accept_terms(request.user)
+        return Response(UserSerializer(user).data)
 
 
 # --- Password reset -----------------------------------------------------------

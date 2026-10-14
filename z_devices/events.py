@@ -69,5 +69,10 @@ def build_title(event_type: str, data: Any, hostname: str) -> str:
     builder = _BUILDERS.get(event_type)
     if builder is not None:
         return builder(payload, host)
+    # Newer agents send a plain-English summary; prefer it over the generic sentence.
+    summary = payload.get("summary")
+    if isinstance(summary, str) and summary.strip():
+        text = _WHITESPACE.sub(" ", summary).strip().rstrip(".")
+        return f"{text} on {host}"[:200]
     readable = (event_type or "").replace(".", " ").replace("_", " ").strip() or "unknown"
     return f'{host} reported a "{readable}" event'

@@ -21,7 +21,8 @@ ME = "/api/auth/me/"
 def payment_form(**overrides):  # type: ignore[no-untyped-def]
     return {
         "method": "upi", "amount_inr": "999", "reference": "UTR-NEW",
-        "paid_on": timezone.localdate().isoformat(), "payer_name": "Asha Verma", **overrides,
+        "paid_on": timezone.localdate().isoformat(), "payer_name": "Asha Verma", "accept_terms": "true",
+        **overrides,
     }
 
 

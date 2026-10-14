@@ -1,0 +1,12 @@
+{% autoescape off %}{% if new %}A customer opened a support request{% else %}A customer replied to support request{% endif %} #{{ ticket.id }}.
+
+Customer:  {{ owner.full_name|default:"-" }} <{{ owner.email }}>
+Company:   {{ company|default:"-" }}
+Topic:     {{ ticket.get_category_display }}
+Subject:   {{ ticket.subject }}{% if ticket.page %}
+From page: {{ ticket.page }}{% endif %}
+
+{{ message.body }}
+
+Answer it in the admin app: {{ admin_url }}
+{% endautoescape %}
