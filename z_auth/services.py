@@ -235,6 +235,7 @@ def accept_terms(user: User) -> User:
     return user
 
 
+@transaction.atomic  # select_for_update below: PostgreSQL refuses it outside a transaction (SQLite ignores it)
 def signup(
     full_name: str, email: str, password: str, ip: str | None, accepted_terms: bool = False
 ) -> tuple[User, bool, int]:

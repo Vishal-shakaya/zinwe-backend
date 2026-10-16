@@ -40,7 +40,11 @@ class Command(BaseCommand):
         self.stdout.write(f"Zinwe jobs: {names} every {interval // 60} min")
         while True:
             for label, job in JOBS:
-                close_old_connections()
+                # Long-running loop only: drop stale DB connections between jobs. A --once run is a
+                # fresh process (systemd timer) -- and inside a test, closing would kill the test's own
+                # connection on PostgreSQL.
+                if not options["once"]:
+                    close_old_connections()
                 stamp = f"[{timezone.localtime():%Y-%m-%d %H:%M}]"
                 try:
                     result = job()
