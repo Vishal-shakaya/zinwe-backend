@@ -14,8 +14,8 @@ from rest_framework.views import APIView
 
 from z_main.client import get_client_ip, get_user_agent
 
-from . import otp, services
-from .announcements import announcements_for
+from . import entitlements, otp, services
+from .announcements import announcements_for, website_announcements
 from .billing import current_subscription
 from .company import get_company
 from .models import Plan, User
@@ -265,6 +265,8 @@ class MeView(APIView):
                     SubscriptionSerializer(subscription, context=ctx).data if subscription else None
                 ),
                 "active_plan": PlanActivationSerializer(activation, context=ctx).data if activation else None,
+                # What the plan switches on + the PC limit; the dashboard locks sections from it.
+                "entitlements": entitlements.as_payload(user),
             }
         )
 
@@ -374,10 +376,26 @@ class PlanListView(PublicView):
         return Response(PlanSerializer(plans, many=True, context={"user": request.user}).data)
 
 
+class WebsiteAnnouncementsView(APIView):
+    """
+    GET /api/auth/announcements/public/ -- the bars for the public website, sign-up and onboarding:
+    the admin panel's live messages placed on the website (same for every visitor, so cacheable).
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes: list = []
+    throttle_classes: list = []
+
+    def get(self, request: Request) -> Response:
+        response = Response({"announcements": website_announcements()})
+        response["Cache-Control"] = "public, max-age=60"
+        return response
+
+
 class AnnouncementsView(APIView):
     """
-    GET /api/auth/announcements/ -- the dashboard notification-bar items for the
-    signed-in owner: configured version/offer banners plus the derived upgrade nudge.
+    GET /api/auth/announcements/ -- the dashboard notification-bar items for the signed-in owner:
+    the admin panel's messages for their audience, configured banners, then the upgrade bar.
     """
 
     permission_classes = [IsAuthenticated]

@@ -25,6 +25,7 @@ urlpatterns = [
     # Owner portal
     path("company/", portal_views.CompanyView.as_view(), name="company"),
     path("announcements/", views.AnnouncementsView.as_view(), name="announcements"),
+    path("announcements/public/", views.WebsiteAnnouncementsView.as_view(), name="announcements-public"),
     path("plans/", views.PlanListView.as_view(), name="plans"),
     path("plans/activate/", views.PlanActivateView.as_view(), name="plan-activate"),
     path("subscription/", portal_views.SubscriptionView.as_view(), name="subscription"),
@@ -39,6 +40,11 @@ urlpatterns = [
         "subscription/payments/<int:payment_id>/invoice/",
         portal_views.InvoiceView.as_view(),
         name="subscription-payment-invoice",
+    ),
+    path(
+        "subscription/payments/<int:payment_id>/invoice/pdf/",
+        portal_views.InvoicePdfView.as_view(),
+        name="subscription-payment-invoice-pdf",
     ),
     path(
         "subscription/payment/<int:payment_id>/proof/",

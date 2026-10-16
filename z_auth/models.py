@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 import uuid
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from django.contrib.auth.base_user import AbstractBaseUser, BaseUserManager
@@ -123,12 +123,39 @@ class Plan(models.Model):
 
     code = models.SlugField(max_length=50, unique=True)
     name = models.CharField(max_length=120)
-    price_inr_monthly = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    price_inr_monthly = models.DecimalField(
+        max_digits=10, decimal_places=2, default=0,
+        help_text="What the owner pays each month. Worked out from the list price and discount when a list price is set.",
+    )
+    list_price_inr_monthly = models.DecimalField(
+        "list price (INR / month)", max_digits=10, decimal_places=2, default=0,
+        help_text="The price before the discount, shown struck through on plan cards. 0 = no discount shown.",
+    )
+    discount_percent = models.PositiveSmallIntegerField(
+        default=0, validators=[MaxValueValidator(90)],
+        help_text="Off the list price (0–90). The price owners pay is the list price minus this, rounded to a rupee.",
+    )
+    # International customers (company outside India) pay in USD, billed yearly (z_auth.pricing).
+    price_usd_monthly = models.DecimalField(
+        "price (USD / month)", max_digits=10, decimal_places=2, default=0,
+        help_text="What a customer outside India pays per month, billed yearly (12 x this). 0 = not sold in USD.",
+    )
+    list_price_usd_monthly = models.DecimalField(
+        "list price (USD / month)", max_digits=10, decimal_places=2, default=0,
+        help_text="The USD price before the discount, shown struck through. 0 = no discount shown.",
+    )
     trial_days = models.PositiveIntegerField(default=0)
     is_active = models.BooleanField(default=True)
     tagline = models.CharField(max_length=160, blank=True)
     max_devices = models.PositiveIntegerField(default=0, help_text="How many PCs the plan covers.")
     features = models.JSONField(default=list, blank=True, help_text="Short feature lines shown on plan cards.")
+    modules = models.JSONField(
+        default=list, blank=True,
+        help_text=(
+            "What the plan switches on (enforced): usb_alerts, usb_control, data_transfer, remote_access, "
+            "software_installs, web, work_time, app_usage, team_chat, alert_to_employee. See z_auth/entitlements.py."
+        ),
+    )
     is_recommended = models.BooleanField(default=False)
     sort_order = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -142,6 +169,19 @@ class Plan(models.Model):
     @property
     def requires_payment(self) -> bool:
         return (self.price_inr_monthly or Decimal("0")) > 0
+
+    @staticmethod
+    def discounted(list_price: Decimal, discount_percent: int) -> Decimal:
+        """The list price minus the discount, rounded to a whole rupee (half up)."""
+        value = Decimal(list_price) * (100 - discount_percent) / 100
+        return value.quantize(Decimal("1"), rounding=ROUND_HALF_UP).quantize(Decimal("0.01"))
+
+    def save(self, *args: Any, **kwargs: Any) -> None:
+        # A list price makes the paid price follow it: list price minus the discount. Billing only ever
+        # reads price_inr_monthly, so a discount is just a lower price with the "was" price shown.
+        if self.list_price_inr_monthly and self.list_price_inr_monthly > 0:
+            self.price_inr_monthly = self.discounted(self.list_price_inr_monthly, self.discount_percent or 0)
+        super().save(*args, **kwargs)
 
 
 class PlanActivation(models.Model):
@@ -307,6 +347,11 @@ class Subscription(models.Model):
 
     class BillingCycle(models.TextChoices):
         MONTHLY = "monthly", "Monthly"
+        YEARLY = "yearly", "Yearly"
+
+    class Currency(models.TextChoices):
+        INR = "INR", "Indian rupee"
+        USD = "USD", "US dollar"
 
     owner = models.ForeignKey(
         "z_auth.User", on_delete=models.CASCADE, related_name="subscriptions"
@@ -318,9 +363,18 @@ class Subscription(models.Model):
     status = models.CharField(
         max_length=20, choices=Status.choices, default=Status.PENDING_PAYMENT, db_index=True
     )
-    amount_inr = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    # Legacy name: the plan price for ONE billing cycle, before tax, in `currency` (INR or USD).
+    amount_inr = models.DecimalField(
+        max_digits=10, decimal_places=2, default=0,
+        help_text="Plan price for one billing cycle, before tax, in the subscription's currency.",
+    )
+    currency = models.CharField(max_length=3, choices=Currency.choices, default=Currency.INR)
     billing_cycle = models.CharField(
         max_length=20, choices=BillingCycle.choices, default=BillingCycle.MONTHLY
+    )
+    payment_link = models.URLField(
+        max_length=500, blank=True,
+        help_text="A payment link made for this customer (e.g. Skydo, card or US bank). Shown on their payment page.",
     )
     starts_at = models.DateTimeField(null=True, blank=True)
     ends_at = models.DateTimeField(null=True, blank=True)
@@ -355,7 +409,8 @@ class ManualPayment(models.Model):
     class Method(models.TextChoices):
         UPI = "upi", "UPI"
         BANK_TRANSFER = "bank_transfer", "Bank transfer"
-        PAYPAL = "paypal", "PayPal"  # payments from outside India
+        PAYPAL = "paypal", "PayPal"  # payments from outside India (legacy)
+        SKYDO = "skydo", "Skydo (card or US bank)"  # payments from outside India
         CHEQUE = "cheque", "Cheque"
         CASH = "cash", "Cash"
 
@@ -368,7 +423,13 @@ class ManualPayment(models.Model):
         Subscription, on_delete=models.CASCADE, related_name="payments"
     )
     method = models.CharField(max_length=20, choices=Method.choices)
+    # Legacy name: the amount the owner says they paid, in `currency`.
     amount_inr = models.DecimalField(max_digits=10, decimal_places=2)
+    currency = models.CharField(max_length=3, choices=Subscription.Currency.choices, default=Subscription.Currency.INR)
+    due = models.JSONField(
+        default=dict, blank=True,
+        help_text="What was due when the owner reported this payment (z_auth.pricing quote: amount, taxes, total).",
+    )
     reference = models.CharField(max_length=64, help_text="UTR / transaction id / cheque number.")
     paid_on = models.DateField()
     payer_name = models.CharField(max_length=120)
@@ -479,3 +540,91 @@ class RenewalReminder(models.Model):
 
     def __str__(self) -> str:
         return f"{self.get_kind_display()} reminder for subscription #{self.subscription_id}"
+
+
+class Announcement(models.Model):
+    """
+    A message the Zinwe team pushes from the admin panel: an offer, a discount, news, an update or a
+    maintenance notice. Shown as a bar on the owner dashboard, on the public website (and sign-up /
+    onboarding), or both, to the audience chosen, between `starts_at` and `ends_at`.
+    The dashboard's own "upgrade" bar is derived from the owner's plan (z_auth.announcements), not stored.
+    """
+
+    class Kind(models.TextChoices):
+        OFFER = "offer", "Offer"
+        DISCOUNT = "discount", "Discount"
+        NEWS = "news", "News"
+        VERSION = "version", "New version"
+        MAINTENANCE = "maintenance", "Maintenance"
+
+    class Placement(models.TextChoices):
+        DASHBOARD = "dashboard", "Dashboard"
+        WEBSITE = "website", "Website"
+        BOTH = "both", "Dashboard and website"
+
+    class Audience(models.TextChoices):
+        EVERYONE = "everyone", "Everyone"
+        FREE = "free", "Owners without a paid plan"
+        PAID = "paid", "Owners on a paid plan"
+        PLANS = "plans", "Owners on the plans chosen"
+
+    title = models.CharField(max_length=120)
+    body = models.CharField(max_length=280, blank=True)
+    kind = models.CharField(max_length=20, choices=Kind.choices, default=Kind.OFFER)
+    placement = models.CharField(max_length=20, choices=Placement.choices, default=Placement.DASHBOARD)
+    audience = models.CharField(
+        max_length=20, choices=Audience.choices, default=Audience.EVERYONE,
+        help_text="Dashboard only: the website shows every website/both message to all visitors.",
+    )
+    plan_codes = models.JSONField(default=list, blank=True, help_text="Plan codes, when audience is 'plans'.")
+    cta_label = models.CharField("button text", max_length=40, blank=True)
+    cta_href = models.CharField(
+        "button link", max_length=300, blank=True,
+        help_text="A path on zinwe.io (e.g. /app/upgrade?plan=businesses or /plans) or an https:// link.",
+    )
+    starts_at = models.DateTimeField(default=timezone.now)
+    ends_at = models.DateTimeField(null=True, blank=True, help_text="Empty = until switched off.")
+    is_active = models.BooleanField(default=True)
+    dismissible = models.BooleanField(default=True)
+    priority = models.PositiveSmallIntegerField(default=0, help_text="Higher shows first.")
+    created_by = models.ForeignKey(
+        "z_auth.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-priority", "-starts_at", "-id"]
+        indexes = [models.Index(fields=["is_active", "starts_at"])]
+
+    def __str__(self) -> str:
+        return f"{self.get_kind_display()}: {self.title}"
+
+
+class Invoice(models.Model):
+    """
+    The tax invoice for one confirmed payment, frozen when staff confirm it (z_auth.invoices).
+
+    Numbers run without gaps per Indian financial year (April-March): ZW/2026-27/0001 … — GST asks for
+    a consecutive serial, so a number is only taken once a payment is confirmed. `data` holds everything
+    printed (seller, customer, place of supply, lines, taxes, totals, notes) so later edits to the plan,
+    company or settings never change an issued invoice.
+    """
+
+    payment = models.OneToOneField(ManualPayment, on_delete=models.PROTECT, related_name="invoice")
+    number = models.CharField(max_length=20, unique=True)
+    financial_year = models.CharField(max_length=7, help_text='e.g. "2026-27".')
+    sequence = models.PositiveIntegerField()
+    issued_at = models.DateTimeField(default=timezone.now)
+    currency = models.CharField(max_length=3, choices=Subscription.Currency.choices, default=Subscription.Currency.INR)
+    total = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    data = models.JSONField(default=dict)
+
+    class Meta:
+        ordering = ["-issued_at", "-id"]
+        constraints = [
+            models.UniqueConstraint(fields=["financial_year", "sequence"], name="one_invoice_number_per_year"),
+        ]
+
+    def __str__(self) -> str:
+        return self.number

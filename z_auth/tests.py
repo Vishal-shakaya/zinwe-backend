@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from decimal import Decimal
+
 from datetime import timedelta
 from typing import Any
 
@@ -316,34 +318,59 @@ class PlanTests(APITestCase):
             rows,
             {
                 "free": ("Free forever", "0.00", 0, 3, False, False, 10),
-                "startups": ("Startups", "999.00", 0, 10, True, False, 20),
-                "businesses": ("Businesses", "2999.00", 0, 50, True, True, 30),
+                "startups": ("Startups", "971.00", 0, 10, True, False, 20),
+                "businesses": ("Businesses", "2834.00", 0, 50, True, True, 30),
             },
         )
+        # Offering v2 (0014): owner-language lines; the card shows the PC limit from max_devices.
         self.assertEqual(
             plans["free"].features,
-            ["Up to 3 PCs", "USB and file-copy alerts", "Plain-English alerts by email", "Guided setup"],
+            [
+                "USB drive and file-copy alerts",
+                "Plain-English alerts by email",
+                "Employee consent on every PC: who agreed, and when",
+                "Guided setup",
+            ],
         )
         self.assertEqual(
             plans["startups"].features,
             [
-                "Up to 10 PCs",
-                "Every monitoring module: USB, remote access, software installs, LAN, email",
-                "Plain-English alerts",
+                "Everything in Free forever",
+                "Block USB drives or make them read-only",
+                "Alerts when files leave by network folder, Outlook or upload",
+                "Spot or block remote-access tools like AnyDesk",
+                "New software alerts and website blocking",
                 "Email support",
             ],
         )
         self.assertEqual(
             plans["businesses"].features,
             [
-                "Up to 50 PCs",
                 "Everything in Startups",
-                "DPDP-ready consent & activity logs",
-                "Priority support",
+                "Work hours, breaks and app usage",
+                "Chat with your team",
+                "Email an alert to the employee involved",
+                "Priority support: we answer you first",
             ],
+        )
+        # Pricing (0017): list prices up 35%, then 28% / 30% off — what owners pay follows the list price.
+        self.assertEqual(
+            {code: (str(p.list_price_inr_monthly), p.discount_percent) for code, p in plans.items() if p.is_active},
+            {"free": ("0.00", 0), "startups": ("1349.00", 28), "businesses": ("4049.00", 30)},
         )
         for plan in active:
             self.assertTrue(plan.tagline, plan.code)
+
+    def test_price_follows_list_price_and_discount(self) -> None:
+        plan = Plan.objects.get(code="startups")
+        plan.list_price_inr_monthly = Decimal("1500")
+        plan.discount_percent = 20
+        plan.save()
+        self.assertEqual(plan.price_inr_monthly, Decimal("1200.00"))
+        plan.list_price_inr_monthly = Decimal("0")  # no list price: the price is set by hand again
+        plan.price_inr_monthly = Decimal("999")
+        plan.save()
+        self.assertEqual(plan.price_inr_monthly, Decimal("999"))
 
     def test_plan_list_is_public_and_active_only(self) -> None:
         Plan.objects.create(code="legacy", name="Legacy", is_active=False)

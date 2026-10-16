@@ -1,6 +1,6 @@
 {% autoescape off %}Hi {{ first_name }},
 
-We checked the payment you reported for the {{ plan.name }} plan ({{ payment.amount_inr }} INR, reference {{ payment.reference }}), but we couldn't confirm it.
+We checked the payment you reported for the {{ plan.name }} plan ({{ payment.amount_inr }} {{ payment.currency }}, reference {{ payment.reference }}), but we couldn't confirm it.
 
 Reason: {{ reason }}
 

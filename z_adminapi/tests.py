@@ -165,7 +165,7 @@ class EarlyAccessRemovedTests(AdminApiTestCase):
 class SubscriberAccountTests(SubscriberFixture):
     """Password, delete, and the payment history / billing cycles on each row."""
 
-    def _pay(self, status_: str, *, days_ago: int, amount: str = "999.00") -> ManualPayment:
+    def _pay(self, status_: str, *, days_ago: int, amount: str = "971.00") -> ManualPayment:
         when = timezone.now() - timedelta(days=days_ago)
         sub = Subscription.objects.create(
             owner=self.owner, company=self.company, plan=self.paid,
@@ -187,7 +187,7 @@ class SubscriberAccountTests(SubscriberFixture):
         second = self._pay("verified", days_ago=30)
         waiting = self._pay("submitted", days_ago=0)
         row = self.row()
-        self.assertEqual(row["billing"], {"cycles_paid": 2, "total_paid_inr": "1998.00"})
+        self.assertEqual(row["billing"], {"cycles_paid": 2, "total_paid_inr": "1942.00"})
         cycles = {p["id"]: p["cycle"] for p in row["payments"]}
         self.assertEqual(cycles, {first.id: 1, rejected.id: None, second.id: 2, waiting.id: 3})
         self.assertEqual(row["payments"][0]["id"], waiting.id)  # newest first
@@ -261,7 +261,7 @@ class PaymentQueueTests(SubscriberFixture):
         picked = {k: row[k] for k in ("method", "amount_inr", "expected_inr", "reference", "payer_name", "status", "cycle")}
         self.assertEqual(
             picked,
-            {"method": "upi", "amount_inr": "999.00", "expected_inr": "999.00", "reference": "UTR1",
+            {"method": "upi", "amount_inr": "971.00", "expected_inr": "971.00", "reference": "UTR1",
              "payer_name": "Asha", "status": "submitted", "cycle": 1},
         )
         self.assertEqual(row["customer"]["email"], self.owner.email)

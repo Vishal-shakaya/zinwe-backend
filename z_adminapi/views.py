@@ -9,12 +9,15 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from z_auth.models import ManualPayment, Plan, User
+from z_auth.models import Announcement, ManualPayment, Plan, Subscription, User
+from z_auth.portal_views import invoice_pdf_response
 from z_devices.models import AgentRelease
 from z_devices.services import ReleaseRefused, publish_release
 
 from . import services
 from .serializers import (
+    AdminSubscriptionSerializer,
+    AnnouncementSerializer,
     ChangePlanSerializer,
     PublishReleaseSerializer,
     ReleaseRowSerializer,
@@ -298,3 +301,72 @@ class ReleaseDetailView(StaffView):
             setattr(release, field, value.strip() if isinstance(value, str) else value)
         release.save(update_fields=list(data.validated_data) or None)
         return Response(ReleaseRowSerializer(release).data)
+
+
+class AnnouncementListView(StaffView):
+    """
+    GET /api/admin/announcements/ -- every pushed message, newest first, with its live status.
+    POST -- push one: {title, body?, kind, placement, audience, plan_codes?, cta_label?, cta_href?,
+    starts_at?, ends_at?, is_active?, dismissible?, priority?}. Owners see it on their next page load.
+    """
+
+    def get(self, request: Request) -> Response:
+        rows = Announcement.objects.select_related("created_by").order_by("-created_at", "-id")
+        return Response(AnnouncementSerializer(rows, many=True).data)
+
+    def post(self, request: Request) -> Response:
+        data = AnnouncementSerializer(data=request.data)
+        data.is_valid(raise_exception=True)
+        announcement = data.save(created_by=request.user)
+        return Response(AnnouncementSerializer(announcement).data, status=status.HTTP_201_CREATED)
+
+
+class AnnouncementDetailView(StaffView):
+    """PATCH /api/admin/announcements/<id>/ -- edit / switch on or off; DELETE -- remove it for good."""
+
+    def patch(self, request: Request, pk: int) -> Response:
+        announcement = get_object_or_404(Announcement, pk=pk)
+        data = AnnouncementSerializer(announcement, data=request.data, partial=True)
+        data.is_valid(raise_exception=True)
+        return Response(AnnouncementSerializer(data.save()).data)
+
+    def delete(self, request: Request, pk: int) -> Response:
+        get_object_or_404(Announcement, pk=pk).delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class SubscriptionListView(StaffView):
+    """
+    GET /api/admin/subscriptions/ -- every subscription (newest first, cancelled ones left out) with the
+    customer's country, currency, cycle, the amount due next (with tax), the latest payment and invoices.
+    """
+
+    def get(self, request: Request) -> Response:
+        rows = (
+            Subscription.objects.exclude(status=Subscription.Status.CANCELLED)
+            .select_related("owner", "company", "plan")
+            .order_by("-created_at", "-id")
+        )
+        return Response(AdminSubscriptionSerializer(rows, many=True).data)
+
+
+class SubscriptionDetailView(StaffView):
+    """PATCH /api/admin/subscriptions/<id>/ -- {payment_link}: the Skydo (or other) link this customer pays with."""
+
+    def patch(self, request: Request, pk: int) -> Response:
+        subscription = get_object_or_404(Subscription.objects.select_related("owner", "company", "plan"), pk=pk)
+        data = AdminSubscriptionSerializer(subscription, data={"payment_link": request.data.get("payment_link", "")}, partial=True)
+        data.is_valid(raise_exception=True)
+        return Response(AdminSubscriptionSerializer(data.save()).data)
+
+
+class InvoicePdfView(StaffView):
+    """GET /api/admin/payments/<id>/invoice/pdf/ -- any confirmed payment's invoice as a PDF."""
+
+    def get(self, request: Request, pk: int):  # type: ignore[no-untyped-def]
+        payment = get_object_or_404(
+            ManualPayment.objects.select_related("subscription__plan", "subscription__company", "upgrade_plan"), pk=pk
+        )
+        if payment.status != ManualPayment.Status.VERIFIED:
+            return Response({"detail": "Only a confirmed payment has an invoice."}, status=status.HTTP_409_CONFLICT)
+        return invoice_pdf_response(payment)

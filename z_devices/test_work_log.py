@@ -6,6 +6,8 @@ from datetime import timedelta
 from django.utils import timezone
 from rest_framework import status
 
+from z_auth._testing import give_plan
+
 from .models import WorkLog
 from .tests import DeviceTestCase
 
@@ -156,6 +158,7 @@ class WorkLogTests(DeviceTestCase):
         from rest_framework.authtoken.models import Token
 
         other = User.objects.create_user("other@else.in", "pw-12345678")
+        give_plan(other, "businesses")  # same plan, so only ownership decides what they see
         token, _ = Token.objects.get_or_create(user=other)
         self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
         self.assertEqual(self.client.get(WORK_LOG_URL, {"date": day}).json()["entries"], [])
@@ -203,6 +206,7 @@ class BreakDecisionTests(DeviceTestCase):
         from z_auth.models import User
 
         other = User.objects.create_user("other@else.in", "pw-12345678")
+        give_plan(other, "businesses")  # same plan, so only ownership decides the answer
         token, _ = Token.objects.get_or_create(user=other)
         self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
         response = self.client.post(f"{WORK_LOG_URL}{self.brk.id}/decision/", {"decision": "approved"}, format="json")

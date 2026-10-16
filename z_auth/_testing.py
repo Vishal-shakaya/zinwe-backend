@@ -11,7 +11,7 @@ from django.utils import timezone
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
-from .models import Company, OneTimeCode, User
+from .models import Company, OneTimeCode, Plan, Subscription, User
 
 STRONG_PASSWORD = "s3cure-Passphrase!"
 CODE_RE = re.compile(r"^\s+(\d{6})\s*$", re.MULTILINE)
@@ -102,3 +102,13 @@ class PortalTestCase(APITestCase):
         body = response.json()
         self.use_token(body["token"])
         return body
+
+
+def give_plan(user: User, code: str) -> Subscription:
+    """Put `user` on an ACTIVE subscription to plan `code` (entitlements follow it)."""
+    plan = Plan.objects.get(code=code)
+    now = timezone.now()
+    return Subscription.objects.create(
+        owner=user, plan=plan, status=Subscription.Status.ACTIVE, amount_inr=plan.price_inr_monthly,
+        starts_at=now, ends_at=now + timedelta(days=30) if plan.requires_payment else None,
+    )

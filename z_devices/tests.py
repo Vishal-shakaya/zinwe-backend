@@ -16,6 +16,8 @@ from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
 from z_analytics.models import Event
+from z_auth._testing import give_plan
+from z_auth.entitlements import entitlements_for
 from z_auth.models import User
 from z_notification.models import Notification
 
@@ -78,6 +80,8 @@ class DeviceTestCase(APITestCase):
     def setUp(self) -> None:
         cache.clear()  # reset throttle counters between tests
         self.owner = User.objects.create_user("owner@acme.in", "pw-12345678")
+        # The feature tests run on the top plan; plan limits have their own tests (test_plan_limits).
+        give_plan(self.owner, "businesses")
         self.member = Member.objects.create(
             owner=self.owner, name="Asha Rao", email="asha@acme.in"
         )
@@ -101,6 +105,20 @@ class DeviceTestCase(APITestCase):
     def as_owner(self) -> None:
         token, _ = Token.objects.get_or_create(user=self.owner)
         self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def agent_version(self, saved_version: int) -> int:
+        """What the agent is told for a saved policy version (the plan's module set is folded in)."""
+        return saved_version * 1000 + entitlements_for(self.owner).fingerprint
+
+    def agent_policy(self, saved_version: int, usb_mode: str) -> dict[str, Any]:
+        """The full policy a Businesses-plan PC receives (nothing clamped)."""
+        return {
+            "version": self.agent_version(saved_version),
+            "usb": {"mode": usb_mode},
+            **default_policy_blocks(),
+            "entitlements": sorted(entitlements_for(self.owner).modules),
+            "max_devices": 50,
+        }
 
 
 class EnrollTests(DeviceTestCase):
@@ -189,7 +207,7 @@ class HeartbeatTests(DeviceTestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         body = response.json()
         self.assertEqual(body["next_heartbeat_seconds"], 60)
-        self.assertEqual(body["policy_version"], 1)  # policy created lazily
+        self.assertEqual(body["policy_version"], self.agent_version(1))  # policy created lazily
         device = Device.objects.get()
         self.assertEqual(device.agent_version, "0.2.0")
         self.assertTrue(device.is_online)
@@ -523,7 +541,7 @@ class PolicyTests(DeviceTestCase):
 
         body = self.client.post(HEARTBEAT_URL, {}, format="json").json()
 
-        self.assertEqual(body["policy_version"], 2)
+        self.assertEqual(body["policy_version"], self.agent_version(2))
 
     def test_device_reads_its_owners_policy(self) -> None:
         self.as_owner()
@@ -537,7 +555,7 @@ class PolicyTests(DeviceTestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(
             response.json(),
-            {"version": 2, "usb": {"mode": "read_only"}, **default_policy_blocks()},
+            self.agent_policy(2, "read_only"),
         )
         # Device GET is the agent's wire contract: no owner-only `updated_at`.
         self.assertNotIn("updated_at", response.json())
@@ -547,7 +565,7 @@ class PolicyTests(DeviceTestCase):
         response = self.client.get(CURRENT_POLICY_URL)
         self.assertEqual(
             response.json(),
-            {"version": 1, "usb": {"mode": "allow"}, **default_policy_blocks()},
+            self.agent_policy(1, "allow"),
         )
         self.assertEqual(Policy.objects.get().owner, self.owner)
 

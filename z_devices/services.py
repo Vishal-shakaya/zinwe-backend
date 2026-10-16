@@ -12,11 +12,13 @@ from typing import Any
 
 from django.conf import settings
 from django.db import IntegrityError, transaction
-from django.db.models import F, QuerySet, Sum, Value
+from django.db.models import F, Q, QuerySet, Sum, Value
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from z_analytics.services import track
+from z_auth import entitlements as plan
+from z_auth.entitlements import Entitlements, entitlements_for
 from z_auth.models import User
 from z_notification.services import notify
 
@@ -420,6 +422,7 @@ def enroll_device(data: dict[str, Any], ip: str | None) -> tuple[Device, str, bo
         raise EnrollmentRejected("email", "This email does not match the member id.")
     if not member.is_active or not member.owner.is_active:
         raise EnrollmentRejected("non_field_errors", "This member is no longer active.")
+    _check_pc_limit(member.owner, data["machine_id"])
 
     now = timezone.now()
     token = Device.new_token()
@@ -453,6 +456,30 @@ def enroll_device(data: dict[str, Any], ip: str | None) -> tuple[Device, str, bo
         )
     )
     return device, token, created
+
+
+def _check_pc_limit(owner: User, machine_id: str) -> None:
+    """
+    Plan enforcement: a NEW PC (or a removed one coming back) needs a free slot on the owner's plan.
+    A PC already enrolled can always re-enrol (agent reinstall), so going over the limit after a
+    downgrade never cuts off PCs that are working -- only adding more is refused.
+    """
+    existing = Device.objects.filter(owner=owner, machine_id=machine_id).only("is_revoked").first()
+    if existing is not None and not existing.is_revoked:
+        return
+    ent = entitlements_for(owner)
+    if not ent.max_devices or plan.devices_used(owner) < ent.max_devices:
+        return
+    track(
+        "device.enroll_refused",
+        {"reason": "pc_limit", "max_devices": ent.max_devices, "plan": ent.plan.code if ent.plan else ""},
+        actor_email=owner.email,
+    )
+    raise EnrollmentRejected(
+        "non_field_errors",
+        f"Your company's plan covers {ent.max_devices} PCs and they're all in use. "
+        "Ask your admin to upgrade the plan or remove a PC.",
+    )
 
 
 def _record_consent(device: Device, data: dict[str, Any], now: Any) -> None:
@@ -582,6 +609,7 @@ def work_log_for_owner(owner: User, day: Any, member_id: int | None = None) -> Q
 def record_heartbeat(device: Device, data: dict[str, Any], ip: str | None) -> dict[str, Any]:
     """Mark the device as seen, store its work status, and tell the agent when to call back."""
     now = timezone.now()
+    ent = entitlements_for(device.owner)
     device.last_seen_at = now
     device.last_ip = ip
     for field in ("agent_version", "os_version", "hostname"):
@@ -590,14 +618,24 @@ def record_heartbeat(device: Device, data: dict[str, Any], ip: str | None) -> di
     # Work status (M6). The serializer supplies sane defaults for an older agent
     # that omits these, so validated_data always carries them. A newer agent sends the
     # exact list of changes; an older one only its current state (we log what changed).
-    if data.get("work_events") is not None:
+    # Plan enforcement: the work log (Activity) is only kept on plans with work hours.
+    if not ent.has(plan.WORK_TIME):
+        pass
+    elif data.get("work_events") is not None:
         _log_work_events(device, data["work_events"], now)
     else:
         _log_work_change(device, data, now)
     _record_consent(device, data, now)
-    device.work_state = data["work_state"]
-    device.worked_seconds = data["worked_seconds"]
-    device.break_seconds = data["break_seconds"]
+    if ent.has(plan.WORK_TIME):
+        device.work_state = data["work_state"]
+        device.worked_seconds = data["worked_seconds"]
+        device.break_seconds = data["break_seconds"]
+    else:
+        # Plan enforcement: no work hours on this plan, so the PC's work day isn't kept either
+        # (the dashboard shows it as plain online/offline).
+        device.work_state = Device.WorkState.NOT_STARTED
+        device.worked_seconds = 0
+        device.break_seconds = 0
     device.work_updated_at = now
     device.save(
         update_fields=[
@@ -611,7 +649,7 @@ def record_heartbeat(device: Device, data: dict[str, Any], ip: str | None) -> di
         "server_time": device.last_seen_at,
         "next_heartbeat_seconds": settings.ZINWE_DEVICE_HEARTBEAT_SECONDS,
         # The agent re-fetches GET policy/current/ whenever this differs from its cache.
-        "policy_version": get_policy(device.owner).version,
+        "policy_version": effective_policy_version(get_policy(device.owner), ent),
     }
     # Updates (M12 + Releases): a newer published release is offered to the agent ("update"),
     # and a required one (or the env minimum) also pauses the member's work ("update_required").
@@ -751,6 +789,69 @@ def get_policy(owner: User) -> Policy:
     return policy
 
 
+# --- Plan enforcement: the policy the agent actually gets ----------------------
+#
+# The owner's saved rules stay as they are; what a PC is SENT is clamped to the plan, so an
+# upgrade switches features on (and a downgrade off) without touching the saved rules. The
+# version the agent compares folds in the plan's module set, so a plan change alone makes
+# every PC re-fetch. Old agents ignore the extra `entitlements` / `max_devices` keys.
+
+# A warn size no transfer reaches: the data-transfer module keeps watching USB copies
+# (USB alerts are on every plan) but never raises a network-folder or Outlook alert.
+UNREACHABLE_BYTES = 2**62
+
+
+def effective_policy_version(policy: Policy, ent: Entitlements) -> int:
+    return policy.version * 1000 + ent.fingerprint
+
+
+def apply_entitlements(data: dict[str, Any], policy: Policy, ent: Entitlements) -> dict[str, Any]:
+    """Clamp the agent's policy wire shape (DevicePolicySerializer data) to what `ent` includes."""
+    out = {key: dict(value) if isinstance(value, dict) else value for key, value in data.items()}
+    if not ent.has(plan.USB_CONTROL):
+        out["usb"]["mode"] = Policy.UsbMode.ALLOW
+        out["data_transfer"]["usb_lockdown"] = False
+    if not ent.has(plan.USB_ALERTS) and not ent.has(plan.DATA_TRANSFER):
+        out["data_transfer"]["enabled"] = False
+    if not ent.has(plan.DATA_TRANSFER):
+        out["data_transfer"]["lan_warn_bytes"] = UNREACHABLE_BYTES
+        out["data_transfer"]["email_warn_bytes"] = UNREACHABLE_BYTES
+    if not ent.has(plan.REMOTE_ACCESS):
+        out["remote_software"]["blocking_enabled"] = False
+        if not ent.has(plan.SOFTWARE_INSTALLS):
+            out["remote_software"]["enabled"] = False
+    if not ent.has(plan.WEB):
+        out["web"]["enabled"] = False
+    out["version"] = effective_policy_version(policy, ent)
+    out["entitlements"] = sorted(ent.modules)
+    out["max_devices"] = ent.max_devices
+    return out
+
+
+def check_policy_change(owner: User, data: dict[str, Any]) -> None:
+    """Refuse (FeatureLocked, 403) a rule the owner's plan doesn't include."""
+    ent = entitlements_for(owner)
+    usb = data.get("usb")
+    if usb is not None and usb["mode"] != Policy.UsbMode.ALLOW and not ent.has(plan.USB_CONTROL):
+        raise plan.FeatureLocked(plan.USB_CONTROL)
+    transfer = data.get("data_transfer")
+    if transfer is not None and transfer["usb_lockdown"] and not ent.has(plan.USB_CONTROL):
+        raise plan.FeatureLocked(plan.USB_CONTROL)
+    if data.get("web") is not None and not ent.has(plan.WEB):
+        raise plan.FeatureLocked(plan.WEB)
+    remote = data.get("remote_software")
+    if remote is not None:
+        if remote["blocking_enabled"] and not ent.has(plan.REMOTE_ACCESS):
+            raise plan.FeatureLocked(plan.REMOTE_ACCESS)
+        if not (ent.has(plan.REMOTE_ACCESS) or ent.has(plan.SOFTWARE_INSTALLS)):
+            raise plan.FeatureLocked(plan.REMOTE_ACCESS)
+
+
+def _locked_kinds(field: str, ent: Entitlements) -> Q:
+    """A Q matching rows whose event type / metric category belongs to a module `ent` lacks."""
+    return plan.locked_kinds_q(field, ent)
+
+
 # Each policy feature maps its validated block's keys to the model fields they set.
 # `(block_key, {wire_key: model_field})` -- a new feature adds one entry here (and
 # its block to PolicyUpdateSerializer). update_policy diffs every mapped field and
@@ -799,6 +900,7 @@ def update_policy(owner: User, data: dict[str, Any]) -> Policy:
     Each feature maps a validated block to the model fields it changed. A new
     feature adds one entry to `_POLICY_BLOCKS` (and its block to PolicyUpdateSerializer).
     """
+    check_policy_change(owner, data)
     get_policy(owner)  # make sure the row exists before locking it
     policy = Policy.objects.select_for_update().get(owner=owner)
 
@@ -849,6 +951,12 @@ def store_events(device: Device, events: list[dict[str, Any]]) -> tuple[int, int
     same batch -- count as duplicates, so an agent that re-sends after a lost
     response still gets a 200 and can clear its queue.
     """
+    # Plan enforcement: events from a module the plan doesn't include are not kept. They count
+    # as accepted (handled) so the agent clears its queue instead of re-sending them forever.
+    ent = entitlements_for(device.owner)
+    kept = [event for event in events if ent.allows(event["type"])]
+    dropped = len(events) - len(kept)
+    events = kept
     seen = _stored_client_ids(device, [event["id"] for event in events])
     rows: list[DeviceEvent] = []
     for event in events:
@@ -880,12 +988,16 @@ def store_events(device: Device, events: list[dict[str, Any]]) -> tuple[int, int
                 accepted += 1
             except IntegrityError:
                 pass
-    return accepted, len(events) - accepted
+    return accepted + dropped, len(events) - accepted
 
 
 def events_for_owner(owner: User, device_id: int | None = None, limit: int = 50) -> QuerySet:
     """The owner's newest events first, optionally for one of their devices."""
-    events = DeviceEvent.objects.filter(device__owner=owner).select_related("device")
+    events = (
+        DeviceEvent.objects.filter(device__owner=owner)
+        .exclude(_locked_kinds("type", entitlements_for(owner)))
+        .select_related("device")
+    )
     if device_id is not None:
         events = events.filter(device_id=device_id)
     return events.order_by("-occurred_at", "-id")[:limit]
@@ -902,8 +1014,12 @@ def store_metrics(device: Device, rows: list[dict[str, Any]]) -> int:
     totals, so count/bytes/seconds are SET to the row's values on (device,
     bucket_start, category, key). Returns the number of rows accepted.
     """
+    ent = entitlements_for(device.owner)
     accepted = 0
     for row in rows:
+        if not ent.allows(row["category"]):
+            accepted += 1  # plan enforcement: not kept, but handled (the agent clears it)
+            continue
         with transaction.atomic():
             UsageMetric.objects.update_or_create(
                 device=device,
@@ -937,7 +1053,9 @@ def metrics_for_owner(
     is ordered newest-last (oldest bucket first) so a chart can plot it directly.
     """
     since = timezone.now() - timedelta(days=days)
-    qs = UsageMetric.objects.filter(device__owner=owner, bucket_start__gte=since)
+    qs = UsageMetric.objects.filter(device__owner=owner, bucket_start__gte=since).exclude(
+        _locked_kinds("category", entitlements_for(owner))
+    )
     if member_id is not None:
         qs = qs.filter(device__member_id=member_id)
     if device_id is not None:
@@ -987,9 +1105,11 @@ def top_metrics_for_owner(
     with no per-item detail) are left out -- there's nothing to break down.
     """
     since = timezone.now() - timedelta(days=days)
-    qs = UsageMetric.objects.filter(
-        device__owner=owner, bucket_start__gte=since, category=category
-    ).exclude(key="")
+    qs = (
+        UsageMetric.objects.filter(device__owner=owner, bucket_start__gte=since, category=category)
+        .exclude(key="")
+        .exclude(_locked_kinds("category", entitlements_for(owner)))
+    )
     if member_id is not None:
         qs = qs.filter(device__member_id=member_id)
     if device_id is not None:

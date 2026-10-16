@@ -287,6 +287,26 @@ ZINWE_INVOICE_SELLER = {
     "email": env_str("ZINWE_INVOICE_SELLER_EMAIL", "hello@zinwe.io"),
     "gstin": env_str("ZINWE_INVOICE_SELLER_GSTIN", ""),
 }
+# GST on invoices (z_auth.pricing). Charged only when the seller GSTIN above is set. Customers in India pay
+# 18% on top: CGST + SGST when their state is the seller's, IGST otherwise. Customers outside India pay in
+# USD with no GST: an export of services under a Letter of Undertaking (LUT), whose ARN goes on the invoice.
+ZINWE_GST = {
+    "rate": 18,
+    "seller_state": env_str("ZINWE_GST_SELLER_STATE", "Delhi"),
+    "sac": env_str("ZINWE_GST_SAC", "998314"),
+    "lut_arn": env_str("ZINWE_GST_LUT_ARN", ""),
+}
+# Skydo: how customers outside India pay (z_auth.billing.payment_instructions). The US account takes
+# ACH / wire transfers; a per-customer Skydo payment link (card or US bank) is set in the admin app's
+# Subscriptions page. Empty values are hidden.
+ZINWE_SKYDO_ACCOUNT = {
+    "account_name": env_str("ZINWE_SKYDO_ACCOUNT_NAME", ""),
+    "bank_name": env_str("ZINWE_SKYDO_BANK_NAME", ""),
+    "account_number": env_str("ZINWE_SKYDO_ACCOUNT_NUMBER", ""),
+    "routing_number": env_str("ZINWE_SKYDO_ROUTING_NUMBER", ""),
+    "account_type": env_str("ZINWE_SKYDO_ACCOUNT_TYPE", "Checking"),
+    "swift": env_str("ZINWE_SKYDO_SWIFT", ""),
+}
 # The internal admin app, for links in team emails (support tickets).
 # The built website (zinwe-frontend dist/index.html), used to pre-render /blog pages (z_blog/prerender.py).
 ZINWE_FRONTEND_INDEX = env_str("ZINWE_FRONTEND_INDEX", str(BASE_DIR.parent / "zinwe-frontend" / "dist" / "index.html"))
@@ -308,10 +328,10 @@ ZINWE_AGENT_DOWNLOAD_URL = env_str("ZINWE_AGENT_DOWNLOAD_URL", "https://zinwe.io
 # and pauses the employee's work until it's updated. Empty = no minimum (nothing forced).
 ZINWE_AGENT_MIN_VERSION = env_str("ZINWE_AGENT_MIN_VERSION", "")
 
-# Dashboard notification-bar announcements (M11): the version/offer banners the
-# Zinwe team sets per environment, as a JSON array of
-# {id, kind: "version"|"offer", title, body?, cta_label?, cta_href?, dismissible?}.
-# The "upgrade" nudge is derived live from the owner's plan, not configured here.
+# Dashboard notification bars set per environment (optional): a JSON array of
+# {id, kind: "version"|"offer"|"discount"|"news"|"maintenance", title, body?, cta_label?, cta_href?, dismissible?}.
+# The usual way to push a bar is the admin app's Announcements page (z_auth.Announcement rows, with
+# placement / audience / schedule). The "upgrade" bar is derived live from the owner's plan.
 # z_auth.announcements validates and drops malformed entries.
 ZINWE_ANNOUNCEMENTS = env_json_list("ZINWE_ANNOUNCEMENTS")
 

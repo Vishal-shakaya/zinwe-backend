@@ -11,6 +11,7 @@ from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
+from z_auth import entitlements as plan
 from z_main.client import get_client_ip
 
 from . import services
@@ -90,8 +91,13 @@ class CurrentPolicyView(APIView):
     permission_classes = [IsDevice]
 
     def get(self, request: Request) -> Response:
-        policy = services.get_policy(request.auth.owner)
-        return Response(DevicePolicySerializer(policy).data)
+        owner = request.auth.owner
+        policy = services.get_policy(owner)
+        # Plan enforcement: the saved rules, clamped to what the owner's plan switches on.
+        data = services.apply_entitlements(
+            DevicePolicySerializer(policy).data, policy, plan.entitlements_for(owner)
+        )
+        return Response(data)
 
 
 class DeviceMessagesView(APIView):
@@ -107,11 +113,14 @@ class DeviceMessagesView(APIView):
     permission_classes = [IsDevice]
 
     def get(self, request: Request) -> Response:
+        if not plan.entitlements_for(request.auth.owner).has(plan.TEAM_CHAT):
+            return Response([])  # plan enforcement: no chat on this plan (bare array = agent contract)
         services.mark_delivered(request.auth)  # the PC has them now: "Delivered" for the admin
         messages = services.messages_for_device(request.auth)
         return Response(MessageSerializer(messages, many=True).data)
 
     def post(self, request: Request) -> Response:
+        plan.require(request.auth.owner, plan.TEAM_CHAT)
         serializer = MemberReplySerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         message = services.reply_from_member(request.auth, serializer.validated_data["body"])
@@ -259,6 +268,7 @@ class MemberMessageView(APIView):
     permission_classes = [IsOwner]
 
     def post(self, request: Request, member_id: int) -> Response:
+        plan.require(request.user, plan.TEAM_CHAT)
         member = get_object_or_404(request.user.members, pk=member_id)
         serializer = MessageCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -282,6 +292,7 @@ class MemberThreadView(APIView):
     permission_classes = [IsOwner]
 
     def get(self, request: Request, member_id: int) -> Response:
+        plan.require(request.user, plan.TEAM_CHAT)
         member = get_object_or_404(request.user.members, pk=member_id)
         services.mark_thread_read_by_owner(member)
         thread = services.thread_for_owner(request.user, member)
@@ -336,6 +347,7 @@ class EventEmailView(APIView):
     throttle_scope = "alert_email"
 
     def post(self, request: Request, event_id: int) -> Response:
+        plan.require(request.user, plan.ALERT_TO_EMPLOYEE)
         event = get_object_or_404(
             DeviceEvent.objects.select_related("device__member"), pk=event_id, device__owner=request.user
         )
@@ -369,6 +381,7 @@ class WorkLogView(APIView):
     permission_classes = [IsOwner]
 
     def get(self, request: Request) -> Response:
+        plan.require(request.user, plan.WORK_TIME)
         query = WorkLogQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         day = query.validated_data.get("date") or timezone.localdate()
@@ -382,6 +395,7 @@ class BreakDecisionView(APIView):
     permission_classes = [IsOwner]
 
     def post(self, request: Request, log_id: int) -> Response:
+        plan.require(request.user, plan.WORK_TIME)
         log = get_object_or_404(WorkLog.objects.select_related("member", "device"), pk=log_id, owner=request.user)
         data = BreakDecisionSerializer(data=request.data)
         data.is_valid(raise_exception=True)

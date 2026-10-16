@@ -18,7 +18,7 @@ ME = "/api/auth/me/"
 
 def payment_form(**overrides):  # type: ignore[no-untyped-def]
     return {
-        "method": "upi", "amount_inr": "2999", "reference": "UTR-UP",
+        "method": "upi", "amount_inr": "2834", "reference": "UTR-UP",
         "paid_on": timezone.localdate().isoformat(), "payer_name": "Asha Verma", "accept_terms": "true",
         **overrides,
     }
@@ -36,7 +36,7 @@ class _UpgradeBase(PortalTestCase):
     def start_startups(self) -> Subscription:
         """Startups with its first payment approved: active for a month."""
         self.post(SUB_URL, {"plan": "startups"})
-        self.post(PAY_URL, payment_form(amount_inr="999", reference="UTR-1"), fmt="multipart")
+        self.post(PAY_URL, payment_form(amount_inr="971", reference="UTR-1"), fmt="multipart")
         verify_payment(ManualPayment.objects.get().pk, self.staff)
         mail.outbox.clear()
         return Subscription.objects.get()
@@ -63,7 +63,7 @@ class UpgradeTests(_UpgradeBase):
         verify_payment(payment.pk, self.staff)
         sub.refresh_from_db()
         payment.refresh_from_db()
-        self.assertEqual((sub.plan.code, sub.status, str(sub.amount_inr)), ("businesses", "active", "2999.00"))
+        self.assertEqual((sub.plan.code, sub.status, str(sub.amount_inr)), ("businesses", "active", "2834.00"))
         carried = old_end - payment.covers_from
         self.assertLess(abs((sub.ends_at - (add_months(payment.covers_from, 1) + carried)).total_seconds()), 5)
         active = PlanActivation.objects.get(user=self.owner, is_active=True)
@@ -124,15 +124,15 @@ class InvoiceTests(_UpgradeBase):
         self.start_startups()
         payment = ManualPayment.objects.get()
         body = self.get(f"/api/auth/subscription/payments/{payment.pk}/invoice/").json()
-        self.assertEqual(body["number"], f"ZW-{payment.reviewed_at.year}-{payment.pk:05d}")
-        self.assertEqual(body["total_inr"], "999.00")
+        self.assertRegex(body["number"], r"^ZW/\d{4}-\d{2}/0001$")  # gap-free per financial year
+        self.assertEqual(body["total_inr"], "971.00")
         self.assertIn("Startups", body["lines"][0]["description"])
         self.assertEqual(body["customer"]["email"], self.owner.email)
         self.assertEqual(body["seller"]["name"], "SKYTECHNO")
 
     def test_no_invoice_until_confirmed_or_for_others(self) -> None:
         self.post(SUB_URL, {"plan": "startups"})
-        self.post(PAY_URL, payment_form(amount_inr="999"), fmt="multipart")
+        self.post(PAY_URL, payment_form(amount_inr="971"), fmt="multipart")
         payment = ManualPayment.objects.get()
         url = f"/api/auth/subscription/payments/{payment.pk}/invoice/"
         self.assertEqual(self.get(url).status_code, status.HTTP_409_CONFLICT)
@@ -147,10 +147,10 @@ class PaymentTermsTests(_UpgradeBase):
         from django.conf import settings
 
         self.post(SUB_URL, {"plan": "startups"})
-        refused = self.post(PAY_URL, payment_form(amount_inr="999", accept_terms="false"), fmt="multipart")
+        refused = self.post(PAY_URL, payment_form(amount_inr="971", accept_terms="false"), fmt="multipart")
         self.assertEqual(refused.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("accept_terms", refused.json())
-        ok = self.post(PAY_URL, payment_form(amount_inr="999"), fmt="multipart")
+        ok = self.post(PAY_URL, payment_form(amount_inr="971"), fmt="multipart")
         self.assertEqual(ok.status_code, status.HTTP_201_CREATED, ok.content)
         payment = ManualPayment.objects.get()
         self.assertEqual(payment.terms_version, settings.ZINWE_LEGAL_VERSION)

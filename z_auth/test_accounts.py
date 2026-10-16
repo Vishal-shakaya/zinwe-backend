@@ -374,10 +374,18 @@ class LogoutAndMeTests(PortalTestCase):
             set(body),
             {
                 "id", "email", "full_name", "phone", "is_staff", "date_joined", "email_verified", "terms",
-                "onboarding", "company", "subscription", "active_plan",
+                "onboarding", "company", "subscription", "active_plan", "entitlements",
             },
         )
         self.assertEqual(body["onboarding"], FRESH_ONBOARDING)
+        # No active plan yet: Free forever's modules and PC limit apply.
+        self.assertEqual(body["entitlements"]["plan_code"], "free")
+        self.assertFalse(body["entitlements"]["on_active_plan"])
+        self.assertEqual(body["entitlements"]["modules"], ["usb_alerts"])
+        self.assertEqual(body["entitlements"]["max_devices"], 3)
+        self.assertEqual(body["entitlements"]["devices_used"], 0)
+        self.assertEqual(body["entitlements"]["upgrade_for"]["usb_control"], {"code": "startups", "name": "Startups"})
+        self.assertEqual(body["entitlements"]["upgrade_for"]["team_chat"]["name"], "Businesses")
         self.assertIsNone(body["company"])
         self.assertIsNone(body["subscription"])
         self.assertIsNone(body["active_plan"])

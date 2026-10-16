@@ -13,7 +13,7 @@ from django.core.validators import URLValidator
 from django.utils import timezone
 from rest_framework import serializers
 
-from .billing import can_renew, days_left, latest_payment, renewal_period
+from .billing import amount_due, can_renew, days_left, latest_payment, renewal_period
 from .models import Company, Feedback, ManualPayment, Plan, Subscription
 from .serializers import PICK_ONE, REQUIRED_MESSAGES, PlanSerializer, StrippedChoiceField
 
@@ -89,18 +89,23 @@ class PaymentSerializer(serializers.ModelSerializer):
     has_proof = serializers.SerializerMethodField()
     plan_name = serializers.CharField(source="subscription.plan.name", read_only=True)
     upgrade_plan_name = serializers.CharField(source="upgrade_plan.name", read_only=True, default=None)
+    invoice_number = serializers.SerializerMethodField()
 
     class Meta:
         model = ManualPayment
         fields = (
-            "id", "method", "amount_inr", "reference", "paid_on", "payer_name", "status",
+            "id", "method", "amount_inr", "currency", "due", "reference", "paid_on", "payer_name", "status",
             "rejection_reason", "has_proof", "submitted_at", "reviewed_at",
-            "is_renewal", "covers_from", "covers_until", "plan_name", "upgrade_plan_name",
+            "is_renewal", "covers_from", "covers_until", "plan_name", "upgrade_plan_name", "invoice_number",
         )
         read_only_fields = fields
 
     def get_has_proof(self, obj: ManualPayment) -> bool:
         return bool(obj.proof)
+
+    def get_invoice_number(self, obj: ManualPayment) -> str | None:
+        invoice = getattr(obj, "invoice", None) if obj.pk else None
+        return invoice.number if invoice is not None else None
 
 
 class SubscriptionSerializer(serializers.ModelSerializer):
@@ -109,14 +114,22 @@ class SubscriptionSerializer(serializers.ModelSerializer):
     days_left = serializers.SerializerMethodField()
     can_renew = serializers.SerializerMethodField()
     renewal_period = serializers.SerializerMethodField()
+    amount_due = serializers.SerializerMethodField()
 
     class Meta:
         model = Subscription
         fields = (
-            "id", "plan", "status", "amount_inr", "billing_cycle", "starts_at", "ends_at",
-            "created_at", "latest_payment", "is_trial", "days_left", "can_renew", "renewal_period",
+            "id", "plan", "status", "amount_inr", "currency", "billing_cycle", "payment_link", "starts_at",
+            "ends_at", "created_at", "latest_payment", "is_trial", "days_left", "can_renew", "renewal_period",
+            "amount_due",
         )
         read_only_fields = fields
+
+    def get_amount_due(self, obj: Subscription) -> dict[str, Any] | None:
+        """The next payment (plan for one billing cycle + tax), while one can be made: first or renewal."""
+        if obj.status == Subscription.Status.PENDING_PAYMENT or can_renew(obj):
+            return amount_due(obj).as_dict()
+        return None
 
     def get_latest_payment(self, obj: Subscription) -> dict[str, Any] | None:
         payment = latest_payment(obj)
@@ -131,7 +144,7 @@ class SubscriptionSerializer(serializers.ModelSerializer):
         return can_renew(obj)
 
     def get_renewal_period(self, obj: Subscription) -> dict[str, Any] | None:
-        """The month a renewal paid now would add (from the current end date: no days lost)."""
+        """The period a renewal paid now would add (from the current end date: no days lost)."""
         if not can_renew(obj):
             return None
         start, end = renewal_period(obj)

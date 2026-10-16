@@ -5,7 +5,11 @@ Flow: `subscribe()` -> free plans and free trials go `active` at once; paid plan
 `pending_payment` -> the owner reports a payment (`submit_payment()`) -> staff
 `verify_payment()` (active for one month) or `reject_payment()` (owner resubmits).
 
-Renewal: while a paid plan is active the owner can pay for the next month at any time
+Country decides the money (z_auth.pricing): India = INR monthly + GST; elsewhere = USD yearly, no GST
+(export under LUT). The subscription keeps its currency and cycle; each payment freezes the quote it
+was made against (`ManualPayment.due`), and confirming it issues a numbered invoice (z_auth.invoices).
+
+Renewal: while a paid plan is active the owner can pay for the next period at any time
 (`submit_payment()` marks it `is_renewal`). Approving it extends the plan by one month from
 its current end date, so no days are lost; approved after the plan lapsed, it restarts the
 plan from that day. Every approved payment records the period it paid for (covers_from/until).
@@ -25,6 +29,7 @@ from django.utils import timezone
 from z_analytics.services import track
 from z_notification.services import notify
 
+from . import pricing
 from .models import Company, ManualPayment, Plan, PlanActivation, Subscription, User
 from .services import PlanNotAllowed, activate_plan, starts_as_trial
 
@@ -137,14 +142,19 @@ def days_left(subscription: Subscription, now: datetime | None = None) -> int | 
     return max(0, math.ceil(seconds / 86_400))
 
 
+def cycle_months(subscription: Subscription) -> int:
+    """1 for a monthly subscription, 12 for a yearly one (customers outside India)."""
+    return pricing.months_in(subscription.billing_cycle)
+
+
 def renewal_period(subscription: Subscription, now: datetime | None = None) -> tuple[datetime, datetime]:
     """
-    The month a renewal payment would buy: from the plan's current end (or now, if that's
-    already past) to one month later. Paying early never loses days.
+    The period a renewal payment would buy: from the plan's current end (or now, if that's
+    already past) to one billing cycle later. Paying early never loses days.
     """
     now = now or timezone.now()
     start = subscription.ends_at if subscription.ends_at and subscription.ends_at > now else now
-    return start, add_months(start, 1)
+    return start, add_months(start, cycle_months(subscription))
 
 
 def _carry_over(subscription: Subscription, now: datetime) -> timedelta:
@@ -155,9 +165,9 @@ def _carry_over(subscription: Subscription, now: datetime) -> timedelta:
 
 
 def upgrade_period(subscription: Subscription, now: datetime | None = None) -> tuple[datetime, datetime]:
-    """An upgrade starts now and runs a month, plus any paid days left on the old plan."""
+    """An upgrade starts now and runs one billing cycle, plus any paid days left on the old plan."""
     now = now or timezone.now()
-    return now, add_months(now, 1) + _carry_over(subscription, now)
+    return now, add_months(now, cycle_months(subscription)) + _carry_over(subscription, now)
 
 
 def next_period(payment: ManualPayment, now: datetime | None = None) -> tuple[datetime, datetime]:
@@ -168,56 +178,65 @@ def next_period(payment: ManualPayment, now: datetime | None = None) -> tuple[da
         return upgrade_period(subscription, now)
     if payment.is_renewal and subscription.status == Status.ACTIVE:
         return renewal_period(subscription, now)
-    return now, add_months(now, 1)
-
-
-def invoice_number(payment: ManualPayment) -> str:
-    """Stable per payment: ZW-<year confirmed>-<payment id>, e.g. ZW-2026-00042."""
-    year = (payment.reviewed_at or payment.submitted_at).year
-    return f"ZW-{year}-{payment.pk:05d}"
+    return now, add_months(now, cycle_months(subscription))
 
 
 def invoice_for(payment: ManualPayment) -> dict[str, Any]:
-    """Everything the printable invoice shows. Only for verified payments (the caller checks)."""
-    subscription = payment.subscription
-    plan = payment.upgrade_plan or subscription.plan
-    company = subscription.company
-    owner = subscription.owner
-    seller = dict(settings.ZINWE_INVOICE_SELLER)
-    kind = "Upgrade" if payment.upgrade_plan_id else ("Renewal" if payment.is_renewal else "Subscription")
-    return {
-        "number": invoice_number(payment),
-        "issued_on": (payment.reviewed_at or payment.submitted_at).date(),
-        "paid_on": payment.paid_on,
-        "status": "paid",
-        "seller": seller,
-        "customer": {
-            "name": company.name if company else (owner.full_name or owner.email),
-            "contact": owner.full_name,
-            "email": owner.email,
-            "address": ", ".join(p for p in [getattr(company, "city", ""), getattr(company, "state", ""),
-                                             getattr(company, "country", "")] if p),
-            "gstin": getattr(company, "gstin", "") or "",
-        },
-        "lines": [{
-            "description": f"Zinwe {plan.name} plan — {kind.lower()}, 1 month"
-                           + (f" (up to {plan.max_devices} PCs)" if plan.max_devices else ""),
-            "period_from": payment.covers_from.date() if payment.covers_from else None,
-            "period_until": payment.covers_until.date() if payment.covers_until else None,
-            "amount_inr": str(payment.amount_inr),
-        }],
-        "total_inr": str(payment.amount_inr),
-        "payment": {"method": payment.get_method_display(), "reference": payment.reference, "payer": payment.payer_name},
-        "note": "Prices include any applicable taxes." if not seller.get("gstin") else "",
-    }
+    """The frozen tax invoice of a confirmed payment (z_auth.invoices). The caller checks it's confirmed."""
+    from .invoices import invoice_for_payment
+
+    return invoice_for_payment(payment).data
 
 
-def payment_instructions() -> dict[str, str]:
+def amount_due(subscription: Subscription, upgrade_plan: Plan | None = None) -> pricing.Quote:
+    """What the owner pays next: the subscription's plan (or `upgrade_plan`) for one billing cycle, with tax."""
+    return pricing.quote_for_subscription(subscription, upgrade_plan)
+
+
+def _upi_qr_svg(upi_id: str, payee: str, amount: str, note: str) -> str:
+    """A UPI QR (any UPI app) with the exact amount filled in, as an inline SVG."""
+    import segno
+    from urllib.parse import quote as q
+
+    uri = f"upi://pay?pa={q(upi_id)}&pn={q(payee)}&am={amount}&cu=INR&tn={q(note[:40])}"
+    return segno.make(uri, error="m").svg_inline(scale=4, border=2, dark="#0d0d0e")
+
+
+def payment_instructions(subscription: Subscription | None = None, company: Company | None = None) -> dict[str, Any]:
     """
-    PaymentInstructions (portal-v1 §3.7): UPI, bank account, PayPal link, note.
-    Real values come from the env (`ZINWE_PAYMENT_*`); an empty `paypal_url` hides PayPal.
+    How to pay, for this customer's country (portal-v1 §3.7, extended 2026-10-15):
+
+    - India (`region` "IN"): UPI (with a QR code holding the exact amount due) and bank transfer.
+    - Elsewhere ("INTL"): the customer's own Skydo payment link (card or US bank, made in Skydo and set
+      in the admin app) and the Skydo US account for ACH / wire. PayPal only if no Skydo account is set.
+
+    Real values come from the env (`ZINWE_PAYMENT_*`, `ZINWE_SKYDO_*`); empty ones are hidden.
     """
-    return dict(settings.ZINWE_PAYMENT_INSTRUCTIONS)
+    data: dict[str, Any] = dict(settings.ZINWE_PAYMENT_INSTRUCTIONS)
+    company = company or (subscription.company if subscription else None)
+    currency = subscription.currency if subscription else pricing.currency_for(company)
+    data["region"] = "IN" if currency == pricing.INR else "INTL"
+    data["currency"] = currency
+    skydo = {k: v for k, v in settings.ZINWE_SKYDO_ACCOUNT.items() if v}
+    data["skydo"] = skydo if skydo.get("account_number") else None
+    data["payment_link"] = subscription.payment_link if subscription else ""
+    data["upi_qr_svg"] = ""
+    if data["region"] == "INTL":
+        # Indian rails don't apply abroad; PayPal stays only as a fallback until Skydo is set up.
+        for key in ("upi_id", "bank_name", "account_type", "account_number", "ifsc"):
+            data[key] = ""
+        if data["skydo"]:
+            data["paypal_url"] = ""
+        data["note"] = "Use your company name and invoice reference when you pay."
+    else:
+        data["paypal_url"] = ""
+        if subscription is not None and data.get("upi_id") and subscription.status != Status.CANCELLED:
+            due = amount_due(subscription)
+            if due.total > 0:
+                data["upi_qr_svg"] = _upi_qr_svg(
+                    data["upi_id"], data.get("payee_name", ""), f"{due.total:.2f}", f"Zinwe {due.plan_name}"
+                )
+    return data
 
 
 # --- Owner actions ----------------------------------------------------------
@@ -252,10 +271,13 @@ def subscribe(user: User, plan: Plan) -> Subscription:
 
     now = timezone.now()
     is_trial = starts_as_trial(user, plan)
+    # The company's country fixes the currency and cycle for the life of the subscription.
+    due = pricing.quote(plan, company)
+    money = {"currency": due.currency, "billing_cycle": due.billing_cycle}
     if plan.requires_payment and not is_trial:
         subscription = Subscription.objects.create(
             owner=user, company=company, plan=plan, status=Status.PENDING_PAYMENT,
-            amount_inr=plan.price_inr_monthly, created_at=now,
+            amount_inr=due.amount, created_at=now, **money,
         )
     else:
         activation = activate_plan(
@@ -263,7 +285,7 @@ def subscribe(user: User, plan: Plan) -> Subscription:
         )
         subscription = Subscription.objects.create(
             owner=user, company=company, plan=plan, status=Status.ACTIVE,
-            amount_inr=0 if is_trial else plan.price_inr_monthly, is_trial=is_trial,
+            amount_inr=0 if is_trial else due.amount, is_trial=is_trial, **money,
             starts_at=activation.starts_at, ends_at=activation.ends_at,
             activation=activation, created_at=now,
         )
@@ -322,6 +344,8 @@ def submit_payment(
     if has_payment_under_review(subscription):
         raise PaymentUnderReview()
     payment = ManualPayment(subscription=subscription, is_renewal=renewal, upgrade_plan=upgrade_plan, **data)
+    payment.currency = subscription.currency
+    payment.due = amount_due(subscription, upgrade_plan).as_dict()
     if accepted_terms:
         payment.terms_accepted_at = timezone.now()
         payment.terms_version = settings.ZINWE_LEGAL_VERSION
@@ -382,7 +406,8 @@ def verify_payment(payment_id: int, reviewer: User | None) -> ManualPayment:
     if payment.upgrade_plan_id and subscription.status in (Status.ACTIVE, Status.EXPIRED):
         new_plan = payment.upgrade_plan
         covers_from, ends_at = (
-            upgrade_period(subscription, now) if subscription.status == Status.ACTIVE else (now, add_months(now, 1))
+            upgrade_period(subscription, now) if subscription.status == Status.ACTIVE
+            else (now, add_months(now, cycle_months(subscription)))
         )
         try:
             activation = activate_plan(
@@ -390,8 +415,9 @@ def verify_payment(payment_id: int, reviewer: User | None) -> ManualPayment:
             )
         except PlanNotAllowed as exc:
             raise ReviewNotAllowed(f"Payment #{payment.pk}: {exc}") from exc
+        new_amount = amount_due(subscription, new_plan).amount  # before switching: today's price for the new plan
         subscription.plan = new_plan
-        subscription.amount_inr = new_plan.price_inr_monthly
+        subscription.amount_inr = new_amount
         subscription.is_trial = False
         subscription.status = Status.ACTIVE
         subscription.starts_at = now
@@ -409,7 +435,7 @@ def verify_payment(payment_id: int, reviewer: User | None) -> ManualPayment:
     elif subscription.status == Status.PENDING_PAYMENT or (
         payment.is_renewal and subscription.status == Status.EXPIRED
     ):
-        covers_from, ends_at = now, add_months(now, 1)
+        covers_from, ends_at = now, add_months(now, cycle_months(subscription))
         try:
             activation = activate_plan(
                 subscription.owner, subscription.plan, source="manual-payment",
@@ -436,6 +462,9 @@ def verify_payment(payment_id: int, reviewer: User | None) -> ManualPayment:
     payment.save(update_fields=[
         "status", "reviewed_at", "reviewed_by", "rejection_reason", "covers_from", "covers_until",
     ])
+    from .invoices import issue_invoice  # numbered now: GST invoice numbers run without gaps
+
+    issue_invoice(payment)
     transaction.on_commit(lambda: _after_payment_verified(payment, subscription))
     return payment
 

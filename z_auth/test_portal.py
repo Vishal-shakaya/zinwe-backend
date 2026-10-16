@@ -51,7 +51,7 @@ def enable_trial(code: str = "businesses", days: int = 90) -> None:
 def payment_form(**overrides):  # type: ignore[no-untyped-def]
     data = {
         "method": "upi",
-        "amount_inr": "999",
+        "amount_inr": "971",
         "reference": "UTR123456",
         "paid_on": timezone.localdate().isoformat(),
         "payer_name": "Asha Verma",
@@ -188,8 +188,11 @@ class PlanListTests(PortalTestCase):
             plans["businesses"],
             {
                 "code": "businesses", "name": "Businesses", "tagline": plans["businesses"]["tagline"],
-                "price_inr_monthly": "2999.00", "trial_days": 0, "max_devices": 50,
-                "features": plans["businesses"]["features"], "is_recommended": True,
+                "price_inr_monthly": "2834.00", "list_price_inr_monthly": "4049.00", "discount_percent": 30,
+                "price_usd_monthly": "34.00", "list_price_usd_monthly": "48.00", "quote": plans["businesses"]["quote"],
+                "trial_days": 0, "max_devices": 50,
+                "features": plans["businesses"]["features"], "modules": plans["businesses"]["modules"],
+                "is_recommended": True,
                 "requires_payment": True, "sort_order": 30, "trial_available": False,
             },
         )
@@ -197,13 +200,13 @@ class PlanListTests(PortalTestCase):
         # Free forever is the free way in: no plan offers a time-limited trial.
         self.assertEqual([p["trial_days"] for p in plans.values()], [0, 0, 0])
         self.assertNotIn("First 3 months free", plans["businesses"]["features"])
-        self.assertEqual(len(plans["businesses"]["features"]), 4)
+        self.assertEqual(len(plans["businesses"]["features"]), 5)
         self.assertEqual(plans["free"]["name"], "Free forever")
         self.assertEqual(plans["free"]["max_devices"], 3)
         self.assertFalse(plans["free"]["requires_payment"])
         self.assertFalse(plans["free"]["trial_available"])
         self.assertEqual(
-            (plans["startups"]["price_inr_monthly"], plans["startups"]["max_devices"]), ("999.00", 10)
+            (plans["startups"]["price_inr_monthly"], plans["startups"]["max_devices"]), ("971.00", 10)
         )
         self.assertTrue(plans["startups"]["requires_payment"])
         self.assertFalse(plans["startups"]["trial_available"])  # no trial on Startups
@@ -266,9 +269,13 @@ class SubscriptionTests(PortalTestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         body = response.json()
         self.assertIsNone(body["subscription"])
+        self.assertEqual(body["instructions"]["region"], "IN")
         self.assertEqual(
             set(body["instructions"]),
-            {"upi_id", "payee_name", "bank_name", "account_type", "account_number", "ifsc", "paypal_url", "note"},
+            {
+                "upi_id", "payee_name", "bank_name", "account_type", "account_number", "ifsc", "paypal_url", "note",
+                "region", "currency", "skydo", "payment_link", "upi_qr_svg",
+            },
         )
 
     @override_settings(
@@ -280,9 +287,17 @@ class SubscriptionTests(PortalTestCase):
     )
     def test_instructions_include_account_type_and_paypal(self) -> None:
         instructions = self.get(SUB_URL).json()["instructions"]
+        # India: UPI + bank (PayPal is for customers outside India, and only until Skydo is set up).
+        self.assertEqual(instructions["region"], "IN")
         self.assertEqual(instructions["account_type"], "Current")
-        self.assertEqual(instructions["paypal_url"], "https://paypal.me/zinwetest")
+        self.assertEqual(instructions["paypal_url"], "")
         self.assertEqual(instructions["account_number"], "123456789012")
+        self.company.country = "United States"
+        self.company.save()
+        abroad = self.get(SUB_URL).json()["instructions"]
+        self.assertEqual((abroad["region"], abroad["currency"]), ("INTL", "USD"))
+        self.assertEqual(abroad["paypal_url"], "https://paypal.me/zinwetest")  # no Skydo account configured
+        self.assertEqual(abroad["upi_id"], "")
 
     def test_company_required(self) -> None:
         self.company.delete()
@@ -313,7 +328,7 @@ class SubscriptionTests(PortalTestCase):
 
     def test_businesses_waits_for_payment(self) -> None:
         body = self.subscribe("businesses").json()
-        self.assertEqual((body["status"], body["is_trial"], body["amount_inr"]), ("pending_payment", False, "2999.00"))
+        self.assertEqual((body["status"], body["is_trial"], body["amount_inr"]), ("pending_payment", False, "2834.00"))
         self.assertFalse(PlanActivation.objects.exists())
         self.assertEqual(len(mail.outbox), 0)
         self.assertEqual(self.step(), "payment")
@@ -366,7 +381,7 @@ class SubscriptionTests(PortalTestCase):
         body = response.json()
         self.assertEqual(body["status"], "pending_payment")
         self.assertFalse(body["is_trial"])
-        self.assertEqual(body["amount_inr"], "2999.00")
+        self.assertEqual(body["amount_inr"], "2834.00")
         self.assertIsNone(body["starts_at"])
         self.assertEqual(len(mail.outbox), 0)
         self.assertEqual(self.step(), "payment")
@@ -380,7 +395,7 @@ class SubscriptionTests(PortalTestCase):
         body = self.subscribe("businesses").json()
         self.assertEqual(body["status"], "pending_payment")
         self.assertFalse(body["is_trial"])
-        self.assertEqual(body["amount_inr"], "2999.00")
+        self.assertEqual(body["amount_inr"], "2834.00")
 
     def test_legacy_free_trial_plan_can_be_used_once(self) -> None:
         # A free plan with trial_days (the old early-access shape) is a trial too.
@@ -405,7 +420,7 @@ class SubscriptionTests(PortalTestCase):
         body = response.json()
         self.assertEqual(body["status"], "pending_payment")
         self.assertFalse(body["is_trial"])
-        self.assertEqual(body["amount_inr"], "999.00")
+        self.assertEqual(body["amount_inr"], "971.00")
         self.assertIsNone(body["starts_at"])
         self.assertFalse(PlanActivation.objects.exists())
         self.assertEqual(len(mail.outbox), 0)
@@ -473,7 +488,8 @@ class PaymentTests(MediaMixin, PortalTestCase):
         self.assertEqual(
             body,
             {
-                "id": payment.id, "method": "upi", "amount_inr": "999.00", "reference": "UTR123456",
+                "id": payment.id, "method": "upi", "amount_inr": "971.00", "currency": "INR", "due": body["due"],
+                "invoice_number": None, "reference": "UTR123456",
                 "paid_on": timezone.localdate().isoformat(), "payer_name": "Asha Verma",
                 "status": "submitted", "rejection_reason": "", "has_proof": True,
                 "submitted_at": body["submitted_at"], "reviewed_at": None,
@@ -543,7 +559,7 @@ class PaymentTests(MediaMixin, PortalTestCase):
         self.assertEqual(ManualPayment.objects.get().get_method_display(), "PayPal")
         alert = mail.outbox[0]
         self.assertIn("(PayPal)", alert.subject)
-        self.assertIn("999.00 INR by PayPal", alert.body)
+        self.assertIn("971.00 INR by PayPal", alert.body)
         self.assertIn("by PayPal", alert.alternatives[0][0])
 
     def test_one_payment_under_review_at_a_time(self) -> None:
@@ -673,7 +689,7 @@ class AdminReviewTests(MediaMixin, PortalTestCase):
         again = self.post(SUB_URL, {"plan": "businesses"})
         self.assertEqual(again.json().get("status"), "pending_payment", again.content)
         payment_id = self.post(
-            PAY_URL, payment_form(amount_inr="2999", method="bank_transfer"), fmt="multipart"
+            PAY_URL, payment_form(amount_inr="2834", method="bank_transfer"), fmt="multipart"
         ).json()["id"]
         self.use_token(None)
         self.client.force_login(self.admin)
@@ -683,7 +699,7 @@ class AdminReviewTests(MediaMixin, PortalTestCase):
 
         self.assertEqual(ManualPayment.objects.get(pk=payment_id).status, "verified")
         paid = Subscription.objects.get(owner=other, status="active")
-        self.assertEqual((paid.plan.code, paid.is_trial, str(paid.amount_inr)), ("businesses", False, "2999.00"))
+        self.assertEqual((paid.plan.code, paid.is_trial, str(paid.amount_inr)), ("businesses", False, "2834.00"))
         self.assertEqual(paid.ends_at, add_months(paid.starts_at, 1))
         activation = PlanActivation.objects.get(user=other, is_active=True)
         self.assertEqual((activation.plan.code, activation.source), ("businesses", "manual-payment"))
@@ -814,7 +830,7 @@ class JourneyTests(MediaMixin, PortalTestCase):
         plans = {p["code"]: p for p in self.get(PLANS_URL).json()}
         self.assertFalse(plans["businesses"]["trial_available"])
         body = self.post(SUB_URL, {"plan": "businesses"}).json()
-        self.assertEqual((body["status"], body["is_trial"], body["amount_inr"]), ("pending_payment", False, "2999.00"))
+        self.assertEqual((body["status"], body["is_trial"], body["amount_inr"]), ("pending_payment", False, "2834.00"))
         self.assertEqual(self.step()["step"], "payment")
         self.assertNotIn("Your free Zinwe Businesses trial has started", [m.subject for m in mail.outbox])
 
@@ -862,8 +878,9 @@ class AnnouncementsTests(PortalTestCase):
         items = self.get(ANNOUNCE_URL).json()["announcements"]
         upgrade = [a for a in items if a["kind"] == "upgrade"]
         self.assertEqual(len(upgrade), 1)
-        self.assertEqual(upgrade[0]["cta_href"], "/app/settings/billing")
-        self.assertTrue(upgrade[0]["id"].startswith("upgrade:none:"))
+        # No plan yet = Free forever; the bar opens the upgrade flow with the next plan picked.
+        self.assertEqual(upgrade[0]["cta_href"], "/app/upgrade?plan=startups")
+        self.assertTrue(upgrade[0]["id"].startswith("upgrade:free:"))
         self.assertTrue(upgrade[0]["dismissible"])
 
     def test_no_upgrade_on_top_plan(self) -> None:

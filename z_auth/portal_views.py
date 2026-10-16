@@ -4,7 +4,7 @@ from __future__ import annotations
 import mimetypes
 import os
 
-from django.http import FileResponse, Http404
+from django.http import FileResponse, Http404, HttpResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
@@ -75,7 +75,7 @@ class SubscriptionView(APIView):
                     SubscriptionSerializer(subscription, context={"user": request.user}).data
                     if subscription else None
                 ),
-                "instructions": billing.payment_instructions(),
+                "instructions": billing.payment_instructions(subscription, company=get_company(request.user)),
             }
         )
 
@@ -136,6 +136,34 @@ class InvoiceView(APIView):
                 {"detail": "An invoice is ready once the payment is confirmed."}, status=status.HTTP_409_CONFLICT
             )
         return Response(billing.invoice_for(payment))
+
+
+def invoice_pdf_response(payment: ManualPayment) -> HttpResponse:
+    """The confirmed payment's invoice as a PDF download (issued now if it was confirmed before invoices)."""
+    from .invoices import invoice_for_payment, invoice_pdf
+
+    invoice = invoice_for_payment(payment)
+    response = HttpResponse(invoice_pdf(invoice), content_type="application/pdf")
+    filename = invoice.number.replace("/", "-")
+    response["Content-Disposition"] = f'attachment; filename="Zinwe-invoice-{filename}.pdf"'
+    return response
+
+
+class InvoicePdfView(APIView):
+    """GET /api/auth/subscription/payments/<id>/invoice/pdf/ -- the owner's own invoice as a PDF (409 until confirmed)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request: Request, payment_id: int) -> HttpResponse:
+        payment = get_object_or_404(
+            ManualPayment.objects.select_related("subscription__plan", "subscription__company", "upgrade_plan"),
+            pk=payment_id, subscription__owner=request.user,
+        )
+        if payment.status != ManualPayment.Status.VERIFIED:
+            return Response(
+                {"detail": "An invoice is ready once the payment is confirmed."}, status=status.HTTP_409_CONFLICT
+            )
+        return invoice_pdf_response(payment)
 
 
 def proof_file_response(payment: ManualPayment) -> FileResponse:

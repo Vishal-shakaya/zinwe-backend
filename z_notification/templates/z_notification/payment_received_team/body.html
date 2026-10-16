@@ -7,8 +7,8 @@
     <table style="border-collapse:collapse;margin:0 0 16px;font-size:14px;">
       <tr><td style="padding:2px 12px 2px 0;color:#6b7280;">Owner</td><td>{{ owner.full_name|default:"-" }} &lt;{{ owner.email }}&gt;</td></tr>
       <tr><td style="padding:2px 12px 2px 0;color:#6b7280;">Company</td><td>{{ company.name|default:"-" }}</td></tr>
-      <tr><td style="padding:2px 12px 2px 0;color:#6b7280;">Plan</td><td>{{ plan.name }} ({{ plan.code }}), {{ subscription.amount_inr }} INR/month</td></tr>
-      <tr><td style="padding:2px 12px 2px 0;color:#6b7280;">Paid</td><td>{{ payment.amount_inr }} INR by {{ payment.get_method_display }} on {{ payment.paid_on|date:"Y-m-d" }}</td></tr>
+      <tr><td style="padding:2px 12px 2px 0;color:#6b7280;">Plan</td><td>{{ plan.name }} ({{ plan.code }}), {{ subscription.amount_inr }} {{ subscription.currency }} per {% if subscription.billing_cycle == 'yearly' %}year{% else %}month{% endif %} + tax</td></tr>
+      <tr><td style="padding:2px 12px 2px 0;color:#6b7280;">Paid</td><td>{{ payment.amount_inr }} {{ payment.currency }} by {{ payment.get_method_display }}{% if payment.due.total %} (due: {{ payment.due.total }} {{ payment.currency }}){% endif %} on {{ payment.paid_on|date:"Y-m-d" }}</td></tr>
       <tr><td style="padding:2px 12px 2px 0;color:#6b7280;">Reference</td><td>{{ payment.reference }}</td></tr>
       <tr><td style="padding:2px 12px 2px 0;color:#6b7280;">Payer</td><td>{{ payment.payer_name }}</td></tr>
       <tr><td style="padding:2px 12px 2px 0;color:#6b7280;">Proof</td><td>{% if payment.proof %}attached in admin{% else %}none uploaded{% endif %}</td></tr>

@@ -299,6 +299,30 @@ class PrerenderTests(BlogTestCase):
         html = self.client.get(f"/blog/{Article.objects.get(pk=a['id']).slug}").content.decode()
         self.assertNotIn("<script>alert(1)", html)
 
+    def test_the_home_page_pre_render_in_index_html_is_dropped(self) -> None:
+        # The website build writes the home page into index.html (seoPages.ts); a blog page mustn't inherit it.
+        self.index.write_text(
+            INDEX.replace(
+                "</head>",
+                '<link rel="canonical" href="https://zinwe.io/" data-prerender />'
+                '<script type="application/ld+json" data-prerender>{"@type": "FAQPage"}</script></head>',
+            ).replace(
+                '<div id="root"></div>',
+                '<div id="root"></div><!--seo-static--><div id="seo-static" data-prerender><h1>Home</h1></div>'
+                "<script>/* remove */</script><!--/seo-static-->",
+            ),
+            encoding="utf-8",
+        )
+        a = self.create()
+        self.client.post(f"{STAFF}{a['id']}/publish/", {}, format="json")
+        self.anon()
+        html = self.client.get(f"/blog/{a['slug']}").content.decode()
+        self.assertNotIn("<h1>Home</h1>", html)
+        self.assertNotIn("FAQPage", html)
+        self.assertNotIn('href="https://zinwe.io/"', html)
+        self.assertEqual(html.count('rel="canonical"'), 1)
+        self.assertIn('<div id="root"><div class="prerender">', html)
+
     def test_works_without_a_built_website(self) -> None:
         a = self.create()
         self.client.post(f"{STAFF}{a['id']}/publish/", {}, format="json")

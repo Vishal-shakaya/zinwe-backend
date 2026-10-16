@@ -295,17 +295,36 @@ class PlanSerializer(serializers.ModelSerializer):
 
     requires_payment = serializers.BooleanField(read_only=True)
     trial_available = serializers.SerializerMethodField()
+    quote = serializers.SerializerMethodField()
 
     class Meta:
         model = Plan
         fields = (
-            "code", "name", "tagline", "price_inr_monthly", "trial_days", "max_devices",
-            "features", "is_recommended", "requires_payment", "sort_order", "trial_available",
+            "code", "name", "tagline", "price_inr_monthly", "list_price_inr_monthly", "discount_percent",
+            "price_usd_monthly", "list_price_usd_monthly", "quote",
+            "trial_days", "max_devices",
+            "features", "modules", "is_recommended", "requires_payment", "sort_order", "trial_available",
         )
         read_only_fields = fields
 
     def get_trial_available(self, obj: Plan) -> bool:
         return trial_available(obj, self.context.get("user"))
+
+    def get_quote(self, obj: Plan) -> dict[str, Any] | None:
+        """
+        What the signed-in owner would pay for this plan (their country's currency, cycle and tax).
+        None for visitors and owners without a company yet: the cards then show both currencies.
+        """
+        from . import pricing
+        from .models import Company
+
+        user = self.context.get("user")
+        if user is None or not getattr(user, "is_authenticated", False):
+            return None
+        company = Company.objects.filter(owner=user).first()
+        if company is None:
+            return None
+        return pricing.quote(obj, company).as_dict()
 
 
 class PlanActivationSerializer(serializers.ModelSerializer):

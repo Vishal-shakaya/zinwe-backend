@@ -29,7 +29,7 @@ from rest_framework.authtoken.models import Token
 
 import nh3
 
-from z_auth import billing
+from z_auth import billing, pricing
 from z_analytics.services import track
 from z_auth.models import (
     Company,
@@ -283,13 +283,16 @@ def change_plan(user: User, plan_code: str) -> SubscriberView:
 
     now = timezone.now()
     is_trial = starts_as_trial(user, plan)
+    # Same money rules as a self-serve subscription: the company's country sets currency + cycle.
+    due = pricing.quote(plan, company)
+    money = {"currency": due.currency, "billing_cycle": due.billing_cycle}
     if plan.requires_payment and not is_trial:
-        ends_at = billing.add_months(now, 1)
+        ends_at = billing.add_months(now, pricing.months_in(due.billing_cycle))
         activation = activate_plan(user, plan, source="admin", allow_paid=True, ends_at=ends_at)
         Subscription.objects.create(
             owner=user, company=company, plan=plan, status=Status.ACTIVE,
-            amount_inr=plan.price_inr_monthly, starts_at=now, ends_at=ends_at,
-            activation=activation, created_at=now,
+            amount_inr=due.amount, starts_at=now, ends_at=ends_at,
+            activation=activation, created_at=now, **money,
         )
     else:
         activation = activate_plan(
@@ -297,7 +300,7 @@ def change_plan(user: User, plan_code: str) -> SubscriberView:
         )
         Subscription.objects.create(
             owner=user, company=company, plan=plan, status=Status.ACTIVE,
-            amount_inr=Decimal("0") if is_trial else plan.price_inr_monthly,
+            amount_inr=Decimal("0") if is_trial else due.amount, **money,
             is_trial=is_trial, starts_at=activation.starts_at, ends_at=activation.ends_at,
             activation=activation, created_at=now,
         )

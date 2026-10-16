@@ -299,8 +299,8 @@ Seeded by `z_auth/0002_seed_plans.py`, updated by `0005_update_plan_catalogue.py
 | code | name | price (INR/month) | trial_days | max PCs | requires payment | recommended | sort |
 |------|------|-------------------|------------|---------|------------------|-------------|------|
 | `free` | Free forever | 0 | 0 | 3 | no | no | 10 |
-| `startups` | Startups | 999 | 0 | 10 | yes | no | 20 |
-| `businesses` | Businesses | 2999 | 90 (free trial, once per account) | 50 | yes | yes | 30 |
+| `startups` | Startups | 971 (list 1,349, 28% off) | 0 | 10 | yes | no | 20 |
+| `businesses` | Businesses | 2,834 (list 4,049, 30% off) | 90 (free trial, once per account) | 50 | yes | yes | 30 |
 
 The old `early-access` (free, 90-day trial) and `pro` plans are `is_active=False`; their rows stay
 because subscriptions and activations point at them. Feature lines and taglines are seeded and

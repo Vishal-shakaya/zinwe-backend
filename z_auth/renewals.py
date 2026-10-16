@@ -71,8 +71,14 @@ def _paid(sub: Subscription) -> bool:
 
 
 def _context(sub: Subscription, now: datetime) -> dict:
+    from . import pricing
+
     owner = sub.owner
+    due = pricing.quote_for_subscription(sub)
     return {
+        # e.g. "₹1,145.78 (incl. GST) for one more month" / "$144.00 for one more year"
+        "amount_due": pricing.money_text(due.total, due.currency) + (" (incl. GST)" if due.taxes else ""),
+        "period_word": "year" if due.months == 12 else "month",
         "first_name": owner.get_short_name() if owner.full_name else "there",
         "plan": sub.plan,
         "subscription": sub,

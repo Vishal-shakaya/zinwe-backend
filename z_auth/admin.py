@@ -13,6 +13,7 @@ from django.utils.html import format_html
 
 from . import billing
 from .models import (
+    Announcement,
     Company,
     EarlyAccessRegistration,
     Feedback,
@@ -72,7 +73,8 @@ class UserAdmin(DjangoUserAdmin):
 @admin.register(Plan)
 class PlanAdmin(admin.ModelAdmin):
     list_display = (
-        "code", "name", "price_inr_monthly", "trial_days", "max_devices", "is_recommended",
+        "code", "name", "list_price_inr_monthly", "discount_percent", "price_inr_monthly", "trial_days",
+        "max_devices", "modules", "is_recommended",
         "is_active", "sort_order",
     )
     list_filter = ("is_active", "is_recommended")
@@ -290,3 +292,13 @@ class FeedbackAdmin(admin.ModelAdmin):
 
     def has_add_permission(self, request: HttpRequest) -> bool:
         return False
+
+
+@admin.register(Announcement)
+class AnnouncementAdmin(admin.ModelAdmin):
+    """Pushed notification bars (the admin app's Announcements page is the usual place to edit them)."""
+
+    list_display = ("title", "kind", "placement", "audience", "starts_at", "ends_at", "is_active", "priority")
+    list_filter = ("kind", "placement", "audience", "is_active")
+    search_fields = ("title", "body")
+    readonly_fields = ("created_by", "created_at", "updated_at")

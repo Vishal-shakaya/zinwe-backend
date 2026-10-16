@@ -3,10 +3,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from django.utils import timezone
 from rest_framework import serializers
 
 from z_auth import billing
-from z_auth.models import Feedback, ManualPayment
+from z_auth.models import Announcement, Feedback, Invoice, ManualPayment, Plan, Subscription
 from z_devices.models import AgentRelease
 from z_devices.services import release_adoption
 from z_notification.models import Notification
@@ -298,3 +299,141 @@ class UpdateReleaseSerializer(serializers.Serializer):
     required = serializers.BooleanField(required=False)
     is_active = serializers.BooleanField(required=False)
     notes = serializers.CharField(max_length=2000, required=False, allow_blank=True)
+
+
+# --- Announcements (notification bars on the dashboard and website) ---------------------------
+
+
+class AnnouncementSerializer(serializers.ModelSerializer):
+    """GET/POST /api/admin/announcements/ and PATCH /<id>/: one pushed message plus its live status."""
+
+    status = serializers.SerializerMethodField()
+    created_by = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Announcement
+        fields = (
+            "id", "title", "body", "kind", "placement", "audience", "plan_codes", "cta_label", "cta_href",
+            "starts_at", "ends_at", "is_active", "dismissible", "priority", "status", "created_by",
+            "created_at", "updated_at",
+        )
+        read_only_fields = ("id", "status", "created_by", "created_at", "updated_at")
+
+    def get_status(self, obj: Announcement) -> str:
+        """live · scheduled · ended · off — what owners see right now."""
+        now = timezone.now()
+        if not obj.is_active:
+            return "off"
+        if obj.starts_at > now:
+            return "scheduled"
+        if obj.ends_at is not None and obj.ends_at <= now:
+            return "ended"
+        return "live"
+
+    def get_created_by(self, obj: Announcement) -> str:
+        return obj.created_by.email if obj.created_by else ""
+
+    def validate_title(self, value: str) -> str:
+        if not value.strip():
+            raise serializers.ValidationError("Write a short headline.")
+        return value.strip()
+
+    def validate_cta_href(self, value: str) -> str:
+        value = value.strip()
+        if value and not (value.startswith("/") and not value.startswith("//") or value.startswith("https://")):
+            raise serializers.ValidationError("Use a path on zinwe.io (starting with /) or an https:// link.")
+        return value
+
+    def validate_plan_codes(self, value: Any) -> list[str]:
+        if not isinstance(value, list) or not all(isinstance(code, str) for code in value):
+            raise serializers.ValidationError("A list of plan codes.")
+        known = set(Plan.objects.values_list("code", flat=True))
+        unknown = [code for code in value if code not in known]
+        if unknown:
+            raise serializers.ValidationError(f"Unknown plan: {', '.join(unknown)}.")
+        return value
+
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        # A PATCH sends only what changed: check the rules against the saved values plus the change.
+        saved = {} if self.instance is None else {
+            name: getattr(self.instance, name)
+            for name in ("cta_label", "cta_href", "starts_at", "ends_at", "audience", "plan_codes")
+        }
+        merged = {**saved, **attrs}
+        if bool(merged.get("cta_label", "").strip()) != bool(merged.get("cta_href", "").strip()):
+            raise serializers.ValidationError({"cta_href": "Give the button both a text and a link, or neither."})
+        starts, ends = merged.get("starts_at"), merged.get("ends_at")
+        if starts and ends and ends <= starts:
+            raise serializers.ValidationError({"ends_at": "The end must be after the start."})
+        if merged.get("audience") == Announcement.Audience.PLANS and not merged.get("plan_codes"):
+            raise serializers.ValidationError({"plan_codes": "Pick at least one plan."})
+        return attrs
+
+
+# --- Subscriptions (billing view: country, currency, tax, invoices) -----------------------------
+
+
+class AdminSubscriptionSerializer(serializers.ModelSerializer):
+    """GET /api/admin/subscriptions/: one customer's subscription with what they owe and their invoices."""
+
+    owner = serializers.SerializerMethodField()
+    company = serializers.SerializerMethodField()
+    region = serializers.SerializerMethodField()
+    plan = serializers.SerializerMethodField()
+    amount_due = serializers.SerializerMethodField()
+    days_left = serializers.SerializerMethodField()
+    latest_payment = serializers.SerializerMethodField()
+    invoices = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Subscription
+        fields = (
+            "id", "owner", "company", "region", "plan", "status", "currency", "billing_cycle", "amount_inr",
+            "amount_due", "is_trial", "starts_at", "ends_at", "days_left", "payment_link", "latest_payment",
+            "invoices", "created_at",
+        )
+        read_only_fields = [f for f in fields if f != "payment_link"]
+
+    def get_owner(self, obj: Subscription) -> dict[str, Any]:
+        return {"id": obj.owner_id, "email": obj.owner.email, "name": obj.owner.full_name}
+
+    def get_company(self, obj: Subscription) -> dict[str, str] | None:
+        c = obj.company
+        return None if c is None else {"name": c.name, "country": c.country, "state": c.state, "gstin": c.gstin}
+
+    def get_region(self, obj: Subscription) -> str:
+        return "IN" if obj.currency == Subscription.Currency.INR else "INTL"
+
+    def get_plan(self, obj: Subscription) -> dict[str, str]:
+        return {"code": obj.plan.code, "name": obj.plan.name}
+
+    def get_amount_due(self, obj: Subscription) -> dict[str, Any] | None:
+        """The next payment (with tax) — what to put on a Skydo payment link for this customer."""
+        if obj.status == Subscription.Status.CANCELLED or not obj.plan.requires_payment:
+            return None
+        return billing.amount_due(obj).as_dict()
+
+    def get_days_left(self, obj: Subscription) -> int | None:
+        return billing.days_left(obj)
+
+    def get_latest_payment(self, obj: Subscription) -> dict[str, Any] | None:
+        p = billing.latest_payment(obj)
+        if p is None:
+            return None
+        return {
+            "id": p.id, "status": p.status, "method": p.get_method_display(), "amount": str(p.amount_inr),
+            "currency": p.currency, "submitted_at": p.submitted_at,
+        }
+
+    def get_invoices(self, obj: Subscription) -> list[dict[str, Any]]:
+        return [
+            {"payment_id": inv.payment_id, "number": inv.number, "issued_at": inv.issued_at,
+             "total": str(inv.total), "currency": inv.currency}
+            for inv in Invoice.objects.filter(payment__subscription=obj).order_by("-issued_at")
+        ]
+
+    def validate_payment_link(self, value: str) -> str:
+        value = (value or "").strip()
+        if value and not value.startswith("https://"):
+            raise serializers.ValidationError("Paste the full https:// payment link.")
+        return value

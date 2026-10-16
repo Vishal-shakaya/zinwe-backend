@@ -53,6 +53,21 @@ FALLBACK_INDEX = (
 
 _cache: dict[str, Any] = {"path": None, "mtime": None, "html": None}
 
+# The website build (zinwe-frontend build/seoPages.ts) pre-renders its home page into this same
+# index.html: a static copy of the page beside #root, plus a canonical link and structured data marked
+# `data-prerender`. They describe the home page, so a blog page drops them and adds its own.
+_HOME_ONLY = (
+    re.compile(r"<!--seo-static-->.*?<!--/seo-static-->", re.S),
+    re.compile(r"<link[^>]*\bdata-prerender\b[^>]*>"),
+    re.compile(r'<script type="application/ld\+json" data-prerender>.*?</script>', re.S),
+)
+
+
+def _without_home_page(html: str) -> str:
+    for pattern in _HOME_ONLY:
+        html = pattern.sub("", html)
+    return html
+
 
 def _index_html() -> str:
     """The built website's index.html (re-read when it changes), or a bare shell if it isn't built."""
@@ -77,7 +92,7 @@ class _Page:
     """Builds one pre-rendered page from the index.html template."""
 
     def __init__(self) -> None:
-        self.html = _index_html()
+        self.html = _without_home_page(_index_html())
         self.extra: list[str] = [STYLE]
 
     def title(self, text: str) -> None:
@@ -136,6 +151,8 @@ def blog_index(request: HttpRequest) -> HttpResponse:
     page.meta("name", "description", LIST_DESCRIPTION)
     page.meta("property", "og:title", LIST_TITLE)
     page.meta("property", "og:description", LIST_DESCRIPTION)
+    page.meta("name", "twitter:title", LIST_TITLE)
+    page.meta("name", "twitter:description", LIST_DESCRIPTION)
     page.meta("property", "og:url", url)
     page.link("canonical", url)
     page.link("alternate", f"{_site()}/api/blog/rss.xml")
@@ -183,6 +200,8 @@ def blog_article(request: HttpRequest, slug: str) -> HttpResponse:
     page.meta("property", "og:type", "article")
     page.meta("property", "og:title", title)
     page.meta("property", "og:description", description)
+    page.meta("name", "twitter:title", title)
+    page.meta("name", "twitter:description", description)
     page.meta("property", "og:url", url)
     page.meta("property", "article:published_time", article.published_at.isoformat())
     page.meta("property", "article:modified_time", article.updated_at.isoformat())

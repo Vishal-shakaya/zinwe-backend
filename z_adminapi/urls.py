@@ -21,7 +21,12 @@ urlpatterns = [
     path("payments/", views.PaymentListView.as_view(), name="payments"),
     path("payments/<int:pk>/approve/", views.PaymentApproveView.as_view(), name="payment-approve"),
     path("payments/<int:pk>/reject/", views.PaymentRejectView.as_view(), name="payment-reject"),
+    path("payments/<int:pk>/invoice/pdf/", views.InvoicePdfView.as_view(), name="payment-invoice-pdf"),
+    path("subscriptions/", views.SubscriptionListView.as_view(), name="subscriptions"),
+    path("subscriptions/<int:pk>/", views.SubscriptionDetailView.as_view(), name="subscription-detail"),
     path("feedback/", views.FeedbackListView.as_view(), name="feedback"),
     path("releases/", views.ReleaseListView.as_view(), name="releases"),
     path("releases/<int:pk>/", views.ReleaseDetailView.as_view(), name="release-detail"),
+    path("announcements/", views.AnnouncementListView.as_view(), name="announcements"),
+    path("announcements/<int:pk>/", views.AnnouncementDetailView.as_view(), name="announcement-detail"),
 ]
