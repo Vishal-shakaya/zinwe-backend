@@ -269,6 +269,17 @@ EMAIL_PORT = int(env_str("EMAIL_PORT", "25"))
 EMAIL_HOST_USER = env_str("EMAIL_HOST_USER", "")
 EMAIL_HOST_PASSWORD = env_str("EMAIL_HOST_PASSWORD", "")
 EMAIL_USE_TLS = env_bool("EMAIL_USE_TLS", False)
+# Seconds per SMTP connection: a dead mail server must not hang a request (Django's default is none).
+EMAIL_TIMEOUT = int(env_str("EMAIL_TIMEOUT", "20"))
+# Fallback SMTP for EMAIL_BACKEND=z_notification.backends.FailoverEmailBackend: used when the primary
+# above fails (daily limit, auth/IP block, outage). Gmail sends only as its own address, hence _FROM.
+EMAIL_FALLBACK_HOST = env_str("EMAIL_FALLBACK_HOST", "")
+EMAIL_FALLBACK_PORT = int(env_str("EMAIL_FALLBACK_PORT", "587"))
+EMAIL_FALLBACK_HOST_USER = env_str("EMAIL_FALLBACK_HOST_USER", "")
+EMAIL_FALLBACK_HOST_PASSWORD = env_str("EMAIL_FALLBACK_HOST_PASSWORD", "")
+EMAIL_FALLBACK_USE_TLS = env_bool("EMAIL_FALLBACK_USE_TLS", True)
+EMAIL_FALLBACK_FROM = env_str("EMAIL_FALLBACK_FROM", "")
+EMAIL_FAILOVER_PAUSE_SECONDS = int(env_str("EMAIL_FAILOVER_PAUSE_SECONDS", "600"))
 # Folder for django.core.mail.backends.filebased.EmailBackend (browser end-to-end runs read OTPs here).
 EMAIL_FILE_PATH = env_str("EMAIL_FILE_PATH", str(BASE_DIR / "sent-emails"))
 
