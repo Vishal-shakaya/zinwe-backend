@@ -1,0 +1,25 @@
+{% autoescape off %}Hi {% if to_owner %}{{ first_name }}{% else %}there{% endif %},
+
+{% if to_owner %}Here's your quote{% else %}{{ owner.full_name|default:owner.email }} shared this quote with you{% endif %} for Zinwe {{ doc.plan.name }}{% if doc.customer.name %} for {{ doc.customer.name }}{% endif %}. The PDF is attached.
+
+Quote:        {{ doc.number }}
+Plan:         {{ doc.description }}
+Total to pay: {{ total }}
+Valid until:  {{ doc.valid_until }}
+
+How to pay (any one):
+{% if doc.instructions.upi_id %}- UPI: {{ doc.instructions.upi_id }} ({{ doc.instructions.payee_name }})
+{% endif %}{% if doc.instructions.account_number %}- Bank transfer: {{ doc.instructions.payee_name }}, {{ doc.instructions.bank_name }}, account {{ doc.instructions.account_number }}, IFSC {{ doc.instructions.ifsc }}
+{% endif %}{% if doc.instructions.payment_link %}- International (card or US bank, Skydo): {{ doc.instructions.payment_link }}
+{% endif %}{% if doc.instructions.skydo %}- US bank transfer (ACH / wire): {{ doc.instructions.skydo.account_name }}, account {{ doc.instructions.skydo.account_number }}, routing {{ doc.instructions.skydo.routing_number }}
+{% endif %}
+See the quote online, with every payment detail:
+{{ doc.public_url }}
+
+After paying, upload the receipt on the Zinwe payment page. We confirm it (usually within one working day), switch the plan on and email the invoice.
+
+Questions? Just reply to this email.
+
+The Zinwe team
+SKYTECHNO, New Delhi
+{% endautoescape %}

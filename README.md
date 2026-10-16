@@ -125,9 +125,13 @@ All endpoints live under `/api/`. Admin site at `/admin/`.
 | POST | `/api/auth/password/reset/` | public, otp scope | `{email, code, new_password}` -> AuthResponse; **all old tokens revoked** |
 | GET/POST/PATCH | `/api/auth/company/` | token | the owner's single company: 404 none / 201 created / 409 already registered / 200 patched |
 | GET  | `/api/auth/plans/` | public (token optional) | active plans by `sort_order` (tagline, max_devices, features, is_recommended, requires_payment, `trial_available` for the caller) |
-| GET  | `/api/auth/subscription/` | token | `{subscription \| null, instructions}` (subscription has `is_trial`; instructions include `account_type`, `paypal_url`) |
+| GET  | `/api/auth/subscription/` | token | `{subscription \| null, instructions}` (subscription has `is_trial`; instructions include `account_type`, `paypal_url`). Every way to pay is returned whatever the country (UPI, bank, Skydo link / US account); `region` only picks the first tab. `payment_link` falls back to `ZINWE_SKYDO_PAYMENT_URL` |
 | POST | `/api/auth/subscription/` | token | `{plan}` -> 201; free plan or free trial `active` now, paid `pending_payment` |
-| POST | `/api/auth/subscription/payment/` | token, 10/hour/IP | **multipart** `method, amount_inr, reference, paid_on, payer_name, proof?` (JPG/PNG/PDF <= 5 MB) -> 201 `submitted` |
+| POST | `/api/auth/subscription/payment/` | token, 10/hour/IP | **multipart** `proof` (JPG/PNG/PDF <= 5 MB), `accept_terms`, optional `method, amount_inr, reference, paid_on, payer_name, upgrade_plan`. A receipt alone is enough: the amount due, today and the owner's name are filled in; without a receipt `reference` is required -> 201 `submitted` |
+| GET  | `/api/auth/subscription/quote/` | token | the shared quote: number, dates, customer, plan, `quote` (amounts), `instructions`, `public_url` (`ZINWE_APP_URL/quote/<token>`). 409 when nothing is due |
+| GET  | `/api/auth/subscription/quote/pdf/` | token | the quote as a PDF (with UPI QR, bank and Skydo details) |
+| POST | `/api/auth/subscription/quote/email/` | token, 10/hour | `{email?}` (blank = the owner) -> emails the PDF as an attachment + the public link -> `{sent_to, public_url}` |
+| GET  | `/api/auth/quotes/<token>/`, `.../pdf/` | public, 120/hour | the shared quote for the website's `/quote/<token>` page; 404 once nothing is due on that subscription |
 | GET  | `/api/auth/subscription/payment/<id>/proof/` | token | download your own proof (staff: any) |
 | POST | `/api/auth/register/` | public | **Deprecated** (use `signup/`): `{email, password, full_name, company?, phone?}` -> `{token, user}` (201), account verified at once |
 | POST | `/api/auth/plans/activate/` | token | Older endpoint: `{"plan": "<code>"}` -> new active `PlanActivation` (201); refuses paid plans |

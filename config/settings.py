@@ -233,6 +233,8 @@ REST_FRAMEWORK = {
         "support": "30/hour",
         "payment_submit": "10/hour",
         "feedback": "20/hour",
+        "quote_email": "10/hour",
+        "quote_public": "120/hour",
     },
     # Adds `retry_after` (seconds) to every 429 body.
     "EXCEPTION_HANDLER": "z_main.exceptions.exception_handler",
@@ -307,6 +309,10 @@ ZINWE_SKYDO_ACCOUNT = {
     "account_type": env_str("ZINWE_SKYDO_ACCOUNT_TYPE", "Checking"),
     "swift": env_str("ZINWE_SKYDO_SWIFT", ""),
 }
+# The general Skydo payment page (card or US bank), shown when a customer has no payment link of their own.
+ZINWE_SKYDO_PAYMENT_URL = env_str("ZINWE_SKYDO_PAYMENT_URL", "")
+# Shared quotes (z_auth.quotes): the PDF emailed to the owner and the public /quote/<token> page.
+ZINWE_QUOTE_VALID_DAYS = 15
 # The internal admin app, for links in team emails (support tickets).
 # The built website (zinwe-frontend dist/index.html), used to pre-render /blog pages (z_blog/prerender.py).
 ZINWE_FRONTEND_INDEX = env_str("ZINWE_FRONTEND_INDEX", str(BASE_DIR.parent / "zinwe-frontend" / "dist" / "index.html"))

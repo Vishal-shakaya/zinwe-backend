@@ -204,12 +204,14 @@ def _upi_qr_svg(upi_id: str, payee: str, amount: str, note: str) -> str:
 
 def payment_instructions(subscription: Subscription | None = None, company: Company | None = None) -> dict[str, Any]:
     """
-    How to pay, for this customer's country (portal-v1 §3.7, extended 2026-10-15):
+    How to pay (portal-v1 §3.7, extended 2026-10-15; every way shown since 2026-10-16):
 
-    - India (`region` "IN"): UPI (with a QR code holding the exact amount due) and bank transfer.
-    - Elsewhere ("INTL"): the customer's own Skydo payment link (card or US bank, made in Skydo and set
-      in the admin app) and the Skydo US account for ACH / wire. PayPal only if no Skydo account is set.
+    - UPI (with a QR code holding the exact amount due, for INR quotes) and bank transfer (NEFT / IMPS / RTGS).
+    - International: the customer's own Skydo payment link (card or US bank, set in the admin app), else the
+      general Skydo page (`ZINWE_SKYDO_PAYMENT_URL`), and the Skydo US account for ACH / wire.
+    - PayPal only as a fallback for customers outside India while no Skydo account is set up.
 
+    `region` ("IN" / "INTL", from the subscription's currency) only picks which way is shown first.
     Real values come from the env (`ZINWE_PAYMENT_*`, `ZINWE_SKYDO_*`); empty ones are hidden.
     """
     data: dict[str, Any] = dict(settings.ZINWE_PAYMENT_INSTRUCTIONS)
@@ -219,15 +221,12 @@ def payment_instructions(subscription: Subscription | None = None, company: Comp
     data["currency"] = currency
     skydo = {k: v for k, v in settings.ZINWE_SKYDO_ACCOUNT.items() if v}
     data["skydo"] = skydo if skydo.get("account_number") else None
-    data["payment_link"] = subscription.payment_link if subscription else ""
+    data["payment_link"] = (subscription.payment_link if subscription else "") or settings.ZINWE_SKYDO_PAYMENT_URL
     data["upi_qr_svg"] = ""
     if data["region"] == "INTL":
-        # Indian rails don't apply abroad; PayPal stays only as a fallback until Skydo is set up.
-        for key in ("upi_id", "bank_name", "account_type", "account_number", "ifsc"):
-            data[key] = ""
-        if data["skydo"]:
+        if data["skydo"] or data["payment_link"]:
             data["paypal_url"] = ""
-        data["note"] = "Use your company name and invoice reference when you pay."
+        data["note"] = "Use your company name and quote number as the payment reference."
     else:
         data["paypal_url"] = ""
         if subscription is not None and data.get("upi_id") and subscription.status != Status.CANCELLED:
@@ -343,9 +342,11 @@ def submit_payment(
     subscription = Subscription.objects.select_for_update().get(pk=subscription.pk)
     if has_payment_under_review(subscription):
         raise PaymentUnderReview()
+    due = amount_due(subscription, upgrade_plan)
+    _fill_receipt_defaults(data, user, subscription, due)
     payment = ManualPayment(subscription=subscription, is_renewal=renewal, upgrade_plan=upgrade_plan, **data)
     payment.currency = subscription.currency
-    payment.due = amount_due(subscription, upgrade_plan).as_dict()
+    payment.due = due.as_dict()
     if accepted_terms:
         payment.terms_accepted_at = timezone.now()
         payment.terms_version = settings.ZINWE_LEGAL_VERSION
@@ -354,6 +355,24 @@ def submit_payment(
     payment.save()
     transaction.on_commit(lambda: _after_payment_submitted(payment))
     return payment
+
+
+def _fill_receipt_defaults(data: dict[str, Any], user: User, subscription: Subscription, due: pricing.Quote) -> None:
+    """
+    The payment page only asks for a receipt (2026-10-16); staff read the details off it. Whatever the
+    owner didn't send is filled in: the way they had open (else UPI / Skydo by currency), the amount due,
+    today, and their name. The full form (dashboard, older clients) still sends every field.
+    """
+    if not data.get("method"):
+        data["method"] = ManualPayment.Method.UPI if subscription.currency == pricing.INR else ManualPayment.Method.SKYDO
+    if data.get("amount_inr") is None:
+        data["amount_inr"] = due.total
+    if data.get("paid_on") is None:
+        data["paid_on"] = timezone.localdate()
+    if not (data.get("payer_name") or "").strip():
+        company = subscription.company
+        data["payer_name"] = (user.full_name or (company.name if company else "") or user.email)[:120]
+    data["reference"] = (data.get("reference") or "").strip()
 
 
 def _after_payment_submitted(payment: ManualPayment) -> None:

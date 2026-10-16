@@ -34,6 +34,12 @@ urlpatterns = [
         portal_views.PaymentSubmitView.as_view(),
         name="subscription-payment",
     ),
+    path("subscription/quote/", portal_views.QuoteView.as_view(), name="subscription-quote"),
+    path("subscription/quote/pdf/", portal_views.QuotePdfView.as_view(), name="subscription-quote-pdf"),
+    path("subscription/quote/email/", portal_views.QuoteEmailView.as_view(), name="subscription-quote-email"),
+    # Shared quote links (public: the token is the key)
+    path("quotes/<str:token>/", portal_views.PublicQuoteView.as_view(), name="quote-public"),
+    path("quotes/<str:token>/pdf/", portal_views.PublicQuotePdfView.as_view(), name="quote-public-pdf"),
     path("feedback/", portal_views.FeedbackView.as_view(), name="feedback"),
     path("subscription/payments/", portal_views.PaymentHistoryView.as_view(), name="subscription-payments"),
     path(

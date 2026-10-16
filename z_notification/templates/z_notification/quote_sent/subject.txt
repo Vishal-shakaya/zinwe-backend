@@ -1,0 +1,1 @@
+{% autoescape off %}Your Zinwe quote {{ doc.number }}: {{ doc.plan.name }}, {{ total }}{% endautoescape %}

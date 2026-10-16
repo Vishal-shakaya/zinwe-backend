@@ -3,6 +3,9 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+# (file name, content, MIME type), e.g. ("Zinwe-quote.pdf", b"%PDF...", "application/pdf").
+Attachment = tuple[str, bytes, str]
+
 
 class ChannelError(Exception):
     """Raised by a channel (or the registry) when a message cannot be delivered."""

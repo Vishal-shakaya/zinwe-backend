@@ -175,11 +175,19 @@ BAD_PROOF_TYPE = "Upload a JPG, PNG or PDF file."
 
 
 class PaymentSubmitSerializer(serializers.Serializer):
-    """Multipart form for `POST subscription/payment/`."""
+    """
+    Multipart form for `POST subscription/payment/`.
 
-    method = StrippedChoiceField(choices=ManualPayment.Method.choices, error_messages=CHOICE_MESSAGES)
+    The payment page sends just the receipt (`proof`), the way the owner paid (`method`) and the terms
+    tick; billing fills in the amount due, today and the owner's name. Without a receipt, a `reference`
+    is required instead (the full form, still accepted).
+    """
+
+    method = StrippedChoiceField(
+        choices=ManualPayment.Method.choices, error_messages=CHOICE_MESSAGES, required=False,
+    )
     amount_inr = serializers.DecimalField(
-        max_digits=10, decimal_places=2, min_value=Decimal("1"),
+        max_digits=10, decimal_places=2, min_value=Decimal("1"), required=False,
         error_messages={
             **REQUIRED_MESSAGES,
             "invalid": "Enter the amount you paid, e.g. 1999.",
@@ -189,11 +197,11 @@ class PaymentSubmitSerializer(serializers.Serializer):
             "max_decimal_places": "Use at most 2 decimal places.",
         },
     )
-    reference = _text(64)
+    reference = _text(64, required=False, allow_blank=True)
     paid_on = serializers.DateField(
-        error_messages={**REQUIRED_MESSAGES, "invalid": "Enter the date as YYYY-MM-DD."}
+        required=False, error_messages={**REQUIRED_MESSAGES, "invalid": "Enter the date as YYYY-MM-DD."}
     )
-    payer_name = _text(120)
+    payer_name = _text(120, required=False, allow_blank=True)
     # The payment-terms checkbox (refund policy and billing terms). Must be ticked.
     accept_terms = serializers.BooleanField(
         error_messages={"required": "Please accept the payment terms to continue.", "invalid": "Please accept the payment terms to continue."},
@@ -217,6 +225,11 @@ class PaymentSubmitSerializer(serializers.Serializer):
             raise serializers.ValidationError("Please accept the payment terms to continue.")
         return value
 
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        if not attrs.get("proof") and not (attrs.get("reference") or "").strip():
+            raise serializers.ValidationError({"proof": ["Upload your payment receipt or screenshot."]})
+        return attrs
+
     def validate_paid_on(self, value: Any) -> Any:
         if value > timezone.localdate():
             raise serializers.ValidationError("The payment date can't be in the future.")
@@ -237,6 +250,15 @@ class PaymentSubmitSerializer(serializers.Serializer):
         if not any(head.startswith(sig) for sig in signatures):
             raise serializers.ValidationError(BAD_PROOF_TYPE)
         return value
+
+
+class QuoteEmailSerializer(serializers.Serializer):
+    """`POST subscription/quote/email/`: who gets the quote (blank = the owner's own email)."""
+
+    email = serializers.EmailField(
+        max_length=254, required=False, allow_blank=True,
+        error_messages={"invalid": "Enter a valid email address."},
+    )
 
 
 class FeedbackSerializer(serializers.ModelSerializer):

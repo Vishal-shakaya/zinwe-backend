@@ -5,7 +5,7 @@ Company:    {{ company.name|default:"-" }}
 Plan:       {{ plan.name }} ({{ plan.code }}), {{ subscription.amount_inr }} {{ subscription.currency }} per {% if subscription.billing_cycle == 'yearly' %}year{% else %}month{% endif %} + tax
 Type:       {% if payment.upgrade_plan %}Upgrade from {{ plan.name }} to {{ payment.upgrade_plan.name }} ({{ payment.upgrade_plan.price_inr_monthly }} INR/month; approving switches the plan now, paid days left are carried over){% elif payment.is_renewal %}Renewal of an active plan (paid until {{ subscription.ends_at|date:"Y-m-d" }}; approving adds a month){% else %}New plan{% endif %}
 Paid:       {{ payment.amount_inr }} {{ payment.currency }} by {{ payment.get_method_display }}{% if payment.due.total %} (due: {{ payment.due.total }} {{ payment.currency }}){% endif %} on {{ payment.paid_on|date:"Y-m-d" }}
-Reference:  {{ payment.reference }}
+Reference:  {{ payment.reference|default:"- (read it off the receipt)" }}
 Payer:      {{ payment.payer_name }}
 Proof:      {% if payment.proof %}attached in admin{% else %}none uploaded{% endif %}
 

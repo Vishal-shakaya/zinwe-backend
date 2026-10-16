@@ -19,6 +19,7 @@ from django.utils import timezone
 from z_main.refs import Ref, resolve_ref
 
 from .channels import get_channel
+from .channels.base import Attachment
 from .models import Notification
 
 logger = logging.getLogger("zinwe.notification")
@@ -57,6 +58,7 @@ def notify(
     ref: Ref = None,
     redact: Iterable[str] | None = None,
     headers: dict[str, str] | None = None,
+    attachments: list[Attachment] | None = None,
 ) -> Notification | None:
     """
     Render, log and send one notification. Never raises.
@@ -64,6 +66,7 @@ def notify(
     `redact`: strings (e.g. a one-time code) that are sent to the recipient but
     replaced with "••••••" in the logged subject and body.
     `headers`: extra message headers for channels that take them (email: e.g. List-Unsubscribe).
+    `attachments`: files for channels that take them (email: e.g. the quote PDF); not logged.
 
     Returns the `Notification` row (status sent/failed), or None if even the
     log row could not be written.
@@ -83,7 +86,9 @@ def notify(
         subject, body, html = render_template(template, context)
         notification.subject = redact_text(subject, redact)
         notification.body = redact_text(body, redact)
-        extra = {"headers": headers} if headers else {}  # only channels that support it get the kwarg
+        extra: dict[str, Any] = {"headers": headers} if headers else {}  # only channels that support it get the kwarg
+        if attachments:
+            extra["attachments"] = attachments
         get_channel(channel).send(recipient, subject, body, html=html, **extra)
         notification.status = Notification.Status.SENT
         notification.sent_at = timezone.now()

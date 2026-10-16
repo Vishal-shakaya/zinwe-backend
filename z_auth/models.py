@@ -385,6 +385,10 @@ class Subscription(models.Model):
     is_trial = models.BooleanField(
         default=False, help_text="A free trial of a paid plan (one per account, ever).",
     )
+    quote_token = models.CharField(
+        max_length=64, null=True, blank=True, unique=True, editable=False,
+        help_text="Secret for the public quote page (/quote/<token>), made the first time a quote is shared.",
+    )
     created_at = models.DateTimeField(default=timezone.now)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -430,7 +434,10 @@ class ManualPayment(models.Model):
         default=dict, blank=True,
         help_text="What was due when the owner reported this payment (z_auth.pricing quote: amount, taxes, total).",
     )
-    reference = models.CharField(max_length=64, help_text="UTR / transaction id / cheque number.")
+    reference = models.CharField(
+        max_length=64, blank=True,
+        help_text="UTR / transaction id / cheque number. Optional when a receipt is uploaded.",
+    )
     paid_on = models.DateField()
     payer_name = models.CharField(max_length=120)
     proof = models.FileField(

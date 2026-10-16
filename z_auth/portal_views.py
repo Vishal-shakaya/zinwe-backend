@@ -8,7 +8,7 @@ from django.http import FileResponse, Http404, HttpResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
@@ -22,6 +22,7 @@ from .portal_serializers import (
     FeedbackSerializer,
     PaymentSerializer,
     PaymentSubmitSerializer,
+    QuoteEmailSerializer,
     SubscribeSerializer,
     SubscriptionSerializer,
 )
@@ -230,3 +231,96 @@ class FeedbackView(APIView):
         serializer.is_valid(raise_exception=True)
         feedback = serializer.save(owner=request.user)
         return Response(FeedbackSerializer(feedback).data, status=status.HTTP_201_CREATED)
+
+
+# --- Shared quotes (z_auth.quotes) ------------------------------------------------------------
+
+NO_QUOTE = {"detail": "This quote link has expired or isn't valid. Ask for a new one from the Zinwe payment page."}
+
+
+def _quote_pdf_response(doc: dict) -> HttpResponse:
+    from .quotes import quote_filename, quote_pdf
+
+    response = HttpResponse(quote_pdf(doc), content_type="application/pdf")
+    response["Content-Disposition"] = f'attachment; filename="{quote_filename(doc)}"'
+    return response
+
+
+class QuoteView(APIView):
+    """GET /api/auth/subscription/quote/ -- the owner's quote (what's due, how to pay) and its public link."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request: Request) -> Response:
+        from .quotes import QuoteNotAvailable, quote_document
+
+        try:
+            return Response(quote_document(billing.current_subscription(request.user)))
+        except QuoteNotAvailable as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
+
+
+class QuotePdfView(APIView):
+    """GET /api/auth/subscription/quote/pdf/ -- the owner's quote as a PDF."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request: Request) -> HttpResponse:
+        from .quotes import QuoteNotAvailable, quote_document
+
+        try:
+            return _quote_pdf_response(quote_document(billing.current_subscription(request.user)))
+        except QuoteNotAvailable as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
+
+
+class QuoteEmailView(APIView):
+    """
+    POST /api/auth/subscription/quote/email/ `{email?}` -- email the quote PDF (attached) and its public
+    link, to the owner or to whoever pays (an accounts team). -> `{sent_to, public_url}`.
+    """
+
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "quote_email"
+
+    def post(self, request: Request) -> Response:
+        from .quotes import QuoteNotAvailable, email_quote
+
+        serializer = QuoteEmailSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        recipient = serializer.validated_data.get("email") or request.user.email
+        try:
+            doc = email_quote(billing.current_subscription(request.user), recipient)
+        except QuoteNotAvailable as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
+        return Response({"sent_to": recipient, "public_url": doc["public_url"]})
+
+
+class PublicQuoteView(APIView):
+    """GET /api/auth/quotes/<token>/ -- the shared quote, for anyone with the link (the website's /quote page)."""
+
+    authentication_classes: list = []
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "quote_public"
+
+    def get(self, request: Request, token: str) -> Response:
+        from .quotes import quote_document, subscription_for_token
+
+        subscription = subscription_for_token(token)
+        if subscription is None:
+            return Response(NO_QUOTE, status=status.HTTP_404_NOT_FOUND)
+        return Response(quote_document(subscription))
+
+
+class PublicQuotePdfView(PublicQuoteView):
+    """GET /api/auth/quotes/<token>/pdf/ -- the shared quote as a PDF."""
+
+    def get(self, request: Request, token: str) -> HttpResponse:  # type: ignore[override]
+        from .quotes import quote_document, subscription_for_token
+
+        subscription = subscription_for_token(token)
+        if subscription is None:
+            return Response(NO_QUOTE, status=status.HTTP_404_NOT_FOUND)
+        return _quote_pdf_response(quote_document(subscription))

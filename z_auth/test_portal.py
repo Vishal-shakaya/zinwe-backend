@@ -283,7 +283,9 @@ class SubscriptionTests(PortalTestCase):
             "upi_id": "acme@okbank", "payee_name": "SKYTECHNO", "bank_name": "Test Bank",
             "account_type": "Current", "account_number": "123456789012", "ifsc": "TEST0001234",
             "paypal_url": "https://paypal.me/zinwetest", "note": "Use your company name.",
-        }
+        },
+        ZINWE_SKYDO_ACCOUNT={"account_number": ""},
+        ZINWE_SKYDO_PAYMENT_URL="",
     )
     def test_instructions_include_account_type_and_paypal(self) -> None:
         instructions = self.get(SUB_URL).json()["instructions"]
@@ -297,7 +299,7 @@ class SubscriptionTests(PortalTestCase):
         abroad = self.get(SUB_URL).json()["instructions"]
         self.assertEqual((abroad["region"], abroad["currency"]), ("INTL", "USD"))
         self.assertEqual(abroad["paypal_url"], "https://paypal.me/zinwetest")  # no Skydo account configured
-        self.assertEqual(abroad["upi_id"], "")
+        self.assertEqual(abroad["upi_id"], "acme@okbank")  # every way to pay is shown (2026-10-16)
 
     def test_company_required(self) -> None:
         self.company.delete()
@@ -548,8 +550,9 @@ class PaymentTests(MediaMixin, PortalTestCase):
         self.assertEqual(body["method"], ["Pick one option."])
         self.assertEqual(body["amount_inr"], ["Enter the amount you paid, e.g. 1999."])
         self.assertEqual(body["paid_on"], ["The payment date can't be in the future."])
-        self.assertEqual(body["reference"], ["This field is required."])
-        self.assertEqual(body["payer_name"], ["This field is required."])
+        # Reference and payer are optional since receipt-only payments (2026-10-16).
+        self.assertNotIn("reference", body)
+        self.assertNotIn("payer_name", body)
         self.assertEqual(self.pay(paid_on="09/10/2026").json()["paid_on"], ["Enter the date as YYYY-MM-DD."])
 
     def test_paypal_is_accepted(self) -> None:
