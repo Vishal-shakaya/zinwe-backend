@@ -1,0 +1,15 @@
+{% autoescape off %}Hi {{ first_name }},
+
+We've got your receipt for {{ amount_text }} ({{ payment.get_method_display }}, {{ payment.paid_on|date:"j M Y" }}){% if is_upgrade %} for the upgrade to {{ plan.name }}{% elif is_renewal %} to renew {{ plan.name }}{% else %} for the {{ plan.name }} plan{% endif %}.{% if proof_name %}
+File: {{ proof_name }}{% endif %}
+
+We'll check it within one working day and email you as soon as it's confirmed, with your {% if gst_invoice %}GST invoice{% else %}invoice{% endif %}.{% if is_upgrade or is_renewal %} Your current plan keeps running meanwhile.{% endif %} There's nothing else you need to do, and please don't pay again.
+
+You can see where it stands on Billing:
+{{ billing_url }}
+
+Questions? Just reply to this email.
+
+The Zinwe team
+SKYTECHNO, New Delhi
+{% endautoescape %}

@@ -14,6 +14,8 @@ gets a new id, so it shows again).
 """
 from __future__ import annotations
 
+import re
+
 from typing import Any
 
 from django.conf import settings
@@ -159,7 +161,10 @@ def _upgrade_announcement(user: User, ent: Entitlements) -> dict[str, Any] | Non
     current_name = current.name if current else "the free plan"
     used = devices_used(user)
     if ent.max_devices and used >= ent.max_devices:
-        target = next((p for p in candidates if not p.max_devices or p.max_devices > ent.max_devices), None)
+        # The smallest plan that fits the team the owner told us about at sign-up (e.g. "11-25" → 25 PCs), and at
+        # least one more PC than today: never suggest a plan that can't hold their team.
+        need = max(ent.max_devices + 1, team_size_upper(user))
+        target = next((p for p in candidates if not p.max_devices or p.max_devices >= need), None)
         if target is None:
             return None
         more = f"up to {target.max_devices} PCs" if target.max_devices else "more PCs"
@@ -180,8 +185,14 @@ def _upgrade_announcement(user: User, ent: Entitlements) -> dict[str, Any] | Non
         shown = gained[:3] + (["more"] if len(gained) > 3 else [])
         body += f" {target.name} adds {_join(shown)}"
         body += f", for up to {target.max_devices} PCs." if more_pcs else "."
-    elif more_pcs:
-        body += f" {target.name} covers up to {target.max_devices} PCs."
+    else:
+        # Every plan has every feature since 2026-10-17: say what's bigger (PCs, history kept).
+        more_history = bool(ent.history_days and (not target.history_days or target.history_days > ent.history_days))
+        bigger = ([f"up to {target.max_devices} PCs"] if more_pcs else []) + (
+            [f"{history_label(target.history_days)} of history"] if more_history else []
+        )
+        if bigger:
+            body += f" {target.name} covers {_join(bigger)}."
     return _item(
         f"upgrade:{current.code if current else 'none'}:{target.code}",
         "upgrade",
@@ -190,6 +201,26 @@ def _upgrade_announcement(user: User, ent: Entitlements) -> dict[str, Any] | Non
         "Upgrade",
         f"/app/upgrade?plan={target.code}",
     )
+
+
+def team_size_upper(user: User) -> int:
+    """The top of the company's team-size range ("11-25" → 25, "50+" → 51), or 0 when unknown."""
+    company = getattr(user, "owned_company", None)
+    raw = (getattr(company, "team_size", "") or "").strip()
+    numbers = [int(n) for n in re.findall(r"\d+", raw)]
+    if not numbers:
+        return 0
+    return numbers[-1] + (1 if raw.endswith("+") else 0)
+
+
+def history_label(days: int) -> str:
+    """365 -> "1 year", 90 -> "90 days", 0 -> "unlimited"."""
+    if not days:
+        return "unlimited"
+    if days % 365 == 0:
+        years = days // 365
+        return f"{years} year" + ("s" if years > 1 else "")
+    return f"{days} days"
 
 
 def announcements_for(user: User) -> list[dict[str, Any]]:

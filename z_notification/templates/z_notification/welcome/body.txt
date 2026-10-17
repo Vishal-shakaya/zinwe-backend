@@ -2,11 +2,14 @@
 
 Your email is verified and your Zinwe account is ready.
 
-Two quick steps left:
+Getting set up takes a few minutes:
 1. Add your company details.
 2. Pick a plan. Free forever starts straight away, no payment needed.
+3. Add your first person: you get their Member ID, they install Zinwe on their PC and agree to it.
 
-Then install the Zinwe agent on your team's PCs and you'll start seeing activity in plain English.
+Then you'll start seeing what happens on your team's PCs, in plain English.
+
+Open my dashboard: {{ dashboard_url }}
 
 Questions? Just reply to this email.
 

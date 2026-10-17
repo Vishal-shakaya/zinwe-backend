@@ -1,0 +1,11 @@
+{% autoescape off %}Hi {{ first_name }},
+
+We've paused your Zinwe account, so you can't sign in to the dashboard for now.
+
+Reason: {{ reason }}
+
+If you think this is a mistake, or you'd like to sort it out, reply to this email or write to {{ support_email }}. We'll help.
+
+The Zinwe team
+SKYTECHNO, New Delhi
+{% endautoescape %}

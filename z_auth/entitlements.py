@@ -6,6 +6,11 @@ entitlements come from their *active* subscription; with none (never subscribed,
 still waiting for its first payment, expired, cancelled) they fall back to the Free forever
 plan. `max_devices` 0 means no PC limit.
 
+Since 2026-10-17 every plan has every module (migration 0021): plans differ by PCs (`max_devices`) and by
+history kept (`history_days`: older alerts, activity and work log are hidden, then pruned by
+z_devices.retention). The module gating below stays, so features can be tied to plans again later
+just by editing a plan's modules.
+
 Enforced in z_devices (see the "Plan enforcement" notes there): the PC limit at enrolment,
 the effective policy sent to the agent, policy edits, uploaded and read data, and the chat /
 work-log / alert-email endpoints. The dashboard reads the same answer from GET me/.
@@ -19,6 +24,10 @@ from typing import Any
 from django.apps import apps
 from django.db.models import Q
 from rest_framework.exceptions import PermissionDenied
+
+from datetime import datetime, timedelta
+
+from django.utils import timezone
 
 from .models import Plan, Subscription, User
 
@@ -49,8 +58,9 @@ MODULE_LABELS: dict[str, str] = {
 MODULES: tuple[str, ...] = tuple(MODULE_LABELS)
 
 # Used only when the Free forever row is missing (it never should be).
-FALLBACK_MODULES = frozenset({USB_ALERTS})
+FALLBACK_MODULES = frozenset(MODULE_LABELS)  # every plan has every feature since 2026-10-17
 FALLBACK_MAX_DEVICES = 3
+FALLBACK_HISTORY_DAYS = 7
 
 # Which module an agent event type / usage-metric category belongs to. Exact names first,
 # then prefixes. Anything unlisted (e.g. policy.updated, usb.policy_applied) is always kept.
@@ -95,6 +105,14 @@ class Entitlements:
     max_devices: int
     # False when this is the Free fallback rather than the owner's own active plan.
     on_active_plan: bool
+    # Days of alerts / activity / work-log history the owner sees (0 = no limit).
+    history_days: int = 0
+
+    def history_since(self, now: datetime | None = None) -> datetime | None:
+        """The oldest moment the owner may see, or None when the plan keeps everything."""
+        if not self.history_days:
+            return None
+        return (now or timezone.now()) - timedelta(days=self.history_days)
 
     def has(self, module: str) -> bool:
         return module in self.modules
@@ -129,9 +147,9 @@ def _free_plan() -> Plan | None:
 
 def _from_plan(plan: Plan | None, on_active_plan: bool) -> Entitlements:
     if plan is None:
-        return Entitlements(None, FALLBACK_MODULES, FALLBACK_MAX_DEVICES, False)
+        return Entitlements(None, FALLBACK_MODULES, FALLBACK_MAX_DEVICES, False, FALLBACK_HISTORY_DAYS)
     modules = frozenset(m for m in (plan.modules or []) if m in MODULE_LABELS)
-    return Entitlements(plan, modules, plan.max_devices or 0, on_active_plan)
+    return Entitlements(plan, modules, plan.max_devices or 0, on_active_plan, plan.history_days or 0)
 
 
 def entitlements_for(user: User) -> Entitlements:
@@ -213,6 +231,7 @@ def as_payload(user: User) -> dict[str, Any]:
         "on_active_plan": ent.on_active_plan,
         "modules": sorted(ent.modules),
         "max_devices": ent.max_devices,
+        "history_days": ent.history_days,
         "devices_used": devices_used(user),
         "upgrade_for": upgrade_for,
     }

@@ -39,7 +39,7 @@ class NotifyTests(TestCase):
         self.assertIsNotNone(notification.sent_at)
         self.assertEqual(notification.ref_type, "z_auth.earlyaccessregistration")
         self.assertEqual(notification.ref_id, "7")
-        self.assertEqual(notification.subject, "You're on the Zinwe early-access list")
+        self.assertEqual(notification.subject, "We'll call you to set up Zinwe")
         self.assertIn("Hi Asha", notification.body)
         self.assertEqual(len(mail.outbox), 1)
         self.assertEqual(mail.outbox[0].from_email, "Zinwe <hello@zinwe.io>")
@@ -164,3 +164,63 @@ class EmailLogoTests(TestCase):
         root = Path(__file__).resolve().parent / "templates" / "z_notification"
         missing = [p.parent.name for p in root.glob("*/body.html") if "_brand.html" not in p.read_text(encoding="utf-8")]
         self.assertEqual(missing, [])
+
+
+class PlainTextIsNeverEscapedTests(TestCase):
+    """J1-12 / J5-08: "&" in a company name must reach the inbox as "&", in every subject and text body."""
+
+    COMPANY = "Kulkarni & Associates"
+
+    def test_member_invite_subject_and_body(self) -> None:
+        from .services import render_template
+
+        subject, body, html = render_template(
+            "member_invite",
+            {"company": self.COMPANY, "first_name": "Sneha", "member_email": "s@k.in", "member_id": "ZM-1",
+             "download_url": "https://x"},
+        )
+        self.assertEqual(subject, "Kulkarni & Associates added you to Zinwe — connect your PC")
+        self.assertIn("Kulkarni & Associates uses Zinwe", body)
+        self.assertIn("Kulkarni &amp; Associates", html)  # the HTML part is still escaped
+
+    def test_a_subject_without_an_autoescape_tag_is_not_escaped(self) -> None:
+        from django.template import engines
+
+        from .services import render_unescaped
+
+        template = engines["django"].from_string("{{ company }} added you <{{ who }}>")
+        self.assertEqual(
+            render_unescaped(template, {"company": self.COMPANY, "who": "a\"b'c"}),
+            "Kulkarni & Associates added you <a\"b'c>",
+        )
+
+    def test_every_subject_renders_ampersands_plainly(self) -> None:
+        import os
+
+        from .services import render_plain
+
+        base = os.path.join(os.path.dirname(__file__), "templates", "z_notification")
+        folders = [d for d in os.listdir(base) if os.path.isfile(os.path.join(base, d, "subject.txt"))]
+        self.assertGreater(len(folders), 20)
+
+        class Anything(str):
+            """Any attribute / item lookup gives the company name back, so every {{ x.y }} renders."""
+
+            def __getattr__(self, name: str) -> "Anything":
+                if name.startswith("__"):
+                    raise AttributeError(name)
+                return self
+
+            def __getitem__(self, key: object) -> "Anything":
+                return self
+
+        value = Anything(self.COMPANY)
+        for folder in folders:
+            with self.subTest(template=folder):
+                text = render_plain(f"z_notification/{folder}/subject.txt", {
+                    "company": value, "subject": value, "plan": value, "registration": value, "ticket": value,
+                    "message": value, "doc": value, "name": value, "member_name": value, "titles": [value],
+                    "first_name": value, "label": value, "amount_text": value, "topic": value, "payment": value,
+                    "owner": value, "total": value, "hostname": value, "count": 1, "days_left": 3,
+                })
+                self.assertNotIn("&amp;", text)

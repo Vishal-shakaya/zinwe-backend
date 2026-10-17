@@ -25,6 +25,7 @@ class EmailChannel(Channel):
         html: str | None = None,
         headers: dict[str, str] | None = None,
         attachments: list[Attachment] | None = None,
+        reply_to: list[str] | None = None,
     ) -> None:
         message = EmailMultiAlternatives(
             subject=subject,
@@ -32,6 +33,7 @@ class EmailChannel(Channel):
             from_email=settings.DEFAULT_FROM_EMAIL,
             to=[recipient],
             headers=headers or None,
+            reply_to=reply_to or None,
         )
         if html:
             message.attach_alternative(html, "text/html")

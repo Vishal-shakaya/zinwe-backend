@@ -35,14 +35,39 @@ def redact_text(text: str, secrets: Iterable[str] | None) -> str:
     return text
 
 
+def render_plain(name: str, context: dict[str, Any]) -> str:
+    """
+    Render a plain-text template (subject.txt, body.txt) with HTML autoescaping OFF, whatever the template
+    says: "Kulkarni & Associates" must reach the inbox as "&", never "&amp;" (J1-12 / J5-08). Only body.html
+    is escaped.
+    """
+    from django.template.loader import get_template
+
+    return render_unescaped(get_template(name), context)
+
+
+def render_unescaped(template: Any, context: dict[str, Any]) -> str:
+    """Render a loaded template (backend wrapper) with autoescape off."""
+    from django.template import Context
+
+    inner = getattr(template, "template", None)  # the Django-engine Template behind the backend wrapper
+    if inner is None:  # another template engine: fall back to the normal render
+        return template.render(context)
+    return inner.render(Context(context, autoescape=False))
+
+
 def render_template(template: str, context: dict[str, Any]) -> tuple[str, str, str | None]:
     """Render (subject, text body, html body or None) for a template folder."""
     base = f"z_notification/{template}"
     # A hosted logo image once deployed; otherwise _brand.html draws the wordmark in text.
-    context = {"brand_logo_url": getattr(settings, "ZINWE_EMAIL_LOGO_URL", ""), **context}
-    subject = render_to_string(f"{base}/subject.txt", context)
+    context = {
+        "brand_logo_url": getattr(settings, "ZINWE_EMAIL_LOGO_URL", ""),
+        "app_url": getattr(settings, "ZINWE_APP_URL", ""),
+        **context,
+    }
+    subject = render_plain(f"{base}/subject.txt", context)
     subject = " ".join(subject.split())[:255]
-    body = render_to_string(f"{base}/body.txt", context).strip() + "\n"
+    body = render_plain(f"{base}/body.txt", context).strip() + "\n"
     try:
         html: str | None = render_to_string(f"{base}/body.html", context)
     except TemplateDoesNotExist:
@@ -59,6 +84,7 @@ def notify(
     redact: Iterable[str] | None = None,
     headers: dict[str, str] | None = None,
     attachments: list[Attachment] | None = None,
+    reply_to: list[str] | None = None,
 ) -> Notification | None:
     """
     Render, log and send one notification. Never raises.
@@ -67,6 +93,7 @@ def notify(
     replaced with "••••••" in the logged subject and body.
     `headers`: extra message headers for channels that take them (email: e.g. List-Unsubscribe).
     `attachments`: files for channels that take them (email: e.g. the quote PDF); not logged.
+    `reply_to`: addresses a reply goes to (email only), e.g. the visitor who wrote to the team.
 
     Returns the `Notification` row (status sent/failed), or None if even the
     log row could not be written.
@@ -89,6 +116,8 @@ def notify(
         extra: dict[str, Any] = {"headers": headers} if headers else {}  # only channels that support it get the kwarg
         if attachments:
             extra["attachments"] = attachments
+        if reply_to:
+            extra["reply_to"] = [r for r in reply_to if r]
         get_channel(channel).send(recipient, subject, body, html=html, **extra)
         notification.status = Notification.Status.SENT
         notification.sent_at = timezone.now()

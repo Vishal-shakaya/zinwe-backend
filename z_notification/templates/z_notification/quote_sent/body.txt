@@ -16,7 +16,7 @@ How to pay (any one):
 See the quote online, with every payment detail:
 {{ doc.public_url }}
 
-After paying, upload the receipt on the Zinwe payment page. We confirm it (usually within one working day), switch the plan on and email the invoice.
+After paying, {% if to_owner %}upload the receipt on Billing in your Zinwe dashboard{% else %}reply to this email with the receipt attached, or send it to {{ owner.full_name|default:owner.email }}{% endif %}. We confirm it (usually within one working day), switch the plan on and email the invoice.
 
 Questions? Just reply to this email.
 

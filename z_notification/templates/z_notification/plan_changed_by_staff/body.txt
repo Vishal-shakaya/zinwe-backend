@@ -1,0 +1,17 @@
+{% autoescape off %}Hi {{ first_name }},
+
+Our team has moved your Zinwe account {% if previous_plan %}from {{ previous_plan.name }} {% endif %}to the {{ plan.name }} plan. The change is already live.
+
+{% if plan.max_devices %}It covers up to {{ plan.max_devices }} PCs.{% endif %}{% if ends_at %} It runs until {{ ends_at|date:"j F Y" }}.{% endif %}
+{% if over_limit %}
+You have {{ devices }} PCs connected, {{ over_limit }} more than this plan covers. The PCs already connected keep working, but you can't add new ones until you're under the limit or on a bigger plan.
+{% endif %}{% if downgrade %}
+Paid days left on {{ previous_plan.name }} end with this change. If that's not what you agreed with us, reply to this email and we'll put it right.
+{% endif %}
+See your plan: {{ billing_url }}
+
+Questions? Just reply to this email.
+
+The Zinwe team
+SKYTECHNO, New Delhi
+{% endautoescape %}

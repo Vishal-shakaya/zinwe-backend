@@ -47,7 +47,10 @@ MESSAGES_URL = "/api/devices/messages/"
 METRICS_URL = "/api/devices/metrics/"
 METRICS_UPLOAD_URL = "/api/devices/metrics/upload/"
 
-HEARTBEAT_RESPONSE_KEYS = {"device_id", "server_time", "next_heartbeat_seconds", "policy_version"}
+HEARTBEAT_RESPONSE_KEYS = {
+    "device_id", "server_time", "next_heartbeat_seconds", "policy_version", "consent_state", "usb_restore",
+    "company_name", "owner_name",
+}
 
 # The non-usb feature blocks as a freshly created policy emits them (see contract defaults).
 DEFAULT_WEB = {"enabled": True, "mode": "monitor", "categories": [], "custom_domains": []}
@@ -118,6 +121,10 @@ class DeviceTestCase(APITestCase):
             **default_policy_blocks(),
             "entitlements": sorted(entitlements_for(self.owner).modules),
             "max_devices": 50,
+            "consent_state": "pending",
+            "monitoring_enabled": True,
+            "company_name": "",
+            "owner_name": "",
         }
 
 
@@ -984,7 +991,7 @@ class EventFeedTests(DeviceTestCase):
         self.assertEqual(
             set(rows[0]),
             {"id", "device_id", "hostname", "type", "severity", "title",
-             "occurred_at", "received_at", "data", "emailed_at"},
+             "occurred_at", "received_at", "data", "emailed_at", "kind", "handled_at", "handled_by"},
         )
         self.assertIsNone(rows[0]["emailed_at"])
         self.assertEqual(rows[0]["device_id"], self.second.id)
@@ -1188,7 +1195,7 @@ class MessageTests(DeviceTestCase):
         created = response.json()
         self.assertEqual(
             set(created),
-            {"id", "sender", "title", "body", "severity", "created_at", "read_by_owner", "read_by_member",
+            {"id", "sender", "channel", "title", "body", "severity", "created_at", "read_by_owner", "read_by_member",
              "delivered_at", "read_by_member_at"},
         )
         self.assertIsNone(created["delivered_at"])  # not on the PC yet
@@ -1205,7 +1212,7 @@ class MessageTests(DeviceTestCase):
 
         # It was tracked on commit.
         event = Event.objects.get(name="member.message_sent")
-        self.assertEqual(event.properties, {"member_id": self.member.id, "severity": "warning"})
+        self.assertEqual(event.properties, {"member_id": self.member.id, "severity": "warning", "channel": "chat"})
         self.assertEqual(event.actor_email, "owner@acme.in")
         self.assertEqual(event.ref_type, "z_devices.message")
 
@@ -1561,8 +1568,9 @@ class MetricsUploadTests(DeviceTestCase):
 class MetricsOwnerReadTests(DeviceTestCase):
     """M6: the owner reads aggregated usage for the dashboard charts."""
 
-    H9 = datetime(2026, 10, 10, 9, 0, tzinfo=dt_timezone.utc)
-    H10 = datetime(2026, 10, 10, 10, 0, tzinfo=dt_timezone.utc)
+    # Two hours inside the default 7-day window, whatever day the suite runs (fixed dates fell out of it).
+    H9 = (timezone.now() - timedelta(days=2)).replace(hour=9, minute=0, second=0, microsecond=0)
+    H10 = H9 + timedelta(hours=1)
 
     def setUp(self) -> None:
         super().setUp()
@@ -1665,8 +1673,9 @@ METRICS_TOP_URL = "/api/devices/metrics/top/"
 class MetricsTopReadTests(DeviceTestCase):
     """Per-key breakdown (top apps / top websites) for the owner's own devices only."""
 
-    H9 = datetime(2026, 10, 10, 9, 0, tzinfo=dt_timezone.utc)
-    H10 = datetime(2026, 10, 10, 10, 0, tzinfo=dt_timezone.utc)
+    # Two hours inside the default 7-day window, whatever day the suite runs (fixed dates fell out of it).
+    H9 = (timezone.now() - timedelta(days=2)).replace(hour=9, minute=0, second=0, microsecond=0)
+    H10 = H9 + timedelta(hours=1)
 
     def setUp(self) -> None:
         super().setUp()

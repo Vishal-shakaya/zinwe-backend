@@ -24,11 +24,13 @@ from .serializers import (
     EnrollSerializer,
     EventEmailSerializer,
     EventFeedQuerySerializer,
+    EventHandledSerializer,
     EventSerializer,
     EventUploadSerializer,
     HeartbeatSerializer,
     MemberCreateSerializer,
     MemberReplySerializer,
+    MemberRotateSerializer,
     MemberSerializer,
     MessageCreateSerializer,
     MessageSerializer,
@@ -61,6 +63,10 @@ class EnrollView(APIView):
                 serializer.validated_data, ip=get_client_ip(request)
             )
         except services.EnrollmentRejected as exc:
+            if exc.pc_limit:  # the plan is full: tell the owner someone tried (rate-limited, J3-19)
+                services.tell_owner_pc_refused(
+                    exc, serializer.validated_data["email"], serializer.validated_data["hostname"]
+                )
             # The field name is the first (and only) key, which is how the agent
             # tells a refusal (member_id/email/non_field_errors) from a contract error.
             return Response({exc.field: [exc.message]}, status=status.HTTP_400_BAD_REQUEST)
@@ -93,10 +99,9 @@ class CurrentPolicyView(APIView):
     def get(self, request: Request) -> Response:
         owner = request.auth.owner
         policy = services.get_policy(owner)
-        # Plan enforcement: the saved rules, clamped to what the owner's plan switches on.
-        data = services.apply_entitlements(
-            DevicePolicySerializer(policy).data, policy, plan.entitlements_for(owner)
-        )
+        # Plan enforcement: the saved rules, clamped to what the owner's plan switches on, and to the
+        # member's consent (declined = every monitoring feature off on this PC).
+        data = services.policy_for_device(request.auth, DevicePolicySerializer(policy).data, policy)
         return Response(data)
 
 
@@ -241,14 +246,35 @@ class MemberListCreateView(APIView):
 
 
 class MemberRotateIdView(APIView):
-    """POST /api/devices/members/<id>/rotate-id/ -- mint a fresh enrol id."""
+    """
+    POST /api/devices/members/<id>/rotate/ (also rotate-id/) -- mint a fresh enrol id. Body {email: bool},
+    default true: the member is emailed the new ID (their old invite stops working).
+    """
 
     permission_classes = [IsOwner]
 
     def post(self, request: Request, member_id: int) -> Response:
         member = get_object_or_404(request.user.members, pk=member_id)
-        services.rotate_member_code(member)
+        data = MemberRotateSerializer(data=request.data)
+        data.is_valid(raise_exception=True)
+        services.rotate_member_code(member, email=data.validated_data["email"])
         return Response(MemberSerializer(member).data)
+
+
+class DeviceUsbRestoreView(APIView):
+    """
+    POST /api/devices/<id>/usb/restore/ -- the owner gives a USB-locked PC its USB back: the next heartbeat
+    tells the agent to go back to the policy (it then sends usb.restored). Returns the device.
+    """
+
+    permission_classes = [IsOwner]
+
+    def post(self, request: Request, device_id: int) -> Response:
+        device = get_object_or_404(request.user.devices, pk=device_id)
+        if device.is_revoked:
+            return Response({"detail": "This PC was removed from your team."}, status=status.HTTP_409_CONFLICT)
+        services.request_usb_restore(request.user, device)
+        return Response(DeviceSerializer(device).data)
 
 
 class MemberDeactivateView(APIView):
@@ -263,7 +289,7 @@ class MemberDeactivateView(APIView):
 
 
 class MemberMessageView(APIView):
-    """POST /api/devices/members/<id>/message/ -- send one member a widget note."""
+    """POST /api/devices/members/<id>/message/ -- send one member a note (widget, widget + email, or email)."""
 
     permission_classes = [IsOwner]
 
@@ -272,13 +298,20 @@ class MemberMessageView(APIView):
         member = get_object_or_404(request.user.members, pk=member_id)
         serializer = MessageCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        event = None
+        event_id = serializer.validated_data.get("event_id")
+        if event_id:
+            event = DeviceEvent.objects.filter(pk=event_id, device__owner=request.user).first()
+            if event is None:
+                return Response({"event_id": ["That alert wasn't found."]}, status=status.HTTP_400_BAD_REQUEST)
         message = services.send_message(
             request.user,
             member,
             title=serializer.validated_data["title"],
             body=serializer.validated_data["body"],
             severity=serializer.validated_data["severity"],
-            also_email=serializer.validated_data["also_email"],
+            channel=serializer.validated_data["channel"],
+            event=event,
         )
         return Response(MessageSerializer(message).data, status=status.HTTP_201_CREATED)
 
@@ -315,7 +348,9 @@ class PolicyView(APIView):
 
 
 class EventFeedView(APIView):
-    """GET /api/devices/events/?device=<id>&limit=<1..200> -- newest first, own PCs only."""
+    """
+    GET /api/devices/events/?device=<id>&member=<id>&types=<a,b>&limit=<1..200> -- newest first, own PCs only.
+    """
 
     permission_classes = [IsOwner]
 
@@ -326,6 +361,10 @@ class EventFeedView(APIView):
             request.user,
             device_id=query.validated_data.get("device"),
             limit=query.validated_data["limit"],
+            member_id=query.validated_data.get("member"),
+            types=query.validated_data.get("types"),
+            kind=query.validated_data.get("kind"),
+            handled=query.validated_data.get("handled"),
         )
         events = list(events)
         emailed = services.alert_emails_sent(events)
@@ -333,6 +372,30 @@ class EventFeedView(APIView):
         for row in rows:
             row["emailed_at"] = emailed.get(row["id"])
         return Response(rows)
+
+
+class EventCountsView(APIView):
+    """GET /api/devices/events/counts/ -- {alerts, unhandled, critical_unhandled}; rule confirmations excluded."""
+
+    permission_classes = [IsOwner]
+
+    def get(self, request: Request) -> Response:
+        return Response(services.alert_counts(request.user))
+
+
+class EventHandledView(APIView):
+    """POST /api/devices/events/<id>/handled/ {handled: bool} -- mark an alert dealt with (or not). Returns it."""
+
+    permission_classes = [IsOwner]
+
+    def post(self, request: Request, event_id: int) -> Response:
+        event = get_object_or_404(DeviceEvent.objects.select_related("device"), pk=event_id, device__owner=request.user)
+        data = EventHandledSerializer(data=request.data)
+        data.is_valid(raise_exception=True)
+        event = services.mark_event_handled(request.user, event, data.validated_data["handled"])
+        row = EventSerializer(event).data
+        row["emailed_at"] = services.alert_emails_sent([event]).get(event.pk)
+        return Response(row)
 
 
 class EventEmailView(APIView):

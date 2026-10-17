@@ -1,0 +1,13 @@
+{% autoescape off %}Hi {{ first_name }},
+
+{{ member_name }} tried to connect a PC{% if hostname %} ({{ hostname }}){% endif %} to Zinwe, but your {{ plan_name|default:"current" }} plan covers {{ max_devices }} PCs and they're all in use. The PCs already connected keep working.
+
+To add this PC, upgrade{% if suggested_plan %} to {{ suggested_plan }}{% if suggested_pcs %} (up to {{ suggested_pcs }} PCs){% endif %}{% else %} your plan{% endif %} or remove a PC you no longer use:
+Upgrade: {{ upgrade_url }}
+Team: {{ team_url }}
+
+Questions? Just reply to this email.
+
+The Zinwe team
+SKYTECHNO, New Delhi
+{% endautoescape %}

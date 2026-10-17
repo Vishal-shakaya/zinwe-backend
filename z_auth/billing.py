@@ -17,7 +17,9 @@ plan from that day. Every approved payment records the period it paid for (cover
 from __future__ import annotations
 
 import calendar
+import logging
 import math
+import os
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -35,6 +37,7 @@ from .services import PlanNotAllowed, activate_plan, starts_as_trial
 
 Status = Subscription.Status
 PaymentStatus = ManualPayment.Status
+logger = logging.getLogger("zinwe.billing")
 
 
 class BillingError(Exception):
@@ -193,13 +196,34 @@ def amount_due(subscription: Subscription, upgrade_plan: Plan | None = None) -> 
     return pricing.quote_for_subscription(subscription, upgrade_plan)
 
 
+def upi_uri(upi_id: str, payee: str, amount: str, note: str) -> str:
+    """The `upi://pay?...` link with the exact amount: opens GPay / PhonePe / Paytm filled in (J3-07)."""
+    from urllib.parse import quote as q
+
+    return f"upi://pay?pa={q(upi_id)}&pn={q(payee)}&am={amount}&cu=INR&tn={q(note[:40])}"
+
+
 def _upi_qr_svg(upi_id: str, payee: str, amount: str, note: str) -> str:
     """A UPI QR (any UPI app) with the exact amount filled in, as an inline SVG."""
     import segno
-    from urllib.parse import quote as q
 
-    uri = f"upi://pay?pa={q(upi_id)}&pn={q(payee)}&am={amount}&cu=INR&tn={q(note[:40])}"
+    uri = upi_uri(upi_id, payee, amount, note)
     return segno.make(uri, error="m").svg_inline(scale=4, border=2, dark="#0d0d0e")
+
+
+def upi_note(company: Company | None, plan_name: str) -> str:
+    """The UPI payment note: the reference the screens ask for (the company name), else "Zinwe <plan>"."""
+    return (company.name if company and company.name else f"Zinwe {plan_name}")[:40]
+
+
+def _upi_for(quote: pricing.Quote, company: Company | None = None) -> tuple[str, str]:
+    """(QR svg, upi:// link) for an INR quote when a UPI ID is configured; ("", "") otherwise."""
+    upi_id = settings.ZINWE_PAYMENT_INSTRUCTIONS.get("upi_id", "")
+    if not upi_id or quote.currency != pricing.INR or quote.total <= 0:
+        return "", ""
+    payee = settings.ZINWE_PAYMENT_INSTRUCTIONS.get("payee_name", "")
+    amount, note = f"{quote.total:.2f}", upi_note(company, quote.plan_name)
+    return _upi_qr_svg(upi_id, payee, amount, note), upi_uri(upi_id, payee, amount, note)
 
 
 def payment_instructions(subscription: Subscription | None = None, company: Company | None = None) -> dict[str, Any]:
@@ -223,6 +247,7 @@ def payment_instructions(subscription: Subscription | None = None, company: Comp
     data["skydo"] = skydo if skydo.get("account_number") else None
     data["payment_link"] = (subscription.payment_link if subscription else "") or settings.ZINWE_SKYDO_PAYMENT_URL
     data["upi_qr_svg"] = ""
+    data["upi_uri"] = ""
     if data["region"] == "INTL":
         if data["skydo"] or data["payment_link"]:
             data["paypal_url"] = ""
@@ -232,10 +257,68 @@ def payment_instructions(subscription: Subscription | None = None, company: Comp
         if subscription is not None and data.get("upi_id") and subscription.status != Status.CANCELLED:
             due = amount_due(subscription)
             if due.total > 0:
-                data["upi_qr_svg"] = _upi_qr_svg(
-                    data["upi_id"], data.get("payee_name", ""), f"{due.total:.2f}", f"Zinwe {due.plan_name}"
-                )
+                note = upi_note(company, due.plan_name)
+                data["upi_qr_svg"] = _upi_qr_svg(data["upi_id"], data.get("payee_name", ""), f"{due.total:.2f}", note)
+                data["upi_uri"] = upi_uri(data["upi_id"], data.get("payee_name", ""), f"{due.total:.2f}", note)
     return data
+
+
+def check_upgrade(subscription: Subscription | None, plan: Plan) -> Subscription:
+    """
+    The subscription an upgrade to `plan` would start from: an active plan (free, trial or paid), no payment
+    under review, and `plan` a paid plan that costs more. Raises `UpgradeNotAllowed` / `PaymentUnderReview`.
+    """
+    if subscription is None or subscription.status != Status.ACTIVE:
+        raise UpgradeNotAllowed("An upgrade starts from an active plan. Choose a plan on the plans page instead.")
+    if has_payment_under_review(subscription):
+        raise PaymentUnderReview()
+    if not plan.is_active or not plan.requires_payment or plan.price_inr_monthly <= subscription.plan.price_inr_monthly:
+        raise UpgradeNotAllowed()
+    return subscription
+
+
+def carried_days(subscription: Subscription, now: datetime | None = None) -> int:
+    """Whole paid days left on the current plan that an upgrade adds on top (never lost)."""
+    return _carry_over(subscription, now or timezone.now()).days
+
+
+def upgrade_preview(user: User, plan: Plan, now: datetime | None = None) -> dict[str, Any]:
+    """
+    What moving up to `plan` costs and covers, before paying (J3-08): the quote, the period it buys
+    (today until one cycle later plus the paid days carried over) and the UPI QR / link for the exact amount.
+    Raises `UpgradeNotAllowed` / `PaymentUnderReview`.
+    """
+    now = now or timezone.now()
+    subscription = check_upgrade(current_subscription(user), plan)
+    due = amount_due(subscription, plan)
+    start, until = upgrade_period(subscription, now)
+    qr, uri = _upi_for(due, subscription.company)
+    return {
+        "quote": due.as_dict(),
+        "covers_from": timezone.localdate(start).isoformat(),
+        "covers_until": timezone.localdate(until).isoformat(),
+        "carried_days": carried_days(subscription, now),
+        "upi_qr_svg": qr,
+        "upi_uri": uri,
+    }
+
+
+def duplicate_of(payment: ManualPayment) -> ManualPayment | None:
+    """
+    Another payment with the same receipt file (proof hash) or the same staff-typed reference / UTR:
+    likely the same money reported twice (J8). None when nothing matches.
+    """
+    from django.db.models import Q
+
+    match = Q()
+    if payment.proof_sha256:
+        match |= Q(proof_sha256=payment.proof_sha256)
+    reference = (payment.staff_reference or "").strip()
+    if reference:
+        match |= Q(staff_reference__iexact=reference)
+    if not match:
+        return None
+    return ManualPayment.objects.filter(match).exclude(pk=payment.pk).order_by("-submitted_at", "-id").first()
 
 
 # --- Owner actions ----------------------------------------------------------
@@ -397,15 +480,42 @@ def _after_payment_submitted(payment: ManualPayment) -> None:
         },
         ref=payment,
     )
+    # The owner just sent money: tell them we have the receipt (J3-04).
+    notify(
+        "email",
+        owner.email,
+        "payment_received_owner",
+        {
+            **_owner_links(),
+            "first_name": owner.get_short_name() if owner.full_name else "there",
+            "payment": payment,
+            "plan": payment.upgrade_plan or subscription.plan,
+            "amount_text": pricing.money_text(payment.amount_inr, payment.currency),
+            "proof_name": os.path.basename(payment.proof.name) if payment.proof else "",
+            "is_upgrade": bool(payment.upgrade_plan_id),
+            "is_renewal": payment.is_renewal,
+            # Only promise a GST invoice when GST is on the quote (not for exports / no seller GSTIN).
+            "gst_invoice": bool((payment.due or {}).get("taxes")),
+        },
+        ref=payment,
+    )
 
 
 # --- Staff review (Django admin) --------------------------------------------
 
 
 @transaction.atomic
-def verify_payment(payment_id: int, reviewer: User | None) -> ManualPayment:
+def verify_payment(
+    payment_id: int,
+    reviewer: User | None,
+    staff_reference: str | None = None,
+    staff_amount: Any = None,
+) -> ManualPayment:
     """
-    Accept a submitted payment, owner emailed. Raises `ReviewNotAllowed`.
+    Accept a submitted payment, owner emailed (with the invoice PDF). Raises `ReviewNotAllowed`.
+
+    `staff_reference` / `staff_amount`: what staff read off the receipt (the admin's approve form requires
+    them); stored with `staff_checked_by = reviewer`, and the reference goes on the invoice.
 
     - New plan (`pending_payment`): active for one month from now, PlanActivation created.
     - Renewal of an active plan: extended by one month from its current end date.
@@ -422,8 +532,10 @@ def verify_payment(payment_id: int, reviewer: User | None) -> ManualPayment:
     )
     now = timezone.now()
     extending = payment.is_renewal and subscription.status == Status.ACTIVE
+    carried = 0
     if payment.upgrade_plan_id and subscription.status in (Status.ACTIVE, Status.EXPIRED):
         new_plan = payment.upgrade_plan
+        carried = carried_days(subscription, now) if subscription.status == Status.ACTIVE else 0
         covers_from, ends_at = (
             upgrade_period(subscription, now) if subscription.status == Status.ACTIVE
             else (now, add_months(now, cycle_months(subscription)))
@@ -478,24 +590,32 @@ def verify_payment(payment_id: int, reviewer: User | None) -> ManualPayment:
     payment.rejection_reason = ""
     payment.covers_from = covers_from
     payment.covers_until = ends_at
-    payment.save(update_fields=[
-        "status", "reviewed_at", "reviewed_by", "rejection_reason", "covers_from", "covers_until",
-    ])
+    fields = ["status", "reviewed_at", "reviewed_by", "rejection_reason", "covers_from", "covers_until"]
+    if staff_reference is not None or staff_amount is not None:
+        payment.staff_reference = (staff_reference or "").strip()[:64]
+        payment.staff_amount = staff_amount
+        payment.staff_checked_by = reviewer
+        fields += ["staff_reference", "staff_amount", "staff_checked_by"]
+    payment.save(update_fields=fields)
     from .invoices import issue_invoice  # numbered now: GST invoice numbers run without gaps
 
-    issue_invoice(payment)
-    transaction.on_commit(lambda: _after_payment_verified(payment, subscription))
+    invoice = issue_invoice(payment)
+    transaction.on_commit(lambda: _after_payment_verified(payment, subscription, invoice, carried))
     return payment
 
 
-def _after_payment_verified(payment: ManualPayment, subscription: Subscription) -> None:
+def _after_payment_verified(
+    payment: ManualPayment, subscription: Subscription, invoice: Any = None, carried: int = 0,
+) -> None:
     track(
         "payment.verified",
         {"amount_inr": str(payment.amount_inr), "plan": subscription.plan.code, "renewal": payment.is_renewal},
         actor_email=subscription.owner.email,
         ref=payment,
     )
-    _send_subscription_active(subscription, renewed=payment.is_renewal)
+    _send_subscription_active(
+        subscription, renewed=payment.is_renewal, payment=payment, invoice=invoice, carried=carried,
+    )
 
 
 @transaction.atomic
@@ -523,17 +643,27 @@ def reject_payment(payment_id: int, reviewer: User | None, reason: str) -> Manua
 
 
 def _after_payment_rejected(payment: ManualPayment) -> None:
-    owner = payment.subscription.owner
+    subscription = payment.subscription
+    owner = subscription.owner
     track("payment.rejected", {}, actor_email=owner.email, ref=payment)
+    subscription.refresh_from_db(fields=["status"])
     notify(
         "email",
         owner.email,
         "payment_rejected",
         {
+            **_owner_links(),
             "first_name": owner.get_short_name() if owner.full_name else "there",
             "payment": payment,
-            "plan": payment.subscription.plan,
+            "plan": payment.upgrade_plan or subscription.plan,
+            "current_plan": subscription.plan,
             "reason": payment.rejection_reason,
+            "amount_text": pricing.money_text(payment.amount_inr, payment.currency),
+            "reference": (payment.reference or "").strip(),
+            # An active plan (renewal / upgrade) keeps running: don't say "still waiting for payment" (J3-05).
+            "plan_active": subscription.status == Status.ACTIVE,
+            "is_upgrade": bool(payment.upgrade_plan_id),
+            "is_renewal": payment.is_renewal,
         },
         ref=payment,
     )
@@ -546,19 +676,69 @@ def trial_length(days: int) -> str:
     return f"{days}-day"
 
 
-def _send_subscription_active(subscription: Subscription, renewed: bool = False) -> None:
+def _owner_links() -> dict[str, str]:
+    """Absolute dashboard links for owner emails (each environment links to itself)."""
+    app = settings.ZINWE_APP_URL
+    return {
+        "dashboard_url": f"{app}/app",
+        "team_url": f"{app}/app/team",
+        "billing_url": f"{app}/app/settings/billing",
+    }
+
+
+def _has_devices(owner: User) -> bool:
+    from z_devices.models import Device
+
+    return Device.objects.filter(owner=owner, is_revoked=False).exists()
+
+
+def _send_subscription_active(
+    subscription: Subscription,
+    renewed: bool = False,
+    payment: ManualPayment | None = None,
+    invoice: Any = None,
+    carried: int = 0,
+) -> None:
+    """
+    "Your plan is active / renewed" (J3-03, J3-20, J2-05, J5-19): amount, period and invoice number, the GST
+    invoice PDF attached, a Billing button, and the "add your first person" step only for owners with no PC.
+    """
     owner = subscription.owner
+    attachments = []
+    amount_text = ""
+    if invoice is not None:
+        from .invoices import invoice_filename, invoice_pdf
+
+        amount_text = pricing.money_text(invoice.total, invoice.currency)
+        try:
+            attachments.append((invoice_filename(invoice), invoice_pdf(invoice), "application/pdf"))
+        except Exception:  # noqa: BLE001 -- the email still goes; the invoice is on Billing
+            logger.exception("Could not render invoice %s for the activation email", invoice.number)
+    elif payment is not None:
+        amount_text = pricing.money_text(payment.amount_inr, payment.currency)
     notify(
         "email",
         owner.email,
         "subscription_active",
         {
+            **_owner_links(),
             "first_name": owner.get_short_name() if owner.full_name else "there",
             "plan": subscription.plan,
             "subscription": subscription,
             "is_trial": subscription.is_trial,
             "is_renewal": renewed,
+            "is_upgrade": bool(payment and payment.upgrade_plan_id),
             "trial_length": trial_length(subscription.plan.trial_days),
+            "payment": payment,
+            "invoice": invoice,
+            "invoice_attached": bool(attachments),
+            "amount_text": amount_text,
+            "covers_from": payment.covers_from if payment else None,
+            "covers_until": (payment.covers_until if payment else None) or subscription.ends_at,
+            "carried_days": carried,
+            "period_word": "year" if cycle_months(subscription) == 12 else "month",
+            "has_devices": _has_devices(owner),
         },
         ref=subscription,
+        attachments=attachments or None,
     )

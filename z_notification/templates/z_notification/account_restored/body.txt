@@ -1,0 +1,9 @@
+Hi {{ first_name }},
+
+Your Zinwe account is active again. You can sign in to your dashboard now:
+{{ login_url }}
+
+Questions? Reply to this email or write to {{ support_email }}.
+
+The Zinwe team
+SKYTECHNO, New Delhi

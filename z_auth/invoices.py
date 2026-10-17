@@ -83,7 +83,8 @@ def amount_in_words(amount: Decimal, currency: str) -> str:
         text = f"US dollars {_words(whole, indian=False)}"
         if fraction:
             text += f" and {_words(fraction, indian=False)} cents"
-    return f"{text} only".capitalize()
+    text = f"{text} only"
+    return text[:1].upper() + text[1:]  # not .capitalize(): that lowercases "US" (J3-25)
 
 
 # --- Issuing --------------------------------------------------------------------------------
@@ -160,7 +161,8 @@ def _data(payment: ManualPayment, number: str, fy: str, issued_at: datetime) -> 
         "total_in_words": amount_in_words(total, currency),
         "payment": {
             "method": payment.get_method_display(),
-            "reference": payment.reference,
+            # What staff read off the receipt wins over what the owner typed (often nothing).
+            "reference": (payment.staff_reference or payment.reference or "").strip(),
             "payer": payment.payer_name,
             "amount_paid": str(payment.amount_inr),
         },
@@ -215,6 +217,22 @@ def _latin(text: str) -> str:
     )
 
 
+def payment_line(payment: dict[str, Any]) -> str:
+    """ "UPI - reference 4021 - paid by Asha", leaving out the parts that are empty (J3-12)."""
+    parts = [str(payment.get("method") or "").strip()]
+    reference = str(payment.get("reference") or "").strip()
+    if reference:
+        parts.append(f"reference {reference}")
+    payer = str(payment.get("payer") or "").strip()
+    if payer:
+        parts.append(f"paid by {payer}")
+    return " - ".join(p for p in parts if p)
+
+
+def invoice_filename(invoice: Invoice) -> str:
+    return f"Zinwe-invoice-{invoice.number.replace('/', '-')}.pdf"
+
+
 def invoice_pdf(invoice: Invoice) -> bytes:
     from fpdf import FPDF  # imported here: only needed for downloads
 
@@ -239,7 +257,7 @@ def invoice_pdf(invoice: Invoice) -> bytes:
     pdf.cell(w / 2, 10, _latin(d.get("title", "Invoice")).upper(), align="R", new_x="LMARGIN", new_y="NEXT")
     pdf.set_font("Helvetica", "", 9)
     pdf.set_text_color(90, 90, 90)
-    pdf.cell(w, 5, "IT Is OK. Security, simplified.", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(w, 5, "No IT team? It's OK. Security, simplified.", new_x="LMARGIN", new_y="NEXT")
     pdf.set_text_color(20, 20, 20)
     pdf.ln(4)
 
@@ -328,7 +346,7 @@ def invoice_pdf(invoice: Invoice) -> bytes:
 
     payment = d.get("payment", {})
     text("Payment", 8, True)
-    text(f"{payment.get('method', '')} - reference {payment.get('reference', '')} - paid by {payment.get('payer', '')}", 9)
+    text(payment_line(payment), 9)
     pdf.ln(3)
     for note in d.get("notes", []):
         text(note, 8)

@@ -20,6 +20,8 @@ urlpatterns = [
         views.MemberRotateIdView.as_view(),
         name="member-rotate-id",
     ),
+    path("members/<int:member_id>/rotate/", views.MemberRotateIdView.as_view(), name="member-rotate"),
+    path("<int:device_id>/usb/restore/", views.DeviceUsbRestoreView.as_view(), name="device-usb-restore"),
     path(
         "members/<int:member_id>/deactivate/",
         views.MemberDeactivateView.as_view(),
@@ -42,7 +44,9 @@ urlpatterns = [
     path("policy/current/", views.CurrentPolicyView.as_view(), name="policy-current"),
     path("events/", views.EventFeedView.as_view(), name="events"),
     path("events/upload/", views.EventUploadView.as_view(), name="events-upload"),
+    path("events/counts/", views.EventCountsView.as_view(), name="event-counts"),
     path("events/<int:event_id>/email/", views.EventEmailView.as_view(), name="event-email"),
+    path("events/<int:event_id>/handled/", views.EventHandledView.as_view(), name="event-handled"),
     path("work-log/", views.WorkLogView.as_view(), name="work-log"),
     path("work-log/<int:log_id>/decision/", views.BreakDecisionView.as_view(), name="break-decision"),
     path("metrics/", views.MetricsFeedView.as_view(), name="metrics"),

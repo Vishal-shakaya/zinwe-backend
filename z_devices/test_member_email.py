@@ -1,4 +1,4 @@
-"""Emailing members: chat notes with also_email, and one-click alert emails from Activity."""
+"""Emailing members: chat notes by channel (chat / chat + email / email only), and one-click alert emails."""
 from __future__ import annotations
 
 import uuid
@@ -8,7 +8,7 @@ from django.core import mail
 from django.utils import timezone
 from rest_framework import status
 
-from .models import Device, DeviceEvent, Member
+from .models import Device, DeviceEvent, Member, Message
 from .tests import DeviceTestCase
 
 MEMBERS_URL = "/api/devices/members/"
@@ -18,7 +18,7 @@ EVENTS_URL = "/api/devices/events/"
 class MemberEmailTests(DeviceTestCase):
     def setUp(self) -> None:
         super().setUp()
-        self.enroll()
+        self.token = self.enroll().json()["device_token"]
         self.device = Device.objects.get()
         mail.outbox.clear()
         self.as_owner()
@@ -48,8 +48,43 @@ class MemberEmailTests(DeviceTestCase):
         self.assertIn("Before lunch, thanks.", email.body)
 
     def test_message_not_emailed_by_default(self) -> None:
-        self.post(f"{MEMBERS_URL}{self.member.id}/message/", {"title": "Hi"})
+        response = self.post(f"{MEMBERS_URL}{self.member.id}/message/", {"title": "Hi"})
+        self.assertEqual(response.json()["channel"], "chat")
         self.assertEqual(len(mail.outbox), 0)
+
+    def test_channel_chat_email(self) -> None:
+        response = self.post(f"{MEMBERS_URL}{self.member.id}/message/", {"title": "Hi", "channel": "chat_email"})
+        self.assertEqual(response.json()["channel"], "chat_email")
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn("in the Zinwe widget on your work PC, where you can reply", mail.outbox[0].body)
+
+    def test_email_only_never_reaches_the_pc(self) -> None:
+        response = self.post(
+            f"{MEMBERS_URL}{self.member.id}/message/",
+            {"title": "Payslips are out", "body": "Check your inbox.", "channel": "email", "also_email": False},
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.content)
+        self.assertEqual(response.json()["channel"], "email")
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn("To reply, open the Zinwe widget", mail.outbox[0].body)
+
+        # The PC neither sees it nor stamps it delivered / read.
+        self.as_device(self.token)
+        self.assertEqual(self.client.get("/api/devices/messages/").json(), [])
+        self.client.post("/api/devices/messages/read/")
+        message = Message.objects.get()
+        self.assertIsNone(message.delivered_at)
+        self.assertFalse(message.read_by_member)
+
+        # The owner's thread still shows it.
+        self.as_owner()
+        thread = self.client.get(f"{MEMBERS_URL}{self.member.id}/messages/").json()
+        self.assertEqual([m["channel"] for m in thread], ["email"])
+
+    def test_unknown_channel_rejected(self) -> None:
+        response = self.post(f"{MEMBERS_URL}{self.member.id}/message/", {"title": "Hi", "channel": "sms"})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(Message.objects.exists())
 
     # --- alert email ----------------------------------------------------------
 

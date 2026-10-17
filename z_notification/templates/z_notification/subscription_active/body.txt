@@ -2,17 +2,24 @@
 
 {% if is_trial %}Your free {{ trial_length }} trial of {{ plan.name }} has started. It ends on {{ subscription.ends_at|date:"j F Y" }}.
 No payment is needed until then.
-
-{% elif is_renewal %}Thanks for renewing! Your {{ plan.name }} plan has been extended by a month.
-
-{% if subscription.ends_at %}It's now paid until {{ subscription.ends_at|date:"j F Y" }}. Your PCs stay protected without a break.
+{% elif is_upgrade %}Your upgrade went through: you're now on {{ plan.name }}{% if plan.max_devices %}, which covers up to {{ plan.max_devices }} PCs{% endif %}.
+{% if covers_until %}It's paid until {{ covers_until|date:"j F Y" }}{% if carried_days %} (includes {{ carried_days }} paid day{{ carried_days|pluralize }} carried over from your old plan){% endif %}.
+{% endif %}{% elif is_renewal %}Thanks for renewing! Your {{ plan.name }} plan has been extended by a {{ period_word }}.
+{% if covers_until %}It's now paid until {{ covers_until|date:"j F Y" }}. Your PCs stay protected without a break.
 {% endif %}{% else %}Your {{ plan.name }} plan is now active.
-
 {% if subscription.ends_at %}Paid until {{ subscription.ends_at|date:"j F Y" }}. Thank you for your payment.
-{% endif %}{% endif %}{% if plan.max_devices %}It covers up to {{ plan.max_devices }} PCs.
+{% endif %}{% endif %}{% if not is_upgrade and plan.max_devices %}It covers up to {{ plan.max_devices }} PCs.
+{% endif %}{% if amount_text %}
+Payment received: {{ amount_text }}{% if covers_from and covers_until %}, for {{ covers_from|date:"j M Y" }} to {{ covers_until|date:"j M Y" }}{% endif %}.
+{% endif %}{% if invoice %}Invoice: {{ invoice.number }}{% if invoice_attached %} (the PDF is attached){% endif %}.
+{% endif %}{% if payment %}
+Billing and invoices: {{ billing_url }}
+{% endif %}{% if not has_devices %}
+Next step: add your first person in the dashboard. You'll get their Member ID, then they install Zinwe on their PC and agree to it:
+{{ team_url }}
+{% else %}
+Open my dashboard: {{ dashboard_url }}
 {% endif %}
-Next step: install the Zinwe agent on your team's PCs from your dashboard.
-
 Questions? Just reply to this email.
 
 The Zinwe team

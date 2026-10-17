@@ -68,6 +68,9 @@ class User(AbstractBaseUser, PermissionsMixin):
     terms_version = models.CharField(
         max_length=20, blank=True, help_text="Which version of the Terms they accepted (ZINWE_LEGAL_VERSION).",
     )
+    tour_done_at = models.DateTimeField(
+        null=True, blank=True, help_text="When the owner finished or skipped the dashboard tour (shown once per account).",
+    )
 
     objects = UserManager()
 
@@ -116,6 +119,7 @@ class Plan(models.Model):
 
     FREE = "free"
     STARTUPS = "startups"
+    TEAMS = "teams"  # 25 PCs, between Startups and Businesses (migration 0024)
     BUSINESSES = "businesses"
     # Legacy (inactive since 0006; rows kept because history points at them).
     EARLY_ACCESS = "early-access"
@@ -148,6 +152,11 @@ class Plan(models.Model):
     is_active = models.BooleanField(default=True)
     tagline = models.CharField(max_length=160, blank=True)
     max_devices = models.PositiveIntegerField(default=0, help_text="How many PCs the plan covers.")
+    history_days = models.PositiveIntegerField(
+        default=0,
+        help_text="Days of alerts, activity and work-log history the owner can see (0 = no limit). Older data is "
+        "hidden at once and deleted 30 days later (z_devices.retention).",
+    )
     features = models.JSONField(default=list, blank=True, help_text="Short feature lines shown on plan cards.")
     modules = models.JSONField(
         default=list, blank=True,
@@ -389,6 +398,10 @@ class Subscription(models.Model):
         max_length=64, null=True, blank=True, unique=True, editable=False,
         help_text="Secret for the public quote page (/quote/<token>), made the first time a quote is shared.",
     )
+    # The quote as issued (z_auth.quotes): the public link always shows this frozen copy, and says "paid" or
+    # "replaced" once it no longer stands, so an emailed quote can never ask for a different amount.
+    quote_snapshot = models.JSONField(default=dict, blank=True, editable=False)
+    quote_issued_at = models.DateTimeField(null=True, blank=True, editable=False)
     created_at = models.DateTimeField(default=timezone.now)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -469,12 +482,57 @@ class ManualPayment(models.Model):
         null=True, blank=True, help_text="When the owner accepted the payment terms (refund policy) for this payment.",
     )
     terms_version = models.CharField(max_length=20, blank=True)
+    proof_sha256 = models.CharField(
+        max_length=64, blank=True, db_index=True,
+        help_text="SHA-256 of the uploaded receipt (set on save). Same hash on two payments = same receipt twice.",
+    )
+    staff_reference = models.CharField(
+        max_length=64, blank=True, db_index=True,
+        help_text="The UTR / transaction id staff read off the receipt when approving.",
+    )
+    staff_amount = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True,
+        help_text="The amount staff read off the receipt when approving (in `currency`).",
+    )
+    staff_checked_by = models.ForeignKey(
+        "z_auth.User", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="checked_payments", help_text="Staff member who typed the reference and amount.",
+    )
 
     class Meta:
         ordering = ["-submitted_at", "-id"]
 
     def __str__(self) -> str:
         return f"Payment #{self.pk} {self.amount_inr} INR ({self.status})"
+
+    def save(self, *args: Any, **kwargs: Any) -> None:
+        if self.proof and not self.proof_sha256:
+            self.proof_sha256 = self.compute_proof_sha256()
+            update_fields = kwargs.get("update_fields")
+            if update_fields is not None and "proof_sha256" not in update_fields:
+                kwargs["update_fields"] = [*update_fields, "proof_sha256"]
+        super().save(*args, **kwargs)
+
+    def compute_proof_sha256(self) -> str:
+        """Hash the receipt file ('' when there is none or it can't be read)."""
+        import hashlib
+
+        if not self.proof:
+            return ""
+        digest = hashlib.sha256()
+        try:
+            f = self.proof
+            closed_before = getattr(f, "closed", True)
+            f.open("rb")
+            f.seek(0)
+            for chunk in f.chunks():
+                digest.update(chunk if isinstance(chunk, bytes) else chunk.encode())
+            f.seek(0)
+            if closed_before and getattr(f, "_committed", True):
+                f.close()
+        except (OSError, ValueError):
+            return ""
+        return digest.hexdigest()
 
     @property
     def owner(self) -> User:

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from django.shortcuts import get_object_or_404
 from rest_framework import status
-from rest_framework.permissions import IsAdminUser, IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
@@ -14,6 +14,7 @@ from rest_framework.views import APIView
 from . import services
 from .models import SupportTicket
 from .serializers import (
+    ContactSerializer,
     MessageSerializer,
     OpenTicketSerializer,
     ReplySerializer,
@@ -131,3 +132,28 @@ class StaffStatusView(APIView):
         services.set_status(ticket, data.validated_data["status"])
         fresh = get_object_or_404(services.tickets_for_staff(), pk=pk)
         return Response(StaffTicketDetailSerializer(fresh).data)
+
+
+# --- Public contact form -------------------------------------------------------
+
+
+class ContactView(APIView):
+    """
+    POST /api/contact/ -- public website contact form: {name, email, company?, phone?, topic?, message}.
+    Emails the team (reply-to = the visitor) and the visitor a "we got your message". 201 {"status": "sent"}.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes: list = []
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "contact"
+
+    def post(self, request: Request) -> Response:
+        from z_main.client import get_client_ip, get_user_agent
+
+        data = ContactSerializer(data=request.data)
+        data.is_valid(raise_exception=True)
+        services.send_contact_message(
+            data.validated_data, ip=get_client_ip(request), user_agent=get_user_agent(request)
+        )
+        return Response({"status": "sent"}, status=status.HTTP_201_CREATED)

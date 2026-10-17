@@ -11,6 +11,7 @@ from z_notification.models import Notification
 
 from ._testing import STRONG_PASSWORD, PortalTestCase, age_codes, codes_sent_to, last_code
 from .models import OneTimeCode, User
+from z_auth.entitlements import MODULES
 
 SIGNUP = "/api/auth/signup/"
 VERIFY = "/api/auth/signup/verify/"
@@ -156,7 +157,7 @@ class SignupVerifyTests(PortalTestCase):
         self.assertEqual(body["token"], Token.objects.get(user=user).key)
         self.assertEqual(
             set(body["user"]),
-            {"id", "email", "full_name", "phone", "is_staff", "date_joined", "email_verified", "terms"},
+            {"id", "email", "full_name", "phone", "is_staff", "date_joined", "email_verified", "terms", "tour_done"},
         )
         self.assertTrue(body["user"]["email_verified"])
         self.assertEqual(body["onboarding"], FRESH_ONBOARDING)
@@ -302,8 +303,32 @@ class PasswordLoginTests(PortalTestCase):
     def test_deactivated_verified_account_cannot_log_in(self) -> None:
         self.make_owner("asha@acme.in", login=False, is_active=False)
         response = self.login()
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        # Blocked by staff: told the account is paused (not "wrong password").
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.json()["code"], "account_paused")
+        self.assertIn("paused", response.json()["detail"])
+        self.assertNotIn("token", response.json())
         self.assertEqual(len(mail.outbox), 0)
+
+    def test_paused_account_with_wrong_password_is_generic_400(self) -> None:
+        self.make_owner("asha@acme.in", login=False, is_active=False)
+        response = self.login(password="wrong-pass")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)  # doesn't reveal the account
+
+    def test_successful_logins_are_not_throttled(self) -> None:
+        """J5-22: only failed attempts count, so an office behind one IP never locks out a right password."""
+        self.make_owner("asha@acme.in", login=False)
+        for _ in range(25):
+            self.assertEqual(self.login().status_code, status.HTTP_200_OK)
+
+    def test_failed_logins_are_counted_per_email(self) -> None:
+        self.make_owner("asha@acme.in", login=False)
+        self.make_owner("ravi@acme.in", login=False)
+        for _ in range(20):
+            self.login(password="wrong-pass")
+        self.assertEqual(self.login().status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+        other = self.login("ravi@acme.in")
+        self.assertEqual(other.status_code, status.HTTP_200_OK)  # a colleague on the same IP still gets in
 
     def test_login_throttled_after_20_per_hour(self) -> None:
         for _ in range(20):
@@ -373,7 +398,7 @@ class LogoutAndMeTests(PortalTestCase):
         self.assertEqual(
             set(body),
             {
-                "id", "email", "full_name", "phone", "is_staff", "date_joined", "email_verified", "terms",
+                "id", "email", "full_name", "phone", "is_staff", "date_joined", "email_verified", "terms", "tour_done",
                 "onboarding", "company", "subscription", "active_plan", "entitlements",
             },
         )
@@ -381,11 +406,12 @@ class LogoutAndMeTests(PortalTestCase):
         # No active plan yet: Free forever's modules and PC limit apply.
         self.assertEqual(body["entitlements"]["plan_code"], "free")
         self.assertFalse(body["entitlements"]["on_active_plan"])
-        self.assertEqual(body["entitlements"]["modules"], ["usb_alerts"])
+        # Every plan has every feature (0022); Free differs by PCs and history kept.
+        self.assertEqual(body["entitlements"]["modules"], sorted(MODULES))
         self.assertEqual(body["entitlements"]["max_devices"], 3)
+        self.assertEqual(body["entitlements"]["history_days"], 7)
         self.assertEqual(body["entitlements"]["devices_used"], 0)
-        self.assertEqual(body["entitlements"]["upgrade_for"]["usb_control"], {"code": "startups", "name": "Startups"})
-        self.assertEqual(body["entitlements"]["upgrade_for"]["team_chat"]["name"], "Businesses")
+        self.assertEqual(body["entitlements"]["upgrade_for"], {})
         self.assertIsNone(body["company"])
         self.assertIsNone(body["subscription"])
         self.assertIsNone(body["active_plan"])

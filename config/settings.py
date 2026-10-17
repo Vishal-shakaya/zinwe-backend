@@ -227,7 +227,10 @@ REST_FRAMEWORK = {
         "early_access": "20/hour",
         "device_enroll": "60/hour",
         "auth_signup": "10/hour",
+        # Failed logins per email + IP (J5-22: offices share one IP behind CGNAT); every login per IP has a
+        # much higher ceiling so one address can't spray many accounts.
         "auth_login": "20/hour",
+        "auth_login_ip": "300/hour",
         "auth_otp": "30/hour",
         "alert_email": "60/hour",
         "support": "30/hour",
@@ -235,6 +238,7 @@ REST_FRAMEWORK = {
         "feedback": "20/hour",
         "quote_email": "10/hour",
         "quote_public": "120/hour",
+        "contact": "10/hour",
     },
     # Adds `retry_after` (seconds) to every 429 body.
     "EXCEPTION_HANDLER": "z_main.exceptions.exception_handler",
@@ -292,7 +296,7 @@ ZINWE_APP_URL = env_str("ZINWE_APP_URL", "http://localhost:5173").rstrip("/")
 # Version (date) of the Terms, Privacy, Refund, Cookie, Disclaimer and Acceptable Use policies that
 # owners accept at sign-up and with each payment. Bump it when the Terms change: every owner on an
 # older version is then asked once, in the dashboard, to accept the new one (POST auth/terms/accept/).
-ZINWE_LEGAL_VERSION = "2026-10-15"
+ZINWE_LEGAL_VERSION = "2026-10-17"
 # Who issues invoices (shown on the printable invoice in Billing). Set the real values in .env.
 ZINWE_INVOICE_SELLER = {
     "name": env_str("ZINWE_INVOICE_SELLER_NAME", "SKYTECHNO"),
@@ -327,6 +331,9 @@ ZINWE_QUOTE_VALID_DAYS = 15
 # The internal admin app, for links in team emails (support tickets).
 # The built website (zinwe-frontend dist/index.html), used to pre-render /blog pages (z_blog/prerender.py).
 ZINWE_FRONTEND_INDEX = env_str("ZINWE_FRONTEND_INDEX", str(BASE_DIR.parent / "zinwe-frontend" / "dist" / "index.html"))
+# robots.txt / sitemap.xml (z_main.seo): only the production website is open to search engines. The deploy sets
+# this from the flavour's NOINDEX (prod: True); locally and on dev every host answers "Disallow: /".
+ZINWE_SEARCH_INDEXING = env_bool("ZINWE_SEARCH_INDEXING", False)
 ZINWE_ADMIN_URL = env_str("ZINWE_ADMIN_URL", "http://localhost:5174").rstrip("/")
 # Renewal reminders (z_auth.renewals): days before a paid plan ends, each sent once per period.
 ZINWE_RENEWAL_REMINDER_DAYS = (7, 1)
@@ -339,7 +346,8 @@ ZINWE_EARLY_ACCESS_TRIAL_DAYS = 0
 ZINWE_DEVICE_HEARTBEAT_SECONDS = 60
 ZINWE_DEVICE_OFFLINE_AFTER_SECONDS = 3 * ZINWE_DEVICE_HEARTBEAT_SECONDS
 # Where members download the Windows agent; included in the invite email when a member is added.
-ZINWE_AGENT_DOWNLOAD_URL = env_str("ZINWE_AGENT_DOWNLOAD_URL", "https://zinwe.io/download")
+# Defaults to this environment's own site (ZINWE_APP_URL), so a test site never links to production (J6-01).
+ZINWE_AGENT_DOWNLOAD_URL = env_str("ZINWE_AGENT_DOWNLOAD_URL", "") or f"{ZINWE_APP_URL}/download/ZinweAgent.msi"
 # Forced upgrade (M12): the minimum agent version allowed to keep working. An agent
 # reporting an older version gets `update_required` + the download link on heartbeat,
 # and pauses the employee's work until it's updated. Empty = no minimum (nothing forced).

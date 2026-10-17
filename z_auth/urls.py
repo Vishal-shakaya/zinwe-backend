@@ -18,6 +18,7 @@ urlpatterns = [
     path("logout/", views.LogoutView.as_view(), name="logout"),
     path("me/", views.MeView.as_view(), name="me"),
     path("terms/accept/", views.TermsAcceptView.as_view(), name="terms-accept"),
+    path("tour/done/", views.TourDoneView.as_view(), name="tour-done"),
     # Password reset
     path("password/forgot/", views.PasswordForgotView.as_view(), name="password-forgot"),
     path("password/reset/", views.PasswordResetView.as_view(), name="password-reset"),
@@ -33,6 +34,11 @@ urlpatterns = [
         "subscription/payment/",
         portal_views.PaymentSubmitView.as_view(),
         name="subscription-payment",
+    ),
+    path(
+        "subscription/upgrade/<slug:plan_code>/",
+        portal_views.UpgradePreviewView.as_view(),
+        name="subscription-upgrade",
     ),
     path("subscription/quote/", portal_views.QuoteView.as_view(), name="subscription-quote"),
     path("subscription/quote/pdf/", portal_views.QuotePdfView.as_view(), name="subscription-quote-pdf"),

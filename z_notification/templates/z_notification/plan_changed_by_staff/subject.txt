@@ -1,0 +1,1 @@
+{% autoescape off %}Your Zinwe plan is now {{ plan.name }}{% endautoescape %}

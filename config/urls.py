@@ -13,6 +13,7 @@ urlpatterns = [
     path("api/blog/", include("z_blog.urls")),
     path("api/admin/blog/", include("z_blog.staff_urls")),
     path("", include("z_blog.site_urls")),  # /blog pre-rendered for search engines
+    path("", include("z_main.site_urls")),  # /robots.txt, /sitemap.xml, /sitemap-pages.xml
     path("api/admin/", include("z_adminapi.urls")),
 ]
 

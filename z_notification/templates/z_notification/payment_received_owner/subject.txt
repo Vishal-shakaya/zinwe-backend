@@ -1,0 +1,1 @@
+{% autoescape off %}We've got your receipt for {{ amount_text }}{% endautoescape %}

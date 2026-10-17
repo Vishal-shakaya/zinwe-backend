@@ -1,0 +1,12 @@
+{% autoescape off %}Hi {{ first_name }},
+
+Thanks for writing to Zinwe. We got your message and a real person will reply within one working day, to this email address.
+
+What you wrote:
+{{ message }}
+
+If you think of anything else, just reply to this email.
+
+The Zinwe team
+SKYTECHNO, New Delhi
+{% endautoescape %}

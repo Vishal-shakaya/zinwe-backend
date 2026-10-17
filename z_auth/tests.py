@@ -16,6 +16,7 @@ from z_analytics.models import Event
 from z_notification.models import Notification
 
 from .models import EarlyAccessRegistration, Plan, PlanActivation, User
+from z_auth.entitlements import MODULES
 
 EARLY_ACCESS_URL = "/api/auth/early-access/"
 
@@ -59,7 +60,7 @@ class EarlyAccessTests(APITestCase):
                 "status": "pending",
                 "trial_days": 0,
                 "already_registered": False,
-                "message": "Spot reserved.",
+                "message": "Setup call booked.",
             },
         )
         self.assertEqual(reg.plan.code, Plan.EARLY_ACCESS)
@@ -87,7 +88,12 @@ class EarlyAccessTests(APITestCase):
         self.assertEqual(len(mail.outbox), 2)
         confirmation = mail.outbox[0]
         self.assertEqual(confirmation.to, ["asha@acme.in"])
-        self.assertIn("free forever", confirmation.body)
+        self.assertIn("Free forever", confirmation.body)
+        # J1-03: the "Book a free setup call" story, with a way to start now.
+        self.assertIn("free setup call", confirmation.body)
+        self.assertIn("Start free now", confirmation.body)
+        self.assertIn("/signup", confirmation.body)
+        self.assertNotIn("when your workspace is ready", confirmation.body)
         self.assertNotIn("3 months", confirmation.body)
         self.assertIn("Asha", confirmation.body)
         self.assertEqual(len(confirmation.alternatives), 1)  # HTML part
@@ -145,7 +151,7 @@ class EarlyAccessTests(APITestCase):
                 "status": "pending",
                 "trial_days": 0,
                 "already_registered": True,
-                "message": "You're already on the list.",
+                "message": "You've already booked a setup call.",
             },
         )
         self.assertEqual(EarlyAccessRegistration.objects.count(), 1)
@@ -302,9 +308,9 @@ class PlanTests(APITestCase):
     def test_seeded_plans(self) -> None:
         plans = {p.code: p for p in Plan.objects.all()}
         # Legacy rows are kept (history points at them) but switched off.
-        self.assertEqual(set(plans), {"free", "startups", "businesses", "early-access", "pro"})
+        self.assertEqual(set(plans), {"free", "startups", "teams", "businesses", "early-access", "pro"})
         active = list(Plan.objects.filter(is_active=True).order_by("sort_order"))
-        self.assertEqual([p.code for p in active], ["free", "startups", "businesses"])
+        self.assertEqual([p.code for p in active], ["free", "startups", "teams", "businesses"])
         self.assertFalse(plans["early-access"].is_active)
         self.assertFalse(plans["pro"].is_active)
         self.assertFalse(plans["early-access"].is_recommended)
@@ -319,44 +325,37 @@ class PlanTests(APITestCase):
             {
                 "free": ("Free forever", "0.00", 0, 3, False, False, 10),
                 "startups": ("Startups", "971.00", 0, 10, True, False, 20),
+                "teams": ("Teams", "1799.00", 0, 25, True, False, 25),
                 "businesses": ("Businesses", "2834.00", 0, 50, True, True, 30),
             },
         )
-        # Offering v2 (0014): owner-language lines; the card shows the PC limit from max_devices.
+        # 0024: Teams sits between Startups and Businesses (owner decision 2026-10-17).
+        teams = plans["teams"]
         self.assertEqual(
-            plans["free"].features,
-            [
-                "USB drive and file-copy alerts",
-                "Plain-English alerts by email",
-                "Employee consent on every PC: who agreed, and when",
-                "Guided setup",
-            ],
+            (str(teams.list_price_inr_monthly), teams.discount_percent, str(teams.price_usd_monthly),
+             str(teams.list_price_usd_monthly), teams.history_days),
+            ("2499.00", 28, "22.00", "30.00", 180),
         )
+        self.assertEqual(teams.features[0], "Everything in Startups")
+        self.assertEqual(len(teams.features), 4)
+        self.assertEqual(sorted(teams.modules), sorted(plans["businesses"].modules))
+        # Saving it in admin keeps the same price (list price less 28%, to the rupee).
+        teams.save()
+        teams.refresh_from_db()
+        self.assertEqual(str(teams.price_inr_monthly), "1799.00")
+        # 0022: every plan has every feature; plans differ by PCs and history kept.
+        self.assertEqual(plans["free"].features[0], "Every Zinwe feature")
+        self.assertEqual(plans["startups"].features[0], "Everything in Free forever")
+        self.assertEqual(plans["businesses"].features[0], "Everything in Teams")
         self.assertEqual(
-            plans["startups"].features,
-            [
-                "Everything in Free forever",
-                "Block USB drives or make them read-only",
-                "Alerts when files leave by network folder, Outlook or upload",
-                "Spot or block remote-access tools like AnyDesk",
-                "New software alerts and website blocking",
-                "Email support",
-            ],
-        )
-        self.assertEqual(
-            plans["businesses"].features,
-            [
-                "Everything in Startups",
-                "Work hours, breaks and app usage",
-                "Chat with your team",
-                "Email an alert to the employee involved",
-                "Priority support: we answer you first",
-            ],
+            {code: (sorted(p.modules), p.history_days) for code, p in plans.items() if p.is_active},
+            {"free": (sorted(MODULES), 7), "startups": (sorted(MODULES), 90), "teams": (sorted(MODULES), 180),
+             "businesses": (sorted(MODULES), 365)},
         )
         # Pricing (0017): list prices up 35%, then 28% / 30% off — what owners pay follows the list price.
         self.assertEqual(
             {code: (str(p.list_price_inr_monthly), p.discount_percent) for code, p in plans.items() if p.is_active},
-            {"free": ("0.00", 0), "startups": ("1349.00", 28), "businesses": ("4049.00", 30)},
+            {"free": ("0.00", 0), "startups": ("1349.00", 28), "teams": ("2499.00", 28), "businesses": ("4049.00", 30)},
         )
         for plan in active:
             self.assertTrue(plan.tagline, plan.code)
@@ -378,7 +377,7 @@ class PlanTests(APITestCase):
         response = self.client.get("/api/auth/plans/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         codes = [p["code"] for p in response.json()]
-        self.assertEqual(codes, ["free", "startups", "businesses"])  # by sort_order
+        self.assertEqual(codes, ["free", "startups", "teams", "businesses"])  # by sort_order
         for hidden in ("legacy", "early-access", "pro"):
             self.assertNotIn(hidden, codes)
 

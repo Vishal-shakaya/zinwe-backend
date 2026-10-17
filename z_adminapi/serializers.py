@@ -1,6 +1,7 @@
 """Shapes for the internal admin API. Output serializers read services' views / models."""
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
 
 from django.utils import timezone
@@ -11,6 +12,8 @@ from z_auth.models import Announcement, Feedback, Invoice, ManualPayment, Plan, 
 from z_devices.models import AgentRelease
 from z_devices.services import release_adoption
 from z_notification.models import Notification
+
+from . import services
 
 
 class PlanSummarySerializer(serializers.Serializer):
@@ -50,7 +53,26 @@ def payment_dict(pay: ManualPayment, cycle: int | None) -> dict[str, Any]:
         "covers_from": pay.covers_from,
         "covers_until": pay.covers_until,
         "would_cover": _would_cover(pay),
+        # What was due when they paid, with tax (the quote frozen on the payment): compare the receipt with this.
+        "currency": pay.currency,
+        "due_total": (pay.due or {}).get("total") or None,
+        # What staff read off the receipt when approving (J8-01), and who did.
+        "staff_reference": pay.staff_reference,
+        "staff_amount": str(pay.staff_amount) if pay.staff_amount is not None else None,
+        "staff_checked_by": pay.staff_checked_by.email if pay.staff_checked_by_id else None,
+        # Same receipt file or same UTR as another payment (J8-03).
+        "duplicate_of": services.duplicate_of(pay),
+        "invoice_number": _invoice_number(pay),
     }
+
+
+def _invoice_number(pay: ManualPayment) -> str | None:
+    if pay.status != ManualPayment.Status.VERIFIED:
+        return None
+    try:
+        return pay.invoice.number
+    except Invoice.DoesNotExist:
+        return None
 
 
 def _would_cover(pay: ManualPayment) -> dict[str, Any] | None:
@@ -81,6 +103,7 @@ class SubscriberSerializer(serializers.Serializer):
     emails = serializers.SerializerMethodField()
     team = serializers.SerializerMethodField()
     terms = serializers.SerializerMethodField()
+    blocked = serializers.SerializerMethodField()
 
     def get_terms(self, obj: Any) -> dict[str, Any]:
         """When the customer accepted the Terms and Privacy Policy at sign-up, and which version."""
@@ -152,8 +175,21 @@ class SubscriberSerializer(serializers.Serializer):
         }
 
     def get_emails(self, obj: Any) -> dict[str, Any]:
-        """Custom emails the team sent this customer: how many, and when the last went."""
-        return {"sent": obj.emails_sent, "last_sent_at": obj.last_email_at}
+        """Custom emails the team sent this customer (how many, when the last went), and every email Zinwe sent them."""
+        return {"sent": obj.emails_sent, "last_sent_at": obj.last_email_at, "total": obj.emails_total}
+
+    def get_blocked(self, obj: Any) -> dict[str, Any] | None:
+        """While the account is blocked: who blocked it, when, why, and whether the customer was emailed."""
+        event = obj.blocked
+        if event is None:
+            return None
+        props = event.properties or {}
+        return {
+            "at": event.created_at,
+            "by": event.actor_email or None,
+            "reason": props.get("reason", ""),
+            "emailed": bool(props.get("emailed")),
+        }
 
     def get_remark(self, obj: Any) -> dict[str, Any] | None:
         """The team's internal note on this customer (never shown to them)."""
@@ -216,12 +252,36 @@ class RejectPaymentSerializer(serializers.Serializer):
     reason = serializers.CharField(max_length=500)
 
 
+class ApprovePaymentSerializer(serializers.Serializer):
+    """What staff read off the receipt before approving (J8-01): both are required."""
+
+    reference = serializers.CharField(max_length=64, error_messages={
+        "required": "Type the UTR / reference you see on the receipt.",
+        "blank": "Type the UTR / reference you see on the receipt.",
+    })
+    amount = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal("0.01"), error_messages={
+        "required": "Type the amount you see on the receipt.",
+        "invalid": "Type the amount as a number, e.g. 971 or 1145.78.",
+        "min_value": "Type the amount you see on the receipt.",
+    })
+
+
+class BlockSerializer(serializers.Serializer):
+    reason = serializers.CharField(max_length=500, error_messages={
+        "required": "Say why you're blocking this account.",
+        "blank": "Say why you're blocking this account.",
+    })
+    email_customer = serializers.BooleanField(default=True)
+
+
 class ChangePlanSerializer(serializers.Serializer):
     plan = serializers.SlugField()
+    email_customer = serializers.BooleanField(default=False)
 
 
 class SetPasswordSerializer(serializers.Serializer):
     password = serializers.CharField(max_length=128, trim_whitespace=False)
+    email_customer = serializers.BooleanField(default=True)
 
 
 class RemarkSerializer(serializers.Serializer):
@@ -279,7 +339,8 @@ class PublishReleaseSerializer(serializers.Serializer):
 
     version = serializers.CharField(max_length=32)
     notes = serializers.CharField(max_length=2000, required=False, allow_blank=True, default="")
-    required = serializers.BooleanField(required=False, default=True)
+    # Optional unless staff tick it (J8-06): a required update pauses log in / breaks / log out on older PCs.
+    required = serializers.BooleanField(required=False, default=False)
     file = serializers.FileField(required=False, allow_null=True, max_length=200)
     download_url = serializers.URLField(required=False, allow_blank=True, default="")
     sha256 = serializers.CharField(max_length=64, required=False, allow_blank=True, default="")
@@ -340,8 +401,12 @@ class AnnouncementSerializer(serializers.ModelSerializer):
 
     def validate_cta_href(self, value: str) -> str:
         value = value.strip()
-        if value and not (value.startswith("/") and not value.startswith("//") or value.startswith("https://")):
-            raise serializers.ValidationError("Use a path on zinwe.io (starting with /) or an https:// link.")
+        is_path = value.startswith("/") and not value.startswith("//")
+        is_mail = value.lower().startswith("mailto:") and "@" in value
+        if value and not (is_path or is_mail or value.startswith("https://")):
+            raise serializers.ValidationError(
+                "Use a page on zinwe.io (starting with /), an https:// link, or mailto:hello@zinwe.io."
+            )
         return value
 
     def validate_plan_codes(self, value: Any) -> list[str]:

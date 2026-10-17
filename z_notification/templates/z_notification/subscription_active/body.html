@@ -6,14 +6,27 @@
     <p style="margin:0 0 16px;">Hi {{ first_name }},</p>
 {% if is_trial %}    <p style="margin:0 0 16px;">Your free {{ trial_length }} trial of <strong>{{ plan.name }}</strong> has started. It ends on <strong>{{ subscription.ends_at|date:"j F Y" }}</strong>.</p>
     <p style="margin:0 0 16px;">No payment is needed until then.</p>
-{% elif is_renewal %}    <p style="margin:0 0 16px;">Thanks for renewing! Your <strong>{{ plan.name }}</strong> plan has been extended by a month.</p>
-{% if subscription.ends_at %}    <p style="margin:0 0 16px;">It's now paid until <strong>{{ subscription.ends_at|date:"j F Y" }}</strong>. Your PCs stay protected without a break.</p>
+{% elif is_upgrade %}    <p style="margin:0 0 16px;">Your upgrade went through: you're now on <strong>{{ plan.name }}</strong>{% if plan.max_devices %}, which covers up to {{ plan.max_devices }} PCs{% endif %}.</p>
+{% if covers_until %}    <p style="margin:0 0 16px;">It's paid until <strong>{{ covers_until|date:"j F Y" }}</strong>{% if carried_days %} (includes {{ carried_days }} paid day{{ carried_days|pluralize }} carried over from your old plan){% endif %}.</p>
+{% endif %}{% elif is_renewal %}    <p style="margin:0 0 16px;">Thanks for renewing! Your <strong>{{ plan.name }}</strong> plan has been extended by a {{ period_word }}.</p>
+{% if covers_until %}    <p style="margin:0 0 16px;">It's now paid until <strong>{{ covers_until|date:"j F Y" }}</strong>. Your PCs stay protected without a break.</p>
 {% endif %}{% else %}    <p style="margin:0 0 16px;">Your <strong>{{ plan.name }}</strong> plan is now active.</p>
 {% if subscription.ends_at %}    <p style="margin:0 0 16px;">Paid until <strong>{{ subscription.ends_at|date:"j F Y" }}</strong>. Thank you for your payment.</p>
 {% endif %}{% endif %}
-{% if plan.max_devices %}    <p style="margin:0 0 16px;">It covers up to {{ plan.max_devices }} PCs.</p>
+{% if not is_upgrade and plan.max_devices %}    <p style="margin:0 0 16px;">It covers up to {{ plan.max_devices }} PCs.</p>
 {% endif %}
-    <p style="margin:0 0 16px;">Next step: install the Zinwe agent on your team's PCs from your dashboard.</p>
+{% if amount_text or invoice %}    <table role="presentation" style="margin:0 0 16px;border-collapse:collapse;font-size:14px;">
+{% if amount_text %}      <tr><td style="padding:4px 16px 4px 0;color:#6b7280;">Payment received</td><td style="padding:4px 0;"><strong>{{ amount_text }}</strong></td></tr>
+{% endif %}{% if covers_from and covers_until %}      <tr><td style="padding:4px 16px 4px 0;color:#6b7280;">Period</td><td style="padding:4px 0;">{{ covers_from|date:"j M Y" }} to {{ covers_until|date:"j M Y" }}</td></tr>
+{% endif %}{% if invoice %}      <tr><td style="padding:4px 16px 4px 0;color:#6b7280;">Invoice</td><td style="padding:4px 0;">{{ invoice.number }}{% if invoice_attached %} (PDF attached){% endif %}</td></tr>
+{% endif %}    </table>
+{% endif %}
+{% if not has_devices %}    <p style="margin:0 0 16px;"><strong>Next step:</strong> add your first person. You'll get their Member ID, then they install Zinwe on their PC and agree to it.</p>
+    <p style="margin:0 0 20px;"><a href="{{ team_url }}" style="display:inline-block;padding:10px 18px;background:#FD6D02;color:#0d0d0e;border-radius:6px;font-weight:600;text-decoration:none;">Add your first person</a></p>
+{% else %}    <p style="margin:0 0 20px;"><a href="{{ dashboard_url }}" style="display:inline-block;padding:10px 18px;background:#FD6D02;color:#0d0d0e;border-radius:6px;font-weight:600;text-decoration:none;">Open my dashboard</a></p>
+{% endif %}
+{% if payment %}    <p style="margin:0 0 16px;"><a href="{{ billing_url }}" style="color:#b24d01;">Billing and invoices</a></p>
+{% endif %}
     <p style="margin:0 0 16px;">Questions? Just reply to this email.</p>
     <p style="margin:0;">The Zinwe team<br><span style="color:#6b7280;">SKYTECHNO, New Delhi</span></p>
   </div>

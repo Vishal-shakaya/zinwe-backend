@@ -126,12 +126,36 @@ class QuoteTests(MediaMixin, _UpgradeBase):
         self.assertEqual(pdf.status_code, status.HTTP_200_OK)
         self.assertIn("Zinwe-quote-ZWQ-", pdf["Content-Disposition"])
 
-    def test_link_stops_working_when_the_plan_changes(self) -> None:
+    def test_link_says_replaced_when_the_plan_changes(self) -> None:
         self.post(SUB_URL, {"plan": "startups"})
         token = self.get(QUOTE_URL).json()["public_url"].rsplit("/", 1)[1]
         self.post(SUB_URL, {"plan": "free"})  # the pending Startups choice is cancelled
         self.use_token(None)
-        self.assertEqual(self.get(f"/api/auth/quotes/{token}/").status_code, status.HTTP_404_NOT_FOUND)
+        body = self.get(f"/api/auth/quotes/{token}/").json()
+        self.assertEqual((body["status"], body["plan"]["code"]), ("replaced", "startups"))  # as quoted, not live
+        self.assertEqual(self.get(f"/api/auth/quotes/{token}/pdf/").status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_paid_quote_never_asks_again(self) -> None:
+        """V1-01: once a payment comes in, the emailed link says "paid" and never shows a new amount."""
+        self.post(SUB_URL, {"plan": "startups"})
+        first = self.get(QUOTE_URL).json()
+        token = first["public_url"].rsplit("/", 1)[1]
+        self.post(PAY_URL, {"proof": receipt(), "accept_terms": "true"}, fmt="multipart")
+        self.use_token(None)
+        body = self.get(f"/api/auth/quotes/{token}/").json()
+        self.assertEqual((body["status"], body["quote"]["total"]), ("paid", first["quote"]["total"]))
+        self.assertEqual(self.get(f"/api/auth/quotes/{token}/pdf/").status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_reissue_after_payment_gets_a_new_link(self) -> None:
+        sub = self.start_startups()  # paid and approved: the next quote is the renewal
+        first = self.get(QUOTE_URL).json()
+        self.assertEqual(self.get(QUOTE_URL).json()["public_url"], first["public_url"])  # unchanged: same link
+        self.post(PAY_URL, {"proof": receipt(), "accept_terms": "true"}, fmt="multipart")
+        from .billing import verify_payment
+
+        verify_payment(ManualPayment.objects.filter(subscription=sub).latest("id").pk, self.staff)
+        second = self.get(QUOTE_URL).json()
+        self.assertNotEqual(second["public_url"], first["public_url"])
 
     def test_nothing_due_means_no_quote(self) -> None:
         self.post(SUB_URL, {"plan": "free"})

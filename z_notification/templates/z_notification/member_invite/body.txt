@@ -1,5 +1,7 @@
 {% autoescape off %}Hi {{ first_name }},
-
+{% if new_id %}
+{{ company }} gave you a new Member ID for Zinwe. Use the one below; the old one no longer works. If Zinwe is already connected on your PC, there's nothing to do.
+{% endif %}
 {{ company }} uses Zinwe to protect company data on work PCs. Please set it up on your PC — it takes about two minutes and needs no technical know-how.
 
 1. Download Zinwe:

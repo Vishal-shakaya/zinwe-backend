@@ -16,6 +16,11 @@ urlpatterns = [
     path("subscribers/<int:pk>/unblock/", views.UnblockView.as_view(), name="unblock"),
     path("subscribers/<int:pk>/change-plan/", views.ChangePlanView.as_view(), name="change-plan"),
     path("subscribers/<int:pk>/set-password/", views.SetPasswordView.as_view(), name="set-password"),
+    path(
+        "subscribers/<int:pk>/send-password-reset/", views.SendPasswordResetView.as_view(), name="send-password-reset"
+    ),
+    path("badges/", views.BadgesView.as_view(), name="badges"),
+    path("billing-settings/", views.BillingSettingsView.as_view(), name="billing-settings"),
     path("subscribers/<int:pk>/remark/", views.RemarkView.as_view(), name="remark"),
     path("subscribers/<int:pk>/emails/", views.CustomerEmailView.as_view(), name="emails"),
     path("payments/", views.PaymentListView.as_view(), name="payments"),
@@ -26,7 +31,9 @@ urlpatterns = [
     path("subscriptions/<int:pk>/", views.SubscriptionDetailView.as_view(), name="subscription-detail"),
     path("feedback/", views.FeedbackListView.as_view(), name="feedback"),
     path("releases/", views.ReleaseListView.as_view(), name="releases"),
+    path("releases/reach/", views.ReleaseReachView.as_view(), name="release-reach"),
     path("releases/<int:pk>/", views.ReleaseDetailView.as_view(), name="release-detail"),
     path("announcements/", views.AnnouncementListView.as_view(), name="announcements"),
+    path("announcements/reach/", views.AnnouncementReachView.as_view(), name="announcement-reach"),
     path("announcements/<int:pk>/", views.AnnouncementDetailView.as_view(), name="announcement-detail"),
 ]

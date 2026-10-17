@@ -95,7 +95,9 @@ class SubscriberTests(SubscriberFixture):
 
     def test_approve_payment_activates_subscription(self) -> None:
         self._pending_with_payment()
-        response = self.client.post(f"{SUBS}{self.owner.id}/approve-payment/")
+        response = self.client.post(
+            f"{SUBS}{self.owner.id}/approve-payment/", {"reference": "UTR1", "amount": "971"}, format="json"
+        )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.json()["subscription"]["status"], "active")
         self.assertEqual(response.json()["payment"]["status"], "verified")
@@ -113,7 +115,7 @@ class SubscriberTests(SubscriberFixture):
         self.assertEqual(response.json()["payment"]["status"], "rejected")
 
     def test_block_and_unblock(self) -> None:
-        self.client.post(f"{SUBS}{self.owner.id}/block/")
+        self.client.post(f"{SUBS}{self.owner.id}/block/", {"reason": "Chargeback", "email_customer": False}, format="json")
         self.owner.refresh_from_db()
         self.assertFalse(self.owner.is_active)
         self.client.post(f"{SUBS}{self.owner.id}/unblock/")
@@ -231,7 +233,7 @@ class SubscriberAccountTests(SubscriberFixture):
 
     def test_block_signs_the_customer_out(self) -> None:
         Token.objects.create(user=self.owner)
-        self.client.post(f"{SUBS}{self.owner.id}/block/")
+        self.client.post(f"{SUBS}{self.owner.id}/block/", {"reason": "Unpaid", "email_customer": False}, format="json")
         self.assertFalse(Token.objects.filter(user=self.owner).exists())
 
     def test_delete_customer(self) -> None:
@@ -277,14 +279,18 @@ class PaymentQueueTests(SubscriberFixture):
 
     def test_approve_activates_plan(self) -> None:
         pay = self._pending_with_payment()
-        response = self.client.post(f"{PAYMENTS}{pay.id}/approve/")
+        typed = {"reference": "utr 1", "amount": "971.00"}
+        response = self.client.post(f"{PAYMENTS}{pay.id}/approve/", typed, format="json")
         self.assertEqual(response.status_code, status.HTTP_200_OK, response.content)
         body = response.json()
         self.assertEqual((body["status"], body["subscription_status"]), ("verified", "active"))
         self.assertEqual(body["reviewed_by"], self.staff.email)
+        self.assertEqual((body["staff_reference"], body["staff_amount"], body["staff_checked_by"]),
+                         ("UTR1", "971.00", self.staff.email))
         self.assertTrue(PlanActivation.objects.filter(user=self.owner, plan=self.paid, is_active=True).exists())
         # Approving twice is refused.
-        self.assertEqual(self.client.post(f"{PAYMENTS}{pay.id}/approve/").status_code, status.HTTP_400_BAD_REQUEST)
+        again = self.client.post(f"{PAYMENTS}{pay.id}/approve/", typed, format="json")
+        self.assertEqual(again.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_reject_needs_reason_and_keeps_plan_off(self) -> None:
         pay = self._pending_with_payment()
@@ -402,26 +408,29 @@ class CustomerEmailTests(SubscriberFixture):
         self.assertEqual(empty.json()["detail"], "Write a message first.")
         self.assertEqual(len(mail.outbox), 0)
 
-    def test_history_lists_only_custom_emails(self) -> None:
+    def test_history_lists_every_email(self) -> None:
         self.client.post(self.url(), {"subject": "First", "html": "<p>One</p>"}, format="json")
         self.client.post(self.url(), {"subject": "Second", "html": "<p>Two</p>"}, format="json")
-        Notification.objects.create(channel="email", recipient=self.owner.email, template="welcome", subject="Welcome")
+        Notification.objects.create(channel="email", recipient=self.owner.email, template="welcome", subject="Welcome",
+                                    status="sent")
         Notification.objects.create(channel="email", recipient=self.owner.email, template="renewal_reminder",
                                     subject="Your Zinwe Startups plan ends in 7 days", status="sent")
+        Notification.objects.create(channel="email", recipient="someone@else.in", template="welcome", subject="Not theirs")
         body = self.client.get(self.url()).json()
-        # Custom + automatic renewal emails; account emails like "welcome" stay out.
-        self.assertEqual([e["subject"] for e in body], ["Your Zinwe Startups plan ends in 7 days", "Second", "First"])
-        self.assertEqual([e["automatic"] for e in body], [True, False, False])
-        self.assertEqual(body[1]["status"], "sent")
-        # The table row carries the count + last-sent time (welcome emails don't count).
+        # Every email they got (J8-16): the team's and the automatic ones, newest first.
+        self.assertEqual([e["subject"] for e in body],
+                         ["Your Zinwe Startups plan ends in 7 days", "Welcome", "Second", "First"])
+        self.assertEqual([e["automatic"] for e in body], [True, True, False, False])
+        self.assertEqual(body[2]["status"], "sent")
+        # The table row: the team's emails (count + last sent) and the total.
         row = next(r for r in self.client.get(SUBS).json() if r["id"] == self.owner.id)
-        self.assertEqual(row["emails"]["sent"], 2)
+        self.assertEqual((row["emails"]["sent"], row["emails"]["total"]), (2, 4))
         self.assertIsNotNone(row["emails"]["last_sent_at"])
         self.assertEqual(self.client.get(f"{SUBS}{self.owner.id}/").json()["emails"]["sent"], 2)
 
     def test_no_emails_yet(self) -> None:
         row = next(r for r in self.client.get(SUBS).json() if r["id"] == self.owner.id)
-        self.assertEqual(row["emails"], {"sent": 0, "last_sent_at": None})
+        self.assertEqual(row["emails"], {"sent": 0, "last_sent_at": None, "total": 0})
 
     def test_send_failure_is_reported(self) -> None:
         with mock.patch("z_notification.channels.email.EmailChannel.send", side_effect=OSError("SMTP down")):

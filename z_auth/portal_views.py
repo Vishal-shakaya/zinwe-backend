@@ -246,6 +246,27 @@ def _quote_pdf_response(doc: dict) -> HttpResponse:
     return response
 
 
+class UpgradePreviewView(APIView):
+    """
+    GET /api/auth/subscription/upgrade/<plan_code>/ -- before paying for an upgrade from an active plan:
+    {quote, covers_from, covers_until, carried_days, upi_qr_svg, upi_uri}. 404 unknown plan; 409 when the
+    upgrade isn't possible (no active plan, a payment under review, or not a higher plan).
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request: Request, plan_code: str) -> Response:
+        from .models import Plan
+
+        plan = Plan.objects.filter(code=plan_code, is_active=True).first()
+        if plan is None:
+            return Response({"detail": "That plan doesn't exist or isn't available."}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            return Response(billing.upgrade_preview(request.user, plan))
+        except (billing.UpgradeNotAllowed, billing.PaymentUnderReview) as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
+
+
 class QuoteView(APIView):
     """GET /api/auth/subscription/quote/ -- the owner's quote (what's due, how to pay) and its public link."""
 
@@ -298,7 +319,10 @@ class QuoteEmailView(APIView):
 
 
 class PublicQuoteView(APIView):
-    """GET /api/auth/quotes/<token>/ -- the shared quote, for anyone with the link (the website's /quote page)."""
+    """
+    GET /api/auth/quotes/<token>/ -- the shared quote, for anyone with the link (the website's /quote page): the
+    copy as issued, with `status` "open" / "paid" / "replaced" (the page only offers ways to pay while open).
+    """
 
     authentication_classes: list = []
     permission_classes = [AllowAny]
@@ -306,21 +330,21 @@ class PublicQuoteView(APIView):
     throttle_scope = "quote_public"
 
     def get(self, request: Request, token: str) -> Response:
-        from .quotes import quote_document, subscription_for_token
+        from .quotes import public_quote
 
-        subscription = subscription_for_token(token)
-        if subscription is None:
+        doc = public_quote(token)
+        if doc is None:
             return Response(NO_QUOTE, status=status.HTTP_404_NOT_FOUND)
-        return Response(quote_document(subscription))
+        return Response(doc)
 
 
 class PublicQuotePdfView(PublicQuoteView):
-    """GET /api/auth/quotes/<token>/pdf/ -- the shared quote as a PDF."""
+    """GET /api/auth/quotes/<token>/pdf/ -- the shared quote as a PDF, only while it stands (404 once paid/replaced)."""
 
     def get(self, request: Request, token: str) -> HttpResponse:  # type: ignore[override]
-        from .quotes import quote_document, subscription_for_token
+        from .quotes import public_quote
 
-        subscription = subscription_for_token(token)
-        if subscription is None:
+        doc = public_quote(token)
+        if doc is None or doc["status"] != "open":
             return Response(NO_QUOTE, status=status.HTTP_404_NOT_FOUND)
-        return _quote_pdf_response(quote_document(subscription))
+        return _quote_pdf_response(doc)

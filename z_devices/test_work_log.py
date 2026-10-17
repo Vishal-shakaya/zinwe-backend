@@ -192,10 +192,16 @@ class BreakDecisionTests(DeviceTestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK, response.content)
         self.assertEqual(response.json()["approval"], "denied")
         message = Message.objects.get()
-        self.assertTrue(message.title.startswith("Your Lunch break at"))
-        self.assertIn("wasn't approved", message.title)
+        # Kind wording (J6-18): "About your Lunch break at …", an info message, the owner's note as the body.
+        self.assertTrue(message.title.startswith("About your Lunch break at"))
         self.assertEqual(message.body, "Please take errands after work.")
-        self.assertEqual(message.severity, "warning")
+        self.assertEqual(message.severity, "info")
+
+    def test_deny_without_a_note_invites_a_reply(self) -> None:
+        from .models import Message
+
+        self.decide(self.brk.id, "denied", "")
+        self.assertIn("would like a word about this break. You can reply here.", Message.objects.get().body)
 
     def test_only_breaks(self) -> None:
         working = WorkLog.objects.get(state="working")

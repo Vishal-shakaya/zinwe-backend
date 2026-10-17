@@ -9,7 +9,7 @@ from rest_framework.exceptions import AuthenticationFailed
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
-from rest_framework.throttling import ScopedRateThrottle
+from rest_framework.throttling import ScopedRateThrottle, SimpleRateThrottle
 from rest_framework.views import APIView
 
 from z_main.client import get_client_ip, get_user_agent
@@ -178,10 +178,48 @@ class RegisterView(PublicView):
         )
 
 
-class LoginView(PublicView):
-    """POST /api/auth/login/ -- email + password -> AuthResponse (403 if unverified)."""
+class FailedLoginThrottle(SimpleRateThrottle):
+    """
+    Counts only FAILED sign-ins, per email + IP (J5-22): many owners share one IP behind CGNAT, and a first
+    correct attempt must never be locked out. The view calls `record_failure()` after a wrong password/code.
+    """
 
-    throttle_scope = "auth_login"
+    scope = "auth_login"
+
+    def get_cache_key(self, request: Request, view: Any) -> str | None:
+        email = ""
+        try:
+            email = str(request.data.get("email") or "").strip().lower()
+        except Exception:  # noqa: BLE001 -- unparsable body: the serializer answers it
+            email = ""
+        return self.cache_format % {"scope": self.scope, "ident": f"{self.get_ident(request)}:{email}"}
+
+    def throttle_success(self) -> bool:
+        return True  # checking doesn't count; only failures do
+
+    def record_failure(self, request: Request, view: Any) -> None:
+        if self.rate is None:
+            return
+        key = self.get_cache_key(request, view)
+        if key is None:
+            return
+        now = self.timer()
+        history = [t for t in self.cache.get(key, []) if t > now - self.duration]
+        history.insert(0, now)
+        self.cache.set(key, history, self.duration)
+
+
+class LoginIpThrottle(ScopedRateThrottle):
+    """A high per-IP ceiling on every sign-in request (auth_login_ip), whatever the email."""
+
+    scope_attr = "throttle_scope_ip"
+
+
+class LoginView(PublicView):
+    """POST /api/auth/login/ -- email + password -> AuthResponse (403 if unverified or paused)."""
+
+    throttle_classes = [FailedLoginThrottle, LoginIpThrottle]
+    throttle_scope_ip = "auth_login_ip"
 
     def post(self, request: Request) -> Response:
         serializer = LoginSerializer(data=request.data)
@@ -192,11 +230,12 @@ class LoginView(PublicView):
                 serializer.validated_data["email"],
                 serializer.validated_data["password"],
             )
-        except services.EmailNotVerified as exc:
+        except (services.EmailNotVerified, services.AccountPaused) as exc:
             return Response(
                 {"code": exc.code, "detail": exc.message}, status=status.HTTP_403_FORBIDDEN
             )
         except services.InvalidCredentials as exc:
+            FailedLoginThrottle().record_failure(request, self)
             return Response(
                 {"non_field_errors": [exc.message]}, status=status.HTTP_400_BAD_REQUEST
             )
@@ -221,16 +260,20 @@ class LoginCodeRequestView(PublicView):
 
 
 class LoginCodeVerifyView(PublicView):
-    """POST /api/auth/login/otp/verify/ -- sign in with an emailed code."""
+    """POST /api/auth/login/otp/verify/ -- sign in with an emailed code (403 account_paused if blocked)."""
 
-    throttle_scope = "auth_login"
+    throttle_classes = [FailedLoginThrottle, LoginIpThrottle]
+    throttle_scope_ip = "auth_login_ip"
 
     def post(self, request: Request) -> Response:
         serializer = EmailCodeSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
             user = services.login_with_code(**serializer.validated_data)
+        except services.AccountPaused as exc:
+            return Response({"code": exc.code, "detail": exc.message}, status=status.HTTP_403_FORBIDDEN)
         except services.InvalidCode:
+            FailedLoginThrottle().record_failure(request, self)
             return code_error()
         return Response(auth_response(user))
 
@@ -269,6 +312,16 @@ class MeView(APIView):
                 "entitlements": entitlements.as_payload(user),
             }
         )
+
+
+class TourDoneView(APIView):
+    """POST /api/auth/tour/done/ -- the owner finished or skipped the dashboard tour: 204, never shown again."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request: Request) -> Response:
+        services.mark_tour_done(request.user)
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class TermsAcceptView(APIView):

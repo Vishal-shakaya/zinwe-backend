@@ -9,7 +9,7 @@
       <p style="margin:0;font-weight:600;">{{ message.title }}</p>
       {% if message.body %}<p style="margin:8px 0 0;white-space:pre-wrap;">{{ message.body }}</p>{% endif %}
     </div>
-    <p style="margin:0 0 16px;color:#4b5563;">You'll also see it in the Zinwe widget on your work PC, where you can reply.</p>
+    <p style="margin:0 0 16px;color:#4b5563;">{% if in_widget %}You'll also see it in the Zinwe widget on your work PC, where you can reply.{% else %}To reply, open the Zinwe widget on your work PC.{% endif %}</p>
     <p style="margin:0;color:#6b7280;">Sent by Zinwe for {{ company }}<br>SKYTECHNO, New Delhi</p>
   </div>
 </body>

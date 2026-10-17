@@ -1,0 +1,13 @@
+{% autoescape off %}A visitor wrote from the website contact form. Reply to this email to answer them (it goes to {{ email }}).
+
+Name:     {{ name }}
+Email:    {{ email }}
+Company:  {{ company|default:"-" }}
+Phone:    {{ phone|default:"-" }}
+Topic:    {{ topic|default:"-" }}
+
+{{ message }}
+
+--
+IP {{ ip|default:"-" }} · {{ user_agent|default:"-" }}
+{% endautoescape %}

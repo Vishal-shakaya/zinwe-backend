@@ -6,7 +6,7 @@ from typing import Any
 
 from rest_framework import serializers
 
-from .events import EVENT_TYPE_PATTERN, build_title
+from .events import EVENT_TYPE_PATTERN, build_title, event_kind
 from .models import Device, DeviceEvent, EnrollmentKey, Member, Message, Policy, WorkLog
 
 
@@ -82,6 +82,7 @@ class MemberSerializer(serializers.Serializer):
         if device is None:
             return None
         return {
+            "id": device.id,
             "hostname": device.hostname,
             "last_seen_at": device.last_seen_at,
             "is_online": device.is_online,
@@ -91,7 +92,17 @@ class MemberSerializer(serializers.Serializer):
             "break_seconds": device.break_seconds,
             "consent_version": device.consent_version,
             "consent_at": device.consent_at,
+            "consent_state": device.consent_state,
+            "consent_declined_at": device.consent_declined_at,
+            "usb_locked_at": device.usb_locked_at,
+            "usb_restore_requested_at": device.usb_restore_requested_at,
         }
+
+
+class MemberRotateSerializer(serializers.Serializer):
+    """POST /api/devices/members/<id>/rotate/ -- {email: true} re-sends the invite with the new ID."""
+
+    email = serializers.BooleanField(required=False, default=True)
 
 
 class MessageCreateSerializer(serializers.Serializer):
@@ -104,8 +115,17 @@ class MessageCreateSerializer(serializers.Serializer):
     severity = serializers.ChoiceField(
         choices=Message.Severity.choices, default=Message.Severity.INFO
     )
-    # Also send the note by email (it reaches them even with their PC off).
+    # Where it goes: the widget, widget + email, or email only. Older clients send `also_email`
+    # instead (true = chat_email); `channel` wins when both are given.
+    channel = serializers.ChoiceField(choices=Message.Channel.choices, required=False)
     also_email = serializers.BooleanField(required=False, default=False)
+    # Sent from an alert: that alert is marked handled (J5-04).
+    event_id = serializers.IntegerField(min_value=1, required=False, allow_null=True, default=None)
+
+    def validate(self, attrs: dict) -> dict:
+        if not attrs.get("channel"):
+            attrs["channel"] = Message.Channel.CHAT_EMAIL if attrs["also_email"] else Message.Channel.CHAT
+        return attrs
 
 
 class EventEmailSerializer(serializers.Serializer):
@@ -128,12 +148,18 @@ class MessageSerializer(serializers.ModelSerializer):
     class Meta:
         model = Message
         fields = [
-            "id", "sender", "title", "body", "severity", "created_at", "read_by_owner", "read_by_member",
+            "id", "sender", "channel", "title", "body", "severity", "created_at", "read_by_owner", "read_by_member",
             "delivered_at", "read_by_member_at",
         ]
 
     def get_body(self, obj: Message) -> str | None:
         return obj.body or None
+
+
+class EventHandledSerializer(serializers.Serializer):
+    """POST /api/devices/events/<id>/handled/ -- {handled: true|false}."""
+
+    handled = serializers.BooleanField(required=False, default=True)
 
 
 class MemberReplySerializer(serializers.Serializer):
@@ -157,6 +183,13 @@ class WorkEventSerializer(serializers.Serializer):
     note = serializers.CharField(max_length=280, required=False, allow_blank=True, allow_null=True, default="")
 
 
+class ConsentSerializer(serializers.Serializer):
+    """`consent: {"state": "given"|"declined", "version": "<notice version>"}` on the heartbeat."""
+
+    state = serializers.ChoiceField(choices=[("given", "Given"), ("declined", "Declined")])
+    version = serializers.CharField(max_length=20, required=False, allow_blank=True, allow_null=True, default="")
+
+
 class HeartbeatSerializer(serializers.Serializer):
     hostname = serializers.CharField(max_length=255, required=False, allow_blank=True)
     os_version = serializers.CharField(max_length=128, required=False, allow_blank=True)
@@ -176,6 +209,8 @@ class HeartbeatSerializer(serializers.Serializer):
     # The member's consent on the widget (which policy version, and when). Optional: older agents omit it.
     consent_version = serializers.CharField(max_length=20, required=False, allow_blank=True, allow_null=True, default="")
     consent_at = serializers.DateTimeField(required=False, allow_null=True, default=None)
+    # Newer agents: the member's answer, which may be "declined" (then nothing is collected from this PC).
+    consent = ConsentSerializer(required=False, allow_null=True, default=None)
     break_reason = serializers.CharField(
         max_length=120, required=False, allow_blank=True, allow_null=True, default=""
     )
@@ -240,6 +275,7 @@ class DeviceSerializer(serializers.ModelSerializer):
     # The member's pk (Member.id), so the dashboard can pair each PC with its person.
     member_id = serializers.IntegerField(read_only=True, allow_null=True)
     member_name = serializers.SerializerMethodField()
+    consent_state = serializers.CharField(read_only=True)
 
     class Meta:
         model = Device
@@ -247,6 +283,8 @@ class DeviceSerializer(serializers.ModelSerializer):
             "id", "hostname", "platform", "os_version", "agent_version",
             "enrolled_at", "last_seen_at", "is_online", "is_revoked", "member_id", "member_name",
             "work_state", "worked_seconds", "break_seconds", "work_updated_at",
+            # USB read-only lockdown + the owner's "Restore USB" (J5-02); the member's consent answer (J6-03).
+            "usb_locked_at", "usb_restore_requested_at", "consent_state", "consent_declined_at",
         ]
 
     def get_member_name(self, obj: Device) -> str | None:
@@ -426,22 +464,41 @@ class EventFeedQuerySerializer(serializers.Serializer):
     """Query params for GET /api/devices/events/."""
 
     device = serializers.IntegerField(min_value=1, required=False)
+    # One team member's PCs (the dashboard's "Everyone / one person" filter).
+    member = serializers.IntegerField(min_value=1, required=False)
+    # Comma-separated event types, e.g. "web.blocked_attempt" -- a feature page asks only for its own,
+    # so busy types elsewhere can't push its alerts out of the `limit`.
+    types = serializers.CharField(max_length=1000, required=False)
     limit = serializers.IntegerField(min_value=1, max_value=200, default=50)
+    # "alert" = rule confirmations left out; "confirmation" = only them. Omitted = everything.
+    kind = serializers.ChoiceField(choices=[("alert", "Alerts"), ("confirmation", "Confirmations")], required=False)
+    handled = serializers.BooleanField(required=False, allow_null=True, default=None)
+
+    def validate_types(self, value: str) -> list[str]:
+        types = [t.strip() for t in value.split(",") if t.strip()]
+        if len(types) > 40 or any(len(t) > 64 for t in types):
+            raise serializers.ValidationError("Too many or too long event types.")
+        return types
 
 
 class EventSerializer(serializers.ModelSerializer):
     hostname = serializers.CharField(source="device.hostname", read_only=True)
     title = serializers.SerializerMethodField()
+    kind = serializers.SerializerMethodField()
 
     class Meta:
         model = DeviceEvent
         fields = [
             "id", "device_id", "hostname", "type", "severity", "title",
-            "occurred_at", "received_at", "data",
+            "occurred_at", "received_at", "data", "kind", "handled_at", "handled_by",
         ]
 
     def get_title(self, obj: DeviceEvent) -> str:
         return build_title(obj.type, obj.data, obj.device.hostname)
+
+    def get_kind(self, obj: DeviceEvent) -> str:
+        """ "confirmation" for rule confirmations (kept out of alert counts), "alert" for everything else."""
+        return event_kind(obj.type)
 
 
 # --- Usage metrics ----------------------------------------------------------

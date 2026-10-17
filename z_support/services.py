@@ -134,3 +134,34 @@ def _tell_owner(ticket: SupportTicket, message: SupportMessage) -> None:
         },
         ref=ticket,
     )
+
+
+# --- Public contact form (website "Talk to us") ------------------------------------------------
+
+
+def send_contact_message(data: dict, ip: str | None = None, user_agent: str = "") -> None:
+    """
+    A visitor wrote to us from the website contact form (J1-01): email the team inbox (reply-to = the
+    visitor, so "Reply" answers them) and send the visitor a short "we got your message". Never raises.
+    """
+    context = {
+        "name": data["name"],
+        "first_name": (data["name"].split() or ["there"])[0],
+        "email": data["email"],
+        "company": data.get("company") or "",
+        "phone": data.get("phone") or "",
+        "topic": data.get("topic") or "",
+        "message": data["message"],
+        "ip": ip or "",
+        "user_agent": user_agent,
+    }
+
+    def _send() -> None:
+        track("contact.sent", {"topic": context["topic"]}, actor_email=data["email"])
+        notify(
+            "email", settings.ZINWE_TEAM_NOTIFY_EMAIL, "contact_team", context,
+            ref=("z_support.contact", data["email"]), reply_to=[data["email"]],
+        )
+        notify("email", data["email"], "contact_confirmation", context, ref=("z_support.contact", data["email"]))
+
+    transaction.on_commit(_send)

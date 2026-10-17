@@ -1,4 +1,10 @@
-"""Plan enforcement: the PC limit, the policy a PC is sent, kept/hidden data and locked endpoints."""
+"""
+Plan enforcement: the PC limit, the policy a PC is sent, kept/hidden data and locked endpoints.
+
+Since 2026-10-17 every live plan has every module (migration 0022), but the gating code stays so features
+can be tied to plans again. These tests put back a split (Free = USB alerts; Startups = protection; Businesses =
+everything) so the gating keeps working when it's used again.
+"""
 from __future__ import annotations
 
 import uuid
@@ -11,7 +17,7 @@ from rest_framework import status
 
 from z_auth._testing import give_plan
 from z_auth.entitlements import entitlements_for
-from z_auth.models import Subscription
+from z_auth.models import Plan, Subscription
 
 from .models import Device, DeviceEvent, Policy, UsageMetric, WorkLog
 from .services import UNREACHABLE_BYTES
@@ -33,8 +39,20 @@ WORK_LOG_URL = "/api/devices/work-log/"
 ME_URL = "/api/auth/me/"
 
 
+SPLIT = {
+    "free": ["usb_alerts"],
+    "startups": ["usb_alerts", "usb_control", "data_transfer", "remote_access", "software_installs", "web"],
+    "teams": ["usb_alerts", "usb_control", "data_transfer", "remote_access", "software_installs", "web"],
+}
+
+
 class PlanTestCase(DeviceTestCase):
     """DeviceTestCase starts on Businesses; `use_plan(None)` drops to Free forever (no active plan)."""
+
+    def setUp(self) -> None:
+        for code, modules in SPLIT.items():
+            Plan.objects.filter(code=code).update(modules=modules)
+        super().setUp()
 
     def use_plan(self, code: str | None) -> None:
         Subscription.objects.filter(owner=self.owner).delete()

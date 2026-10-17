@@ -5,6 +5,7 @@ Side effects (analytics) are scheduled with `transaction.on_commit`, as in z_aut
 """
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import re
 from datetime import timedelta
@@ -22,7 +23,7 @@ from z_auth.entitlements import Entitlements, entitlements_for
 from z_auth.models import User
 from z_notification.services import notify
 
-from .events import build_title
+from .events import USB_LOCKED_DOWN, USB_RESTORED, build_title, is_confirmation
 from .models import (
     AgentRelease,
     Device,
@@ -48,10 +49,12 @@ class EnrollmentRejected(Exception):
     bad credential, "non_field_errors" means the member/owner is switched off.
     """
 
-    def __init__(self, field: str, message: str) -> None:
+    def __init__(self, field: str, message: str, pc_limit: dict[str, Any] | None = None) -> None:
         super().__init__(message)
         self.field = field
         self.message = message
+        # Set when a PC was refused because the plan is full: the view tells the owner (after the rollback).
+        self.pc_limit = pc_limit
 
 
 class MemberAlreadyExists(Exception):
@@ -118,8 +121,13 @@ def create_member(owner: User, name: str, email: str) -> Member:
 def _after_member_created(owner: User, member: Member) -> None:
     """Post-commit: track the event and email the member their id + the download link. Never raises."""
     track("member.created", {"email": member.email}, actor_email=owner.email, ref=member)
+    send_member_invite(owner, member)
+
+
+def send_member_invite(owner: User, member: Member, new_id: bool = False) -> None:
+    """Email the member their Member ID + the download link (`new_id`: after "Get a new ID"). Never raises."""
     parts = member.name.split()
-    company = (owner.company or "").strip() or "your company"
+    company = (owner.company or "").strip() or _company_name(owner)
     notify(
         "email",
         member.email,
@@ -131,6 +139,7 @@ def _after_member_created(owner: User, member: Member) -> None:
             "member_id": member.member_code,
             "company": company,
             "download_url": settings.ZINWE_AGENT_DOWNLOAD_URL,
+            "new_id": new_id,
         },
         ref=member,
         redact=[member.member_code],  # the id is the enrol secret: masked in our logs, sent to the member
@@ -138,15 +147,21 @@ def _after_member_created(owner: User, member: Member) -> None:
 
 
 @transaction.atomic
-def rotate_member_code(member: Member) -> Member:
-    """Issue a fresh id for this member; the old one stops working immediately."""
+def rotate_member_code(member: Member, email: bool = False) -> Member:
+    """
+    Issue a fresh id for this member; the old one stops working immediately. `email`: re-send the invite
+    with the new ID (J5-05), so their inbox never holds a dead ID.
+    """
     member.member_code = generate_unique_member_code()
     member.save(update_fields=["member_code"])
+    owner = member.owner
     transaction.on_commit(
         lambda: track(
-            "member.id_rotated", {"email": member.email}, actor_email=member.owner.email, ref=member
+            "member.id_rotated", {"email": member.email, "emailed": email}, actor_email=owner.email, ref=member
         )
     )
+    if email and member.is_active:
+        transaction.on_commit(lambda: send_member_invite(owner, member, new_id=True))
     return member
 
 
@@ -175,7 +190,6 @@ def members_for_owner(owner: User) -> QuerySet:
 # --- Messages ---------------------------------------------------------------
 
 
-@transaction.atomic
 def _company_name(owner: User) -> str:
     company = getattr(owner, "owned_company", None)
     return (getattr(company, "name", "") or owner.company or "").strip() or "your company"
@@ -187,35 +201,62 @@ def _first_name(name: str) -> str:
 
 
 def send_message(
-    owner: User, member: Member, title: str, body: str, severity: str, also_email: bool = False
+    owner: User,
+    member: Member,
+    title: str,
+    body: str,
+    severity: str,
+    channel: str = Message.Channel.CHAT,
+    event: DeviceEvent | None = None,
 ) -> Message:
     """
-    Send `member` a short message that will surface on their widget.
+    Send `member` a short note: on their widget (`chat`), on the widget and by email
+    (`chat_email`, so it reaches them even when their PC is off), or by email only
+    (`email`: it stays in the owner's thread but never goes to the PC).
 
     `member` must belong to `owner` (the view resolves it from the owner's own
-    members, so this is a defensive re-check). On commit, track the send and,
-    with `also_email`, email the same note to the member (so it reaches them
-    even when their PC is off).
+    members, so this is a defensive re-check). On commit, track the send and email it.
     """
     if member.owner_id != owner.id:
         raise ValueError("Member does not belong to this owner.")
 
+    emailed = channel in (Message.Channel.CHAT_EMAIL, Message.Channel.EMAIL)
     message = Message.objects.create(
-        owner=owner, member=member, sender=Message.Sender.OWNER,
+        owner=owner, member=member, sender=Message.Sender.OWNER, channel=channel,
         title=title, body=body, severity=severity,
         read_by_owner=True,  # the admin wrote it
     )
     transaction.on_commit(
         lambda: track(
             "member.message_sent",
-            {"member_id": member.id, "severity": severity, **({"emailed": True} if also_email else {})},
+            {"member_id": member.id, "severity": severity, "channel": channel, **({"emailed": True} if emailed else {})},
             actor_email=owner.email,
             ref=message,
         )
     )
-    if also_email:
+    if emailed:
         transaction.on_commit(lambda: _email_message(owner, member, message))
+    if event is not None:
+        mark_event_handled(owner, event, True)  # messaging the person about an alert deals with it (J5-04)
     return message
+
+
+def _handler_name(owner: User) -> str:
+    return (owner.full_name or "").strip() or owner.email
+
+
+def mark_event_handled(owner: User, event: DeviceEvent, handled: bool = True) -> DeviceEvent:
+    """The owner dealt with this alert (or un-marks it). Already handled stays as first handled."""
+    if handled and event.handled_at is None:
+        event.handled_at = timezone.now()
+        event.handled_by = _handler_name(owner)[:150]
+    elif not handled:
+        event.handled_at = None
+        event.handled_by = ""
+    else:
+        return event
+    event.save(update_fields=["handled_at", "handled_by"])
+    return event
 
 
 MESSAGE_EMAIL_TEMPLATE = "member_message"
@@ -232,6 +273,7 @@ def _email_message(owner: User, member: Member, message: Message) -> None:
             "company": _company_name(owner),
             "message": message,
             "urgent": message.severity == Message.Severity.CRITICAL,
+            "in_widget": message.channel != Message.Channel.EMAIL,
         },
         ref=message,
     )
@@ -328,7 +370,7 @@ def messages_for_device(device: Device) -> QuerySet:
     """
     if device.member_id is None:
         return Message.objects.none()
-    return Message.objects.filter(member_id=device.member_id).order_by(
+    return Message.objects.filter(member_id=device.member_id).exclude(channel=Message.Channel.EMAIL).order_by(
         "-created_at", "-id"
     )[:MESSAGE_FEED_LIMIT]
 
@@ -342,7 +384,7 @@ def mark_delivered(device: Device) -> int:
         return 0
     return Message.objects.filter(
         member_id=device.member_id, sender=Message.Sender.OWNER, delivered_at__isnull=True
-    ).update(delivered_at=timezone.now())
+    ).exclude(channel=Message.Channel.EMAIL).update(delivered_at=timezone.now())
 
 
 def mark_read_by_member(device: Device) -> int:
@@ -355,7 +397,7 @@ def mark_read_by_member(device: Device) -> int:
     now = timezone.now()
     return Message.objects.filter(
         member_id=device.member_id, sender=Message.Sender.OWNER, read_by_member=False
-    ).update(
+    ).exclude(channel=Message.Channel.EMAIL).update(
         read_by_member=True,
         read_by_member_at=now,
         delivered_at=Coalesce(F("delivered_at"), Value(now)),
@@ -479,11 +521,84 @@ def _check_pc_limit(owner: User, machine_id: str) -> None:
         "non_field_errors",
         f"Your company's plan covers {ent.max_devices} PCs and they're all in use. "
         "Ask your admin to upgrade the plan or remove a PC.",
+        pc_limit={"owner_id": owner.pk, "max_devices": ent.max_devices, "plan": ent.plan.name if ent.plan else ""},
+    )
+
+
+PC_LIMIT_TEMPLATE = "pc_limit_reached"
+PC_LIMIT_EMAIL_EVERY = timedelta(hours=6)
+
+
+def tell_owner_pc_refused(exc: EnrollmentRejected, member_email: str, hostname: str) -> None:
+    """
+    A PC was refused because the plan is full (J3-19): email the owner, at most once every few hours.
+    Called by the view after the enrolment transaction rolled back. Never raises.
+    """
+    from z_notification.models import Notification
+
+    info = exc.pc_limit or {}
+    owner = User.objects.filter(pk=info.get("owner_id")).first()
+    if owner is None:
+        return
+    recent = Notification.objects.filter(
+        template=PC_LIMIT_TEMPLATE, recipient=owner.email, created_at__gte=timezone.now() - PC_LIMIT_EMAIL_EVERY,
+    ).exists()
+    if recent:
+        return
+    member = owner.members.filter(email=_normalise_email(member_email)).first()
+    app = settings.ZINWE_APP_URL
+    # Name the smallest plan that fits their team (from sign-up) and one more PC, and link straight to it.
+    from z_auth.announcements import team_size_upper
+    from z_auth.models import Plan
+
+    max_devices = int(info.get("max_devices") or 0)
+    need = max(max_devices + 1, team_size_upper(owner))
+    fits = (
+        Plan.objects.filter(is_active=True)
+        .filter(Q(max_devices=0) | Q(max_devices__gte=need))
+        .order_by("price_inr_monthly", "sort_order")
+        .first()
+    )
+    notify(
+        "email",
+        owner.email,
+        PC_LIMIT_TEMPLATE,
+        {
+            "first_name": _first_name(owner.full_name or ""),
+            "member_name": member.name if member else member_email,
+            "hostname": hostname,
+            "max_devices": info.get("max_devices"),
+            "plan_name": info.get("plan", ""),
+            "upgrade_url": f"{app}/onboarding/plan" + (f"?plan={fits.code}" if fits else ""),
+            "suggested_plan": fits.name if fits else "",
+            "suggested_pcs": fits.max_devices if fits else 0,
+            "team_url": f"{app}/app/team",
+        },
+        ref=owner,
     )
 
 
 def _record_consent(device: Device, data: dict[str, Any], now: Any) -> None:
-    """Keep the member's consent (version + when) from the widget; an implausible time becomes now."""
+    """
+    Keep the member's answer on the widget's consent screen. Newer agents send
+    `consent: {state: given|declined, version}`; older ones `consent_version` + `consent_at` (= given).
+    Declining is allowed (owner decision 2026-10-17): nothing is collected from that PC afterwards.
+    """
+    consent = data.get("consent") or None
+    if consent:
+        version = (consent.get("version") or "").strip()[:20]
+        if consent["state"] == "declined":
+            if device.consent_state != Device.CONSENT_DECLINED:
+                device.consent_declined_at = now
+                device.consent_at = None
+                device.consent_version = version
+            return
+        if device.consent_state == Device.CONSENT_GIVEN and (not version or version == device.consent_version):
+            return
+        device.consent_version = version or device.consent_version
+        device.consent_at = now
+        device.consent_declined_at = None
+        return
     version = (data.get("consent_version") or "").strip()[:20]
     if not version or version == device.consent_version:
         return
@@ -492,6 +607,27 @@ def _record_consent(device: Device, data: dict[str, Any], now: Any) -> None:
         at = now
     device.consent_version = version
     device.consent_at = at
+    device.consent_declined_at = None
+
+
+# What a PC whose member declined consent still does: work hours and chat. Nothing else is collected.
+DECLINED_MODULES = frozenset({plan.WORK_TIME, plan.TEAM_CHAT})
+
+
+def device_entitlements(device: Device, ent: Entitlements | None = None) -> Entitlements:
+    """
+    The owner's plan as it applies to this PC: when its member declined monitoring, only work hours and
+    chat stay on, so the policy it's sent switches every collection and block off (and its version changes,
+    so the agent re-fetches), and its monitoring uploads are dropped.
+    """
+    ent = ent or entitlements_for(device.owner)
+    if device.consent_state != Device.CONSENT_DECLINED:
+        return ent
+    return dataclasses.replace(ent, modules=frozenset(ent.modules & DECLINED_MODULES))
+
+
+def monitoring_allowed(device: Device) -> bool:
+    return device.consent_state != Device.CONSENT_DECLINED
 
 
 LOGGED_WORK_STATES = {Device.WorkState.WORKING, Device.WorkState.ON_BREAK, Device.WorkState.ENDED}
@@ -589,17 +725,26 @@ def decide_break(owner: User, log: WorkLog, decision: str, note: str = "") -> Wo
         what = f"{log.reason} break" if log.reason else "break"
         when = timezone.localtime(log.at).strftime("%I:%M %p").lstrip("0")
         approved = decision == WorkLog.Approval.APPROVED
+        # Kind wording either way (J6-18): a questioned break is a conversation, not a warning. Without a note
+        # the member is invited to reply, so they're never left guessing.
+        manager = owner.full_name.split()[0] if owner.full_name.strip() else "Your manager"
+        body = log.decision_note or (
+            "" if approved else f"{manager} would like a word about this break. You can reply here."
+        )
         send_message(
             owner, log.member,
-            title=(f"Your {what} at {when} was approved" if approved else f"Your {what} at {when} wasn't approved")[:120],
-            body=log.decision_note,
-            severity=Message.Severity.INFO if approved else Message.Severity.WARNING,
+            title=(f"Your {what} at {when} was approved" if approved else f"About your {what} at {when}")[:120],
+            body=body,
+            severity=Message.Severity.INFO,
         )
     return log
 
 
 def work_log_for_owner(owner: User, day: Any, member_id: int | None = None) -> QuerySet:
-    """The owner's work-day changes on one local calendar day, oldest first."""
+    """The owner's work-day changes on one local calendar day, oldest first (none before the plan's history)."""
+    since = entitlements_for(owner).history_since()
+    if since is not None and day < timezone.localtime(since).date():
+        return WorkLog.objects.none()
     logs = WorkLog.objects.filter(owner=owner, at__date=day).select_related("device", "member")
     if member_id is not None:
         logs = logs.filter(member_id=member_id)
@@ -637,19 +782,30 @@ def record_heartbeat(device: Device, data: dict[str, Any], ip: str | None) -> di
         device.worked_seconds = 0
         device.break_seconds = 0
     device.work_updated_at = now
+    # "Restore USB" (J5-02): told once, on the first heartbeat after the owner pressed it.
+    usb_restore = bool(
+        device.usb_restore_requested_at
+        and (device.usb_restore_delivered_at is None or device.usb_restore_delivered_at < device.usb_restore_requested_at)
+    )
+    if usb_restore:
+        device.usb_restore_delivered_at = now
     device.save(
         update_fields=[
             "last_seen_at", "last_ip", "agent_version", "os_version", "hostname",
             "work_state", "worked_seconds", "break_seconds", "work_updated_at",
-            "consent_version", "consent_at",
+            "consent_version", "consent_at", "consent_declined_at", "usb_restore_delivered_at",
         ]
     )
     response = {
         "device_id": device.id,
         "server_time": device.last_seen_at,
         "next_heartbeat_seconds": settings.ZINWE_DEVICE_HEARTBEAT_SECONDS,
-        # The agent re-fetches GET policy/current/ whenever this differs from its cache.
-        "policy_version": effective_policy_version(get_policy(device.owner), ent),
+        # The agent re-fetches GET policy/current/ whenever this differs from its cache (a declined
+        # consent changes it too: that PC's policy has monitoring off).
+        "policy_version": effective_policy_version(get_policy(device.owner), device_entitlements(device, ent)),
+        "consent_state": device.consent_state,
+        "usb_restore": usb_restore,
+        **employer_names(device),
     }
     # Updates (M12 + Releases): a newer published release is offered to the agent ("update"),
     # and a required one (or the env minimum) also pauses the member's work ("update_required").
@@ -828,6 +984,63 @@ def apply_entitlements(data: dict[str, Any], policy: Policy, ent: Entitlements) 
     return out
 
 
+def employer_names(device: Device) -> dict[str, str]:
+    """Who the employee works for, so the agent's consent notice and messages can name them ("" when unknown)."""
+    owner = device.owner
+    company = getattr(owner, "owned_company", None)
+    return {"company_name": company.name if company else "", "owner_name": owner.full_name or ""}
+
+
+def policy_for_device(device: Device, data: dict[str, Any], policy: Policy) -> dict[str, Any]:
+    """The rules this PC enforces: the owner's, clamped to the plan and to the member's consent."""
+    out = apply_entitlements(data, policy, device_entitlements(device))
+    declined = device.consent_state == Device.CONSENT_DECLINED
+    out["consent_state"] = device.consent_state
+    out["monitoring_enabled"] = not declined
+    out.update(employer_names(device))
+    if declined:
+        out["usb"]["mode"] = Policy.UsbMode.ALLOW
+        out["data_transfer"]["enabled"] = False
+        out["data_transfer"]["usb_lockdown"] = False
+        out["data_transfer"]["include_details"] = False
+        out["remote_software"]["enabled"] = False
+        out["remote_software"]["blocking_enabled"] = False
+        out["web"]["enabled"] = False
+    return out
+
+
+# --- USB lockdown / restore (J5-02) ------------------------------------------------------------
+
+
+def request_usb_restore(owner: User, device: Device) -> Device:
+    """The owner pressed "Restore USB": the PC's next heartbeat tells the agent to go back to the policy."""
+    if device.owner_id != owner.id:
+        raise PermissionError("Not your PC.")
+    device.usb_restore_requested_at = timezone.now()
+    device.save(update_fields=["usb_restore_requested_at"])
+    transaction.on_commit(
+        lambda: track("device.usb_restore_requested", {"hostname": device.hostname}, actor_email=owner.email, ref=device)
+    )
+    return device
+
+
+def _track_usb_state(device: Device, rows: list[DeviceEvent]) -> None:
+    """A lockdown event marks the PC USB-locked; the agent's usb.restored clears it (and the request)."""
+    changed: set[str] = set()
+    for row in sorted(rows, key=lambda r: r.occurred_at):
+        if row.type == USB_LOCKED_DOWN:
+            if device.usb_locked_at is None or row.occurred_at > device.usb_locked_at:
+                device.usb_locked_at = row.occurred_at
+                changed.add("usb_locked_at")
+        elif row.type == USB_RESTORED:
+            if device.usb_locked_at is None or row.occurred_at >= device.usb_locked_at:
+                device.usb_locked_at = None
+                device.usb_restore_requested_at = None
+                changed |= {"usb_locked_at", "usb_restore_requested_at"}
+    if changed:
+        device.save(update_fields=sorted(changed))
+
+
 def check_policy_change(owner: User, data: dict[str, Any]) -> None:
     """Refuse (FeatureLocked, 403) a rule the owner's plan doesn't include."""
     ent = entitlements_for(owner)
@@ -953,8 +1166,12 @@ def store_events(device: Device, events: list[dict[str, Any]]) -> tuple[int, int
     """
     # Plan enforcement: events from a module the plan doesn't include are not kept. They count
     # as accepted (handled) so the agent clears its queue instead of re-sending them forever.
-    ent = entitlements_for(device.owner)
-    kept = [event for event in events if ent.allows(event["type"])]
+    ent = device_entitlements(device)
+    if monitoring_allowed(device):
+        kept = [event for event in events if ent.allows(event["type"])]
+    else:
+        # Declined consent: nothing about this person is kept, only agent housekeeping (agent.* / consent.*).
+        kept = [event for event in events if event["type"].split(".", 1)[0] in ("agent", "consent")]
     dropped = len(events) - len(kept)
     events = kept
     seen = _stored_client_ids(device, [event["id"] for event in events])
@@ -988,19 +1205,110 @@ def store_events(device: Device, events: list[dict[str, Any]]) -> tuple[int, int
                 accepted += 1
             except IntegrityError:
                 pass
+    stored = [row for row in rows if row.pk is not None] if accepted != len(rows) else rows
+    _track_usb_state(device, stored)
+    critical = [row for row in stored if row.severity == DeviceEvent.Severity.CRITICAL and not is_confirmation(row.type)]
+    if critical:
+        transaction.on_commit(lambda: tell_owner_critical(device, critical))
     return accepted + dropped, len(events) - accepted
 
 
-def events_for_owner(owner: User, device_id: int | None = None, limit: int = 50) -> QuerySet:
-    """The owner's newest events first, optionally for one of their devices."""
-    events = (
-        DeviceEvent.objects.filter(device__owner=owner)
-        .exclude(_locked_kinds("type", entitlements_for(owner)))
-        .select_related("device")
+OWNER_ALERT_TEMPLATE = "owner_alert"
+OWNER_ALERT_EVERY = timedelta(minutes=30)
+
+
+def tell_owner_critical(device: Device, events: list[DeviceEvent]) -> None:
+    """
+    Email the owner about critical alerts (J5-21), at most one email every 30 minutes per owner so a burst
+    doesn't flood the inbox (the dashboard has the full list). Never raises.
+    """
+    from z_notification.models import Notification
+
+    owner = device.owner
+    recent = Notification.objects.filter(
+        template=OWNER_ALERT_TEMPLATE, recipient=owner.email, created_at__gte=timezone.now() - OWNER_ALERT_EVERY,
+    ).exists()
+    if recent:
+        return
+    member = device.member if device.member_id else None
+    notify(
+        "email",
+        owner.email,
+        OWNER_ALERT_TEMPLATE,
+        {
+            "first_name": _first_name(owner.full_name or ""),
+            "hostname": device.hostname,
+            "member_name": member.name if member else "",
+            "titles": [build_title(e.type, e.data, device.hostname) for e in events][:5],
+            "count": len(events),
+            "first": events[0],
+            "alerts_url": f"{settings.ZINWE_APP_URL}/app/alerts",
+        },
+        ref=events[0],
     )
+
+
+def _history_floor(ent: Entitlements, since: Any) -> Any:
+    """`since`, moved forward to the start of the plan's history window when the plan keeps less."""
+    floor = ent.history_since()
+    return max(since, floor) if floor is not None else since
+
+
+def events_for_owner(
+    owner: User,
+    device_id: int | None = None,
+    limit: int = 50,
+    *,
+    member_id: int | None = None,
+    types: list[str] | None = None,
+    kind: str | None = None,
+    handled: bool | None = None,
+) -> QuerySet:
+    """
+    The owner's newest events first (within their plan's history), optionally for one of their devices,
+    one team member's PCs, only some event types, only alerts or only rule confirmations (`kind`), and/or
+    only handled / not-handled ones.
+    """
+    ent = entitlements_for(owner)
+    events = DeviceEvent.objects.filter(device__owner=owner).exclude(_locked_kinds("type", ent)).select_related("device")
+    since = ent.history_since()
+    if since is not None:
+        events = events.filter(occurred_at__gte=since)
     if device_id is not None:
         events = events.filter(device_id=device_id)
+    if member_id is not None:
+        events = events.filter(device__member_id=member_id)
+    if types:
+        events = events.filter(type__in=types)
+    if kind:
+        confirmations = confirmation_q()
+        events = events.filter(confirmations) if kind == "confirmation" else events.exclude(confirmations)
+    if handled is not None:
+        events = events.filter(handled_at__isnull=not handled)
     return events.order_by("-occurred_at", "-id")[:limit]
+
+
+def confirmation_q(field: str = "type") -> Q:
+    """Rule confirmations (kind "confirmation"), for excluding them from alert lists and counts."""
+    from .events import CONFIRMATION_TYPES
+
+    return Q(**{f"{field}__in": sorted(CONFIRMATION_TYPES)}) | Q(**{f"{field}__endswith": ".policy_applied"})
+
+
+def alert_counts(owner: User, since: Any = None) -> dict[str, int]:
+    """How many alerts (confirmations excluded) the owner has, and how many still need attention."""
+    ent = entitlements_for(owner)
+    events = DeviceEvent.objects.filter(device__owner=owner).exclude(_locked_kinds("type", ent)).exclude(confirmation_q())
+    floor = ent.history_since()
+    if since is not None:
+        floor = max(since, floor) if floor is not None else since
+    if floor is not None:
+        events = events.filter(occurred_at__gte=floor)
+    return {
+        "alerts": events.count(),
+        "unhandled": events.filter(handled_at__isnull=True).count(),
+        "critical_unhandled": events.filter(handled_at__isnull=True, severity=DeviceEvent.Severity.CRITICAL).count(),
+    }
 
 
 # --- Usage metrics ----------------------------------------------------------
@@ -1015,6 +1323,8 @@ def store_metrics(device: Device, rows: list[dict[str, Any]]) -> int:
     bucket_start, category, key). Returns the number of rows accepted.
     """
     ent = entitlements_for(device.owner)
+    if not monitoring_allowed(device):
+        return len(rows)  # declined consent: usage isn't collected; handled so the agent clears its queue
     accepted = 0
     for row in rows:
         if not ent.allows(row["category"]):
@@ -1052,9 +1362,10 @@ def metrics_for_owner(
     optionally filtered to one member, one device, and/or one category. The series
     is ordered newest-last (oldest bucket first) so a chart can plot it directly.
     """
-    since = timezone.now() - timedelta(days=days)
+    ent = entitlements_for(owner)
+    since = _history_floor(ent, timezone.now() - timedelta(days=days))
     qs = UsageMetric.objects.filter(device__owner=owner, bucket_start__gte=since).exclude(
-        _locked_kinds("category", entitlements_for(owner))
+        _locked_kinds("category", ent)
     )
     if member_id is not None:
         qs = qs.filter(device__member_id=member_id)
@@ -1104,11 +1415,12 @@ def top_metrics_for_owner(
     read here, so a company only ever sees its own PCs. Blank-key rows (metrics
     with no per-item detail) are left out -- there's nothing to break down.
     """
-    since = timezone.now() - timedelta(days=days)
+    ent = entitlements_for(owner)
+    since = _history_floor(ent, timezone.now() - timedelta(days=days))
     qs = (
         UsageMetric.objects.filter(device__owner=owner, bucket_start__gte=since, category=category)
         .exclude(key="")
-        .exclude(_locked_kinds("category", entitlements_for(owner)))
+        .exclude(_locked_kinds("category", ent))
     )
     if member_id is not None:
         qs = qs.filter(device__member_id=member_id)

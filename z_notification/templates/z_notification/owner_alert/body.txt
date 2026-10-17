@@ -1,0 +1,14 @@
+{% autoescape off %}Hi {{ first_name }},
+
+Zinwe flagged something that needs your attention on {{ hostname }}{% if member_name %} ({{ member_name }}){% endif %}, at {{ first.occurred_at|date:"g:i A, j M" }}:
+
+{% for title in titles %}- {{ title }}
+{% endfor %}
+See it and decide what to do (message the person, mark it handled) in your dashboard:
+{{ alerts_url }}
+
+We send at most one of these emails every 30 minutes; the dashboard always has the full list.
+
+The Zinwe team
+SKYTECHNO, New Delhi
+{% endautoescape %}

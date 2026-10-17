@@ -19,7 +19,7 @@
       {% if doc.instructions.skydo %}<li style="margin:0 0 6px;">US bank transfer (ACH / wire): {{ doc.instructions.skydo.account_name }}, account {{ doc.instructions.skydo.account_number }}, routing {{ doc.instructions.skydo.routing_number }}</li>{% endif %}
     </ul>
     <p style="margin:0 0 20px;"><a href="{{ doc.public_url }}" style="display:inline-block;padding:10px 18px;background:#FD6D02;color:#0d0d0e;border-radius:6px;font-weight:600;text-decoration:none;">View the quote online</a></p>
-    <p style="margin:0 0 16px;color:#4b5563;">After paying, upload the receipt on the Zinwe payment page. We confirm it (usually within one working day), switch the plan on and email the invoice.</p>
+    <p style="margin:0 0 16px;color:#4b5563;">After paying, {% if to_owner %}upload the receipt on Billing in your Zinwe dashboard{% else %}reply to this email with the receipt attached, or send it to {{ owner.full_name|default:owner.email }}{% endif %}. We confirm it (usually within one working day), switch the plan on and email the invoice.</p>
     <p style="margin:0 0 16px;">Questions? Just reply to this email.</p>
     <p style="margin:0;">The Zinwe team<br><span style="color:#6b7280;">SKYTECHNO, New Delhi</span></p>
   </div>

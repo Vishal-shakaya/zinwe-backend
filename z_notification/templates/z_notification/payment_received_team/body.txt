@@ -1,14 +1,16 @@
-{% autoescape off %}New manual payment #{{ payment.id }} to check.
+{% load zinwe_admin %}{% autoescape off %}A payment is waiting for you to check (#{{ payment.id }}).
 
-Owner:      {{ owner.full_name|default:"-" }} <{{ owner.email }}>
+Customer:   {{ owner.full_name|default:"-" }} <{{ owner.email }}>
 Company:    {{ company.name|default:"-" }}
-Plan:       {{ plan.name }} ({{ plan.code }}), {{ subscription.amount_inr }} {{ subscription.currency }} per {% if subscription.billing_cycle == 'yearly' %}year{% else %}month{% endif %} + tax
-Type:       {% if payment.upgrade_plan %}Upgrade from {{ plan.name }} to {{ payment.upgrade_plan.name }} ({{ payment.upgrade_plan.price_inr_monthly }} INR/month; approving switches the plan now, paid days left are carried over){% elif payment.is_renewal %}Renewal of an active plan (paid until {{ subscription.ends_at|date:"Y-m-d" }}; approving adds a month){% else %}New plan{% endif %}
-Paid:       {{ payment.amount_inr }} {{ payment.currency }} by {{ payment.get_method_display }}{% if payment.due.total %} (due: {{ payment.due.total }} {{ payment.currency }}){% endif %} on {{ payment.paid_on|date:"Y-m-d" }}
-Reference:  {{ payment.reference|default:"- (read it off the receipt)" }}
-Payer:      {{ payment.payer_name }}
-Proof:      {% if payment.proof %}attached in admin{% else %}none uploaded{% endif %}
+Type:       {% if payment.upgrade_plan %}Upgrade from {{ plan.name }} to {{ payment.upgrade_plan.name }} (approving switches the plan now; paid days left are carried over){% elif payment.is_renewal %}Renewal of an active plan: {{ plan.name }}, paid until {{ subscription.ends_at|date:"j M Y" }} (approving adds a {% if subscription.billing_cycle == 'yearly' %}year{% else %}month{% endif %}){% else %}New plan: {{ plan.name }}{% endif %}
+Amount due: {% amount_due payment %}
+Reported:   {{ payment.amount_inr }} {{ payment.currency }} by {{ payment.get_method_display }} on {{ payment.paid_on|date:"j M Y" }}
+Reference:  {{ payment.reference|default:"none given (read it off the receipt)" }}
+Receipt:    {% if payment.proof %}uploaded{% else %}none uploaded{% endif %}
 
-Check it in Django admin: Manual payments -> #{{ payment.id }} (/admin/z_auth/manualpayment/{{ payment.id }}/change/),
-then run "Verify payment" or "Reject payment".
+Review it in the Back office:
+{% admin_url "subscribers" review=payment.id %}
+
+Compare the receipt with the bank statement, UPI app or Skydo. Type the amount and UTR you see on it,
+then approve or reject the payment there.
 {% endautoescape %}

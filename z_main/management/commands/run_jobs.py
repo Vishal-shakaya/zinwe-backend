@@ -1,8 +1,9 @@
 """`manage.py run_jobs [--interval 3600] [--once]`: the background jobs loop.
 
 Runs every scheduled job now, then again every `--interval` seconds. Today that's renewal
-reminders (z_auth.renewals), feedback requests (z_auth.feedback_requests) and blog newsletters
-(z_blog.newsletter: what a background send left, and issues of scheduled articles that went live). A failing job is logged and retried next round; the loop keeps
+reminders (z_auth.renewals), feedback requests (z_auth.feedback_requests), blog newsletters
+(z_blog.newsletter: what a background send left, and issues of scheduled articles that went live) and
+the history clean-up (z_devices.retention: data past each plan's history window + 30 days). A failing job is logged and retried next round; the loop keeps
 going. Used by the local start script; a server can run this as a service or schedule the
 individual commands with cron instead.
 """
@@ -18,12 +19,14 @@ from django.utils import timezone
 from z_auth.feedback_requests import send_feedback_requests
 from z_auth.renewals import send_due_reminders
 from z_blog.newsletter import send_pending as send_newsletters
+from z_devices.retention import prune_history
 
 # (label, job): each returns a result with .summary(). One failing job doesn't stop the others.
 JOBS = (
     ("renewal reminders", send_due_reminders),
     ("feedback requests", send_feedback_requests),
     ("newsletters", send_newsletters),
+    ("history clean-up", prune_history),
 )
 
 

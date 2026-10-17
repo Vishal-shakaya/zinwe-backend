@@ -28,7 +28,7 @@ from z_notification.services import notify
 
 from . import billing
 from .invoices import _fmt, _latin, amount_in_words, financial_year
-from .models import Subscription
+from .models import ManualPayment, Subscription
 
 Status = Subscription.Status
 
@@ -49,43 +49,22 @@ def is_quotable(subscription: Subscription | None) -> bool:
     return billing.is_paid_active(subscription)
 
 
-def quote_token_for(subscription: Subscription) -> str:
-    """The public link's secret, made once per subscription."""
-    if subscription.quote_token:
-        return subscription.quote_token
+def _new_token(subscription: Subscription) -> str:
+    """A fresh secret for the public link (re-issuing a quote retires the old link)."""
     for _ in range(3):
+        token = secrets.token_urlsafe(24)
         try:
             with transaction.atomic():
-                # Only fills an empty token, so two tabs sharing at once end up with the same link.
-                Subscription.objects.filter(pk=subscription.pk, quote_token__isnull=True).update(
-                    quote_token=secrets.token_urlsafe(24)
-                )
+                Subscription.objects.filter(pk=subscription.pk).update(quote_token=token)
         except IntegrityError:  # a clash with another subscription's token: astronomically unlikely
             continue
-        subscription.refresh_from_db(fields=["quote_token"])
-        if subscription.quote_token:
-            return subscription.quote_token
+        subscription.quote_token = token
+        return token
     raise RuntimeError("Couldn't make a quote link; try again.")
 
 
-def public_url(subscription: Subscription) -> str:
-    return f"{settings.ZINWE_APP_URL}/quote/{quote_token_for(subscription)}"
-
-
-def subscription_for_token(token: str) -> Subscription | None:
-    """The quotable subscription behind a public link, or None (unknown token, or nothing due any more)."""
-    if not token or len(token) > 64:
-        return None
-    subscription = (
-        Subscription.objects.select_related("plan", "company", "owner").filter(quote_token=token).first()
-    )
-    if subscription is not None:
-        subscription = billing.expire_if_due(subscription)
-    return subscription if is_quotable(subscription) else None
-
-
-def quote_document(subscription: Subscription) -> dict[str, Any]:
-    """Everything the public page and the PDF show. Raises `QuoteNotAvailable`."""
+def _live_document(subscription: Subscription) -> dict[str, Any]:
+    """What's due right now, as a quote (no link yet). Raises `QuoteNotAvailable`."""
     if not is_quotable(subscription):
         raise QuoteNotAvailable()
     due = billing.amount_due(subscription)
@@ -121,8 +100,83 @@ def quote_document(subscription: Subscription) -> dict[str, Any]:
         "quote": due.as_dict(),
         "total_in_words": amount_in_words(due.total, due.currency),
         "instructions": instructions,
-        "public_url": public_url(subscription),
     }
+
+
+def _same_quote(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """Do two quotes ask for the same thing (plan, kind, currency, total)?"""
+    qa, qb = a.get("quote", {}), b.get("quote", {})
+    return (
+        a.get("plan", {}).get("code") == b.get("plan", {}).get("code")
+        and a.get("kind") == b.get("kind")
+        and qa.get("currency") == qb.get("currency")
+        and qa.get("total") == qb.get("total")
+    )
+
+
+def _paid_since(subscription: Subscription, moment: Any) -> bool:
+    """A payment was reported for this subscription after `moment` (and not rejected)."""
+    if moment is None:
+        return False
+    return (
+        ManualPayment.objects.filter(subscription=subscription, submitted_at__gte=moment)
+        .exclude(status=ManualPayment.Status.REJECTED)
+        .exists()
+    )
+
+
+def _expired(doc: dict[str, Any]) -> bool:
+    valid_until = doc.get("valid_until") or ""
+    return bool(valid_until) and timezone.localdate().isoformat() > valid_until
+
+
+def quote_document(subscription: Subscription) -> dict[str, Any]:
+    """
+    The owner's quote, as issued: the same frozen copy (and link) until it's paid, expires or no longer matches
+    what's due; then a new one with a new link. Raises `QuoteNotAvailable`. `status` is always "open" here.
+    """
+    live = _live_document(subscription)
+    snapshot = subscription.quote_snapshot or {}
+    if (
+        snapshot
+        and subscription.quote_token
+        and not _paid_since(subscription, subscription.quote_issued_at)
+        and not _expired(snapshot)
+        and _same_quote(snapshot, live)
+    ):
+        return {**snapshot, "status": "open"}
+    token = _new_token(subscription)
+    doc = {**live, "public_url": f"{settings.ZINWE_APP_URL}/quote/{token}"}
+    subscription.quote_snapshot = doc
+    subscription.quote_issued_at = timezone.now()
+    subscription.save(update_fields=["quote_snapshot", "quote_issued_at", "updated_at"])
+    return {**doc, "status": "open"}
+
+
+def public_url(subscription: Subscription) -> str:
+    return quote_document(subscription)["public_url"]
+
+
+def public_quote(token: str) -> dict[str, Any] | None:
+    """
+    The quote behind a public link, frozen as issued, with `status`:
+    "open" (pay this), "paid" (a payment came in after it was issued) or "replaced" (what's due changed, the plan
+    ended or the quote expired). None for an unknown link.
+    """
+    if not token or len(token) > 64:
+        return None
+    subscription = Subscription.objects.select_related("plan", "company", "owner").filter(quote_token=token).first()
+    if subscription is None or not subscription.quote_snapshot:
+        return None
+    subscription = billing.expire_if_due(subscription)
+    snapshot = subscription.quote_snapshot
+    if _paid_since(subscription, subscription.quote_issued_at):
+        status = "paid"
+    elif _expired(snapshot) or not is_quotable(subscription) or not _same_quote(snapshot, _live_document(subscription)):
+        status = "replaced"
+    else:
+        status = "open"
+    return {**snapshot, "status": status}
 
 
 # --- PDF ------------------------------------------------------------------------------------
@@ -183,7 +237,7 @@ def quote_pdf(doc: dict[str, Any]) -> bytes:
     pdf.set_text_color(20, 20, 20)
     pdf.set_font("Helvetica", "B", 13)
     pdf.cell(w / 2, 10, "QUOTATION", align="R", new_x="LMARGIN", new_y="NEXT")
-    text("IT Is OK. Security, simplified.", 9, color=(90, 90, 90))
+    text("No IT team? It's OK. Security, simplified.", 9, color=(90, 90, 90))
     pdf.ln(4)
 
     # Seller | quote details
@@ -251,9 +305,12 @@ def quote_pdf(doc: dict[str, Any]) -> bytes:
 
     # How to pay
     text("How to pay", 12, True)
+    reference = doc.get("customer", {}).get("name") or ""
     text(
-        f"Pay {_fmt(quote['total'], cur)} by any one of the ways below, then upload the receipt on your Zinwe "
-        "payment page. We confirm it (usually within one working day), switch your plan on and email the invoice.",
+        f"Pay {_fmt(quote['total'], cur)} by any one of the ways below"
+        + (f", with \"{reference}\" as the payment reference (UPI note or bank remarks)" if reference else "")
+        + ". Then send us the receipt: upload it on your Zinwe payment page, or reply to the quote email with it "
+        "attached. We confirm it (usually within one working day), switch the plan on and email the invoice.",
         9, color=(60, 60, 60),
     )
     pdf.ln(2)
@@ -304,7 +361,8 @@ def quote_pdf(doc: dict[str, Any]) -> bytes:
         block("PayPal", [("Pay online", ins["paypal_url"])])
 
     pdf.ln(2)
-    notes = [n for n in [ins.get("note", ""), quote.get("note", "")] if n]
+    # The reference is in "How to pay" above, so the instructions' own reference note isn't repeated here.
+    notes = [n for n in [quote.get("note", "")] if n]
     notes.append(f"Prices are valid until {doc['valid_until']}. This quotation is not a tax invoice; "
                  "the invoice is issued once the payment is confirmed.")
     for note in notes:

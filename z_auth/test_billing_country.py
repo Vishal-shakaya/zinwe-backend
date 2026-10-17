@@ -139,7 +139,7 @@ class HelperTests(_UpgradeBase):
             amount_in_words(Decimal("123456.50"), "INR"),
             "Rupees one lakh twenty-three thousand four hundred fifty-six and fifty paise only",
         )
-        self.assertEqual(amount_in_words(Decimal("408.00"), "USD"), "Us dollars four hundred eight only")
+        self.assertEqual(amount_in_words(Decimal("408.00"), "USD"), "US dollars four hundred eight only")
 
 
 @override_settings(ZINWE_INVOICE_SELLER=SELLER, ZINWE_GST=GST)

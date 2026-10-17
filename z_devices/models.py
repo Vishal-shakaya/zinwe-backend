@@ -142,6 +142,18 @@ class Device(models.Model):
     # affirmative), given on the Zinwe widget's consent screen and reported on the heartbeat.
     consent_version = models.CharField(max_length=20, blank=True)
     consent_at = models.DateTimeField(null=True, blank=True)
+    # The member may also say no (owner decision 2026-10-17): then nothing is collected on this PC
+    # (work hours and chat still work). "pending" = not answered yet.
+    CONSENT_PENDING = "pending"
+    CONSENT_GIVEN = "given"
+    CONSENT_DECLINED = "declined"
+    consent_declined_at = models.DateTimeField(null=True, blank=True)
+
+    # USB read-only lockdown (a big USB copy auto-switched this PC to read-only) and the owner's
+    # "Restore USB": requested_at is when they pressed it, delivered_at when a heartbeat passed it on.
+    usb_locked_at = models.DateTimeField(null=True, blank=True)
+    usb_restore_requested_at = models.DateTimeField(null=True, blank=True)
+    usb_restore_delivered_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ["hostname"]
@@ -155,6 +167,17 @@ class Device(models.Model):
     @staticmethod
     def new_token() -> str:
         return secrets.token_urlsafe(32)
+
+    @property
+    def consent_state(self) -> str:
+        """pending / given / declined (the latest answer on this PC wins)."""
+        if self.consent_declined_at is not None and (
+            self.consent_at is None or self.consent_declined_at >= self.consent_at
+        ):
+            return self.CONSENT_DECLINED
+        if self.consent_at is not None:
+            return self.CONSENT_GIVEN
+        return self.CONSENT_PENDING
 
     @property
     def is_online(self) -> bool:
@@ -245,12 +268,21 @@ class Message(models.Model):
         OWNER = "owner", "Admin"
         MEMBER = "member", "Member"
 
+    class Channel(models.TextChoices):
+        """How the admin's note reaches the member. Email-only notes never go to the PC."""
+
+        CHAT = "chat", "Chat (widget)"
+        CHAT_EMAIL = "chat_email", "Chat + email"
+        EMAIL = "email", "Email only"
+
     owner = models.ForeignKey(
         "z_auth.User", on_delete=models.CASCADE, related_name="sent_messages"
     )
     member = models.ForeignKey(Member, on_delete=models.CASCADE, related_name="messages")
     # Who wrote this line of the conversation (admin alert vs member reply).
     sender = models.CharField(max_length=10, choices=Sender.choices, default=Sender.OWNER)
+    # Admin lines: widget, widget + email, or email only (member replies are always chat).
+    channel = models.CharField(max_length=12, choices=Channel.choices, default=Channel.CHAT)
     title = models.CharField(max_length=120, blank=True)
     body = models.TextField(blank=True)
     severity = models.CharField(
@@ -293,6 +325,9 @@ class DeviceEvent(models.Model):
     occurred_at = models.DateTimeField()
     received_at = models.DateTimeField(auto_now_add=True)
     data = models.JSONField(default=dict, blank=True)
+    # The owner marked this alert as dealt with (or sent the member a message about it).
+    handled_at = models.DateTimeField(null=True, blank=True)
+    handled_by = models.CharField(max_length=150, blank=True)
 
     class Meta:
         ordering = ["-occurred_at", "-id"]

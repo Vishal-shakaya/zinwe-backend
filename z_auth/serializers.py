@@ -114,7 +114,7 @@ def early_access_payload(registration: EAR, created: bool) -> dict[str, Any]:
         "status": registration.status,
         "trial_days": registration.trial_days,
         "already_registered": not created,
-        "message": "Spot reserved." if created else "You're already on the list.",
+        "message": "Setup call booked." if created else "You've already booked a setup call.",
     }
 
 
@@ -126,11 +126,18 @@ class UserSerializer(serializers.ModelSerializer):
 
     email_verified = serializers.BooleanField(read_only=True)
     terms = serializers.SerializerMethodField()
+    tour_done = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ("id", "email", "full_name", "phone", "is_staff", "date_joined", "email_verified", "terms")
+        fields = (
+            "id", "email", "full_name", "phone", "is_staff", "date_joined", "email_verified", "terms", "tour_done",
+        )
         read_only_fields = fields
+
+    def get_tour_done(self, user: User) -> bool:
+        """The dashboard tour runs once per account (not per browser)."""
+        return user.tour_done_at is not None
 
     def get_terms(self, user: User) -> dict[str, Any]:
         """Which Terms version they accepted, and whether they still need to accept the current one."""
@@ -296,19 +303,42 @@ class PlanSerializer(serializers.ModelSerializer):
     requires_payment = serializers.BooleanField(read_only=True)
     trial_available = serializers.SerializerMethodField()
     quote = serializers.SerializerMethodField()
+    gst_charged = serializers.SerializerMethodField()
 
     class Meta:
         model = Plan
         fields = (
             "code", "name", "tagline", "price_inr_monthly", "list_price_inr_monthly", "discount_percent",
             "price_usd_monthly", "list_price_usd_monthly", "quote",
-            "trial_days", "max_devices",
+            "trial_days", "max_devices", "history_days",
             "features", "modules", "is_recommended", "requires_payment", "sort_order", "trial_available",
+            "gst_charged",
         )
         read_only_fields = fields
 
     def get_trial_available(self, obj: Plan) -> bool:
         return trial_available(obj, self.context.get("user"))
+
+    def _caller_company(self) -> Any:
+        """The signed-in caller's company (None for visitors / no company yet), looked up once per response."""
+        from .models import Company
+
+        if "_company" not in self.context:
+            user = self.context.get("user")
+            authed = user is not None and getattr(user, "is_authenticated", False)
+            self.context["_company"] = Company.objects.filter(owner=user).first() if authed else None
+        return self.context["_company"]
+
+    def get_gst_charged(self, obj: Plan) -> bool:
+        """
+        Whether "+ GST" applies to this caller: the seller GSTIN is set and the caller is billed in India
+        (visitors and owners without a company count as India). All "+ GST" copy is driven by this.
+        """
+        from . import pricing
+
+        if not (settings.ZINWE_INVOICE_SELLER.get("gstin") or "").strip():
+            return False
+        return pricing.is_india(self._caller_company())
 
     def get_quote(self, obj: Plan) -> dict[str, Any] | None:
         """
@@ -316,12 +346,8 @@ class PlanSerializer(serializers.ModelSerializer):
         None for visitors and owners without a company yet: the cards then show both currencies.
         """
         from . import pricing
-        from .models import Company
 
-        user = self.context.get("user")
-        if user is None or not getattr(user, "is_authenticated", False):
-            return None
-        company = Company.objects.filter(owner=user).first()
+        company = self._caller_company()
         if company is None:
             return None
         return pricing.quote(obj, company).as_dict()

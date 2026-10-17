@@ -120,6 +120,7 @@ def _after_early_access_created(registration: EAR) -> None:
     concerns_text = ", ".join(CONCERN_LABELS.get(c, c) for c in registration.concerns)
     context = {
         "registration": registration,
+        "signup_url": f"{settings.ZINWE_APP_URL}/signup",
         "first_name": registration.name.split()[0] if registration.name.split() else "there",
         "company": registration.company,
         "trial_days": registration.trial_days,
@@ -165,6 +166,21 @@ class EmailNotVerified(Exception):
         return self.message
 
 
+class AccountPaused(Exception):
+    """Right password (or code), but staff blocked the account (inactive after it was verified)."""
+
+    code = "account_paused"
+    message = "Your Zinwe account is paused. Write to hello@zinwe.io and we'll help."
+
+    def __str__(self) -> str:
+        return self.message
+
+
+def is_paused(user: User | None) -> bool:
+    """Blocked by staff: inactive although the email was verified (an unverified sign-up isn't paused)."""
+    return user is not None and not user.is_active and user.email_verified_at is not None
+
+
 class PasswordRejected(Exception):
     """The new password failed the validators; `messages` are user-facing."""
 
@@ -188,6 +204,11 @@ def _first_name(user: User | None) -> str:
 
 def send_code_email(email: str, purpose: str, code: str, first_name: str = "there") -> None:
     """Email a one-time code. The logged Notification has the code masked."""
+    from urllib.parse import urlencode
+
+    # A reset can be started by the Zinwe team (admin "Email a password reset"): the owner then needs a link to
+    # where the code is typed. The page opens on the code step for this email.
+    reset_url = f"{settings.ZINWE_APP_URL}/forgot-password?{urlencode({'email': email, 'step': 'code'})}"
     notify(
         "email",
         email,
@@ -196,6 +217,7 @@ def send_code_email(email: str, purpose: str, code: str, first_name: str = "ther
             "code": code,
             "first_name": first_name,
             "minutes": int(otp.CODE_TTL.total_seconds() // 60),
+            "reset_url": reset_url,
         },
         ref=("z_auth.onetimecode", purpose),
         redact=[code],
@@ -291,7 +313,13 @@ def verify_signup(email: str, code: str) -> User:
 
 def _after_signup_verified(user: User) -> None:
     track("auth.signup_verified", {}, actor_email=user.email, ref=user)
-    notify("email", user.email, "welcome", {"first_name": _first_name(user), "user": user}, ref=user)
+    app = settings.ZINWE_APP_URL
+    notify(
+        "email", user.email, "welcome",
+        {"first_name": _first_name(user), "user": user, "dashboard_url": f"{app}/app",
+         "onboarding_url": f"{app}/onboarding"},
+        ref=user,
+    )
 
 
 def resend_code(email: str, purpose: str, ip: str | None) -> None:
@@ -304,9 +332,9 @@ def password_login(request: Any, email: str, password: str) -> User:
     """
     Email + password sign-in.
 
-    Raises `InvalidCredentials`, or `EmailNotVerified` when the password is
-    right but the account is still unverified (a fresh sign-up code is sent,
-    unless the cooldown / hourly cap says not yet).
+    Raises `InvalidCredentials`, `AccountPaused` (right password, blocked by staff), or
+    `EmailNotVerified` when the password is right but the account is still unverified (a fresh
+    sign-up code is sent, unless the cooldown / hourly cap says not yet).
     """
     email = otp.normalise_email(email)
     user = authenticate(request, email=email, password=password)
@@ -315,6 +343,8 @@ def password_login(request: Any, email: str, password: str) -> User:
         track("auth.login", {"method": "password"}, actor_email=email, ref=user)
         return user
     pending = User.objects.filter(email__iexact=email).first()
+    if is_paused(pending) and pending.check_password(password):
+        raise AccountPaused()
     if pending is not None and pending.is_pending_verification and pending.check_password(password):
         try:
             with transaction.atomic():
@@ -331,10 +361,12 @@ def request_login_code(email: str, ip: str | None) -> None:
 
 
 def login_with_code(email: str, code: str) -> User:
-    """Sign in with an emailed code. Raises `InvalidCode`."""
+    """Sign in with an emailed code. Raises `InvalidCode` or `AccountPaused`."""
     if not otp.verify_code(email, OneTimeCode.Purpose.LOGIN, code):
         raise InvalidCode()
     user = User.objects.filter(email__iexact=otp.normalise_email(email)).first()
+    if is_paused(user):
+        raise AccountPaused()
     if user is None or not user.is_active:
         raise InvalidCode()
     _mark_email_verified(user)
@@ -372,6 +404,7 @@ def reset_password(email: str, code: str, new_password: str) -> User:
         Token.objects.filter(user=user).delete()
         update_last_login(None, user)
         transaction.on_commit(lambda: track("auth.password_reset", {}, actor_email=user.email, ref=user))
+        transaction.on_commit(lambda: send_password_changed(user, via_reset=True))
     return user
 
 
@@ -398,6 +431,33 @@ def change_password(user: User, current_password: str, new_password: str) -> Use
         user.save(update_fields=["password"])
         Token.objects.filter(user=user).delete()
         transaction.on_commit(lambda: track("auth.password_changed", {}, actor_email=user.email, ref=user))
+        transaction.on_commit(lambda: send_password_changed(user, via_reset=False))
+    return user
+
+
+def send_password_changed(user: User, via_reset: bool) -> None:
+    """Security notice after a reset or change (J2-04): when, and a reset link if it wasn't them."""
+    notify(
+        "email",
+        user.email,
+        "password_changed",
+        {
+            "first_name": _first_name(user),
+            "email": user.email,
+            "via_reset": via_reset,
+            "changed_at": timezone.now(),
+            "reset_url": f"{settings.ZINWE_APP_URL}/forgot-password",
+        },
+        ref=user,
+    )
+
+
+@transaction.atomic
+def mark_tour_done(user: User) -> User:
+    """The dashboard tour was finished or skipped: never show it again on this account."""
+    if user.tour_done_at is None:
+        user.tour_done_at = timezone.now()
+        user.save(update_fields=["tour_done_at"])
     return user
 
 

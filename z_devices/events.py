@@ -16,6 +16,11 @@ from typing import Any
 USB_CONNECTED = "usb.connected"
 USB_BLOCKED = "usb.blocked"
 USB_POLICY_APPLIED = "usb.policy_applied"
+# A big USB copy auto-switched the PC to USB read-only (policy usb_lockdown), and the agent's
+# confirmation that it went back to the normal rule after the owner pressed "Restore USB".
+USB_LOCKED_DOWN = "data.usb_locked_down"
+USB_RESTORED = "usb.restored"
+WEB_BLOCKLIST_APPLIED = "web.blocklist_applied"
 
 # Same wording as the dashboard's rule picker.
 USB_MODE_LABELS = {"allow": "Allow", "read_only": "Read-only", "block": "Block"}
@@ -55,11 +60,40 @@ def _usb_policy_applied(data: Mapping[str, Any], host: str) -> str:
     return title
 
 
+def _usb_locked_down(data: Mapping[str, Any], host: str) -> str:
+    return f"USB switched to read-only on {host} after a large copy"
+
+
+def _usb_restored(data: Mapping[str, Any], host: str) -> str:
+    return f"USB is back to the normal rule on {host}"
+
+
+def _web_blocklist_applied(data: Mapping[str, Any], host: str) -> str:
+    return f"Website rules are now active on {host}"
+
+
 _BUILDERS: dict[str, Callable[[Mapping[str, Any], str], str]] = {
     USB_CONNECTED: _usb_connected,
     USB_BLOCKED: _usb_blocked,
     USB_POLICY_APPLIED: _usb_policy_applied,
+    USB_LOCKED_DOWN: _usb_locked_down,
+    USB_RESTORED: _usb_restored,
+    WEB_BLOCKLIST_APPLIED: _web_blocklist_applied,
 }
+
+# Rule confirmations ("the PC now enforces your rule"), not risks: flagged kind "confirmation" and kept out of
+# alert lists and counts (J5-01). Everything else is an "alert".
+KIND_ALERT = "alert"
+KIND_CONFIRMATION = "confirmation"
+CONFIRMATION_TYPES = frozenset({WEB_BLOCKLIST_APPLIED, USB_POLICY_APPLIED, USB_RESTORED})
+
+
+def is_confirmation(event_type: str) -> bool:
+    return event_type in CONFIRMATION_TYPES or (event_type or "").endswith(".policy_applied")
+
+
+def event_kind(event_type: str) -> str:
+    return KIND_CONFIRMATION if is_confirmation(event_type) else KIND_ALERT
 
 
 def build_title(event_type: str, data: Any, hostname: str) -> str:

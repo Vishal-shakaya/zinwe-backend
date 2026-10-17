@@ -1,1 +1,1 @@
-{{ company }} added you to Zinwe — connect your PC
+{% autoescape off %}{% if new_id %}Your new Zinwe Member ID from {{ company }}{% else %}{{ company }} added you to Zinwe — connect your PC{% endif %}{% endautoescape %}

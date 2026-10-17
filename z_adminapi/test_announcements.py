@@ -122,10 +122,11 @@ class UpgradeBarTests(AdminApiTestCase):
     def test_says_what_the_next_plan_adds(self) -> None:
         give_plan(self.owner, "startups")
         bar = self.upgrade()
-        self.assertEqual(bar["title"], "Upgrade to Businesses")
-        self.assertIn("work hours", bar["body"])
-        self.assertIn("50 PCs", bar["body"])
-        self.assertEqual(bar["cta_href"], "/app/upgrade?plan=businesses")
+        # The next plan up is Teams (0024, between Startups and Businesses).
+        self.assertEqual(bar["title"], "Upgrade to Teams")
+        # Every plan has every feature (0022): the bar says what's bigger.
+        self.assertEqual(bar["body"], "You're on Startups. Teams covers up to 25 PCs and 180 days of history.")
+        self.assertEqual(bar["cta_href"], "/app/upgrade?plan=teams")
 
     def test_full_pc_slots_say_so(self) -> None:
         for n in range(3):  # Free forever: 3 PCs

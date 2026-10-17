@@ -1,10 +1,11 @@
 {% autoescape off %}Hi {{ first_name }},
 
-We checked the payment you reported for the {{ plan.name }} plan ({{ payment.amount_inr }} {{ payment.currency }}, reference {{ payment.reference }}), but we couldn't confirm it.
+We checked the {{ amount_text }} payment you reported for {% if is_upgrade %}the upgrade to {{ plan.name }}{% elif is_renewal %}renewing {{ plan.name }}{% else %}the {{ plan.name }} plan{% endif %}{% if reference %} (reference {{ reference }}){% endif %}, but we couldn't confirm it.
 
 Reason: {{ reason }}
 
-Your plan is still waiting for payment. You can send the details again from the billing page in your dashboard.
+{% if plan_active %}Your {{ current_plan.name }} plan keeps running as before. {% else %}Your {{ plan.name }} plan starts once we've confirmed a payment. {% endif %}Please send the receipt again from Billing:
+{{ billing_url }}
 
 If you think this is a mistake, just reply to this email.
 

@@ -4,6 +4,8 @@ Here is your code to set a new Zinwe password:
 
     {{ code }}
 
+Enter it on the reset page: {{ reset_url }}
+
 It expires in {{ minutes }} minutes. Don't share it with anyone: Zinwe will never ask you for it.
 
 Didn't request this? You can safely ignore this email.

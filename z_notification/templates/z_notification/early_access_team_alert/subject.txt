@@ -1,1 +1,1 @@
-{% autoescape off %}New early-access sign-up: {{ registration.company }} ({{ registration.team_size }}){% endautoescape %}
+{% autoescape off %}Setup call request: {{ registration.company }} ({{ registration.team_size }}){% endautoescape %}

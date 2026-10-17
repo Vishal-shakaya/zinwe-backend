@@ -6,7 +6,7 @@
 {% if message.body %}
 {{ message.body }}
 {% endif %}
-You'll also see it in the Zinwe widget on your work PC, where you can reply.
+{% if in_widget %}You'll also see it in the Zinwe widget on your work PC, where you can reply.{% else %}To reply, open the Zinwe widget on your work PC.{% endif %}
 
 Sent by Zinwe for {{ company }}
 SKYTECHNO, New Delhi

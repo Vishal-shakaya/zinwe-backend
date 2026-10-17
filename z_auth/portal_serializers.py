@@ -18,6 +18,55 @@ from .models import Company, Feedback, ManualPayment, Plan, Subscription
 from .serializers import PICK_ONE, REQUIRED_MESSAGES, PlanSerializer, StrippedChoiceField
 
 GSTIN_RE = re.compile(r"^\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]$")
+GSTIN_EXAMPLE = "07ABCDE1234F1Z5"  # the field's placeholder: never a real customer's GSTIN (J2-01)
+
+# GST state codes (a GSTIN's first two digits) by the state names the company form uses. Some states have
+# two: Andhra Pradesh (28 before 2014, 37 after), Dadra and Nagar Haveli and Daman and Diu (25 and 26,
+# merged in 2020) and Ladakh (38, earlier 01 under Jammu and Kashmir). Same table as the website's.
+GST_STATE_CODES: dict[str, tuple[str, ...]] = {
+    "Jammu and Kashmir": ("01",), "Himachal Pradesh": ("02",), "Punjab": ("03",), "Chandigarh": ("04",),
+    "Uttarakhand": ("05",), "Haryana": ("06",), "Delhi": ("07",), "Rajasthan": ("08",),
+    "Uttar Pradesh": ("09",), "Bihar": ("10",), "Sikkim": ("11",), "Arunachal Pradesh": ("12",),
+    "Nagaland": ("13",), "Manipur": ("14",), "Mizoram": ("15",), "Tripura": ("16",), "Meghalaya": ("17",),
+    "Assam": ("18",), "West Bengal": ("19",), "Jharkhand": ("20",), "Odisha": ("21",),
+    "Chhattisgarh": ("22",), "Madhya Pradesh": ("23",), "Gujarat": ("24",),
+    "Dadra and Nagar Haveli and Daman and Diu": ("26", "25"), "Maharashtra": ("27",), "Karnataka": ("29",),
+    "Goa": ("30",), "Lakshadweep": ("31",), "Kerala": ("32",), "Tamil Nadu": ("33",), "Puducherry": ("34",),
+    "Andaman and Nicobar Islands": ("35",), "Telangana": ("36",), "Andhra Pradesh": ("37", "28"),
+    "Ladakh": ("38", "01"),
+}
+
+
+def _state_key(name: str) -> str:
+    return " ".join((name or "").lower().replace("&", "and").replace("nct of", "").split())
+
+
+_CODES_BY_STATE = {_state_key(k): (k, v) for k, v in GST_STATE_CODES.items()}
+
+
+def gstin_state(gstin: str) -> str | None:
+    """The state a GSTIN was issued in (its first two digits), or None."""
+    code = gstin[:2]
+    for state, codes in GST_STATE_CODES.items():
+        if code in codes:
+            return state
+    return None
+
+
+def gstin_state_error(gstin: str, state: str) -> str | None:
+    """A message when the GSTIN wasn't issued in the company's (Indian) state; None when it fits or is unknown."""
+    if not gstin:
+        return None
+    known = _CODES_BY_STATE.get(_state_key(state))
+    if known is None:
+        return None
+    name, codes = known
+    if gstin[:2] in codes:
+        return None
+    issued_in = gstin_state(gstin)
+    if issued_in:
+        return f"This GSTIN is from {issued_in}, but you picked {name}. Check the GSTIN or the state."
+    return f"This GSTIN doesn't match {name}: GSTINs from {name} start with {codes[0]}."
 CHOICE_MESSAGES = {"required": PICK_ONE, "blank": PICK_ONE, "null": PICK_ONE, "invalid_choice": PICK_ONE}
 
 
@@ -63,7 +112,23 @@ class CompanySerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 "Enter a valid 15-character GSTIN, e.g. 07ABCDE1234F1Z5."
             )
+        if value == GSTIN_EXAMPLE:
+            raise serializers.ValidationError("That's the example GSTIN. Enter your own, or leave this empty.")
         return value
+
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        """The GSTIN's first two digits must be the company's state's GST code (it decides CGST+SGST vs IGST)."""
+        instance = getattr(self, "instance", None)
+        gstin = attrs.get("gstin", instance.gstin if instance else "")
+        state = attrs.get("state", instance.state if instance else "")
+        country = attrs.get("country", instance.country if instance else "India")
+        from .pricing import INDIA_NAMES
+
+        if gstin and (country or "").strip().lower() in INDIA_NAMES:
+            message = gstin_state_error(gstin, state)
+            if message:
+                raise serializers.ValidationError({"gstin": [message]})
+        return attrs
 
     def validate_website(self, value: str) -> str:
         value = (value or "").strip()
@@ -87,9 +152,17 @@ class CompanySerializer(serializers.ModelSerializer):
 
 class PaymentSerializer(serializers.ModelSerializer):
     has_proof = serializers.SerializerMethodField()
-    plan_name = serializers.CharField(source="subscription.plan.name", read_only=True)
+    # The plan this payment was for, as quoted when it was made (not the subscription's plan today: an
+    # upgraded subscription would relabel its old payments).
+    plan_name = serializers.SerializerMethodField()
     upgrade_plan_name = serializers.CharField(source="upgrade_plan.name", read_only=True, default=None)
     invoice_number = serializers.SerializerMethodField()
+
+    def get_plan_name(self, payment: ManualPayment) -> str:
+        due_name = (payment.due or {}).get("plan_name")
+        if due_name:
+            return due_name
+        return (payment.upgrade_plan or payment.subscription.plan).name
 
     class Meta:
         model = ManualPayment

@@ -85,3 +85,24 @@ class StaffTicketDetailSerializer(StaffTicketSerializer):
 
     class Meta(StaffTicketSerializer.Meta):
         fields = [*StaffTicketSerializer.Meta.fields, "messages"]
+
+
+class ContactSerializer(serializers.Serializer):
+    """The public website contact form: POST /api/contact/."""
+
+    name = serializers.CharField(max_length=120, error_messages=REQUIRED)
+    email = serializers.EmailField(
+        max_length=254, error_messages={**REQUIRED, "invalid": "Enter a valid email address."},
+    )
+    company = serializers.CharField(max_length=160, required=False, allow_blank=True, default="")
+    phone = serializers.CharField(max_length=32, required=False, allow_blank=True, default="")
+    topic = serializers.CharField(max_length=80, required=False, allow_blank=True, default="")
+    message = serializers.CharField(max_length=4000, error_messages=REQUIRED)
+
+    def validate_email(self, value: str) -> str:
+        value = value.strip().lower()
+        domain = value.rsplit("@", 1)[-1]
+        if "." not in domain or domain.endswith(".") or domain.startswith("."):
+            # "rohit@kulkarni" passes the generic email check, but our reply could never arrive (J1-05).
+            raise serializers.ValidationError("Check your email address: it needs a domain like .com or .in.")
+        return value

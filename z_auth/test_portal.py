@@ -134,9 +134,17 @@ class CompanyTests(PortalTestCase):
         self.assertEqual(bad.json(), {"gstin": ["Enter a valid 15-character GSTIN, e.g. 07ABCDE1234F1Z5."]})
         short = self.post(COMPANY_URL, {**COMPANY, "gstin": "07ABCDE1234"})
         self.assertIn("gstin", short.json())
-        ok = self.post(COMPANY_URL, {**COMPANY, "gstin": " 07abcde1234f1z5 "})
+        example = self.post(COMPANY_URL, {**COMPANY, "gstin": "07ABCDE1234F1Z5"})  # the field's placeholder
+        self.assertEqual(example.json(), {"gstin": ["That's the example GSTIN. Enter your own, or leave this empty."]})
+        # J2-01: a Delhi (07) GSTIN with the state set to Maharashtra.
+        other_state = self.post(COMPANY_URL, {**COMPANY, "state": "Maharashtra", "gstin": "07AAACV1234K1Z9"})
+        self.assertEqual(
+            other_state.json(),
+            {"gstin": ["This GSTIN is from Delhi, but you picked Maharashtra. Check the GSTIN or the state."]},
+        )
+        ok = self.post(COMPANY_URL, {**COMPANY, "gstin": " 07aaacv1234k1z9 "})
         self.assertEqual(ok.status_code, status.HTTP_201_CREATED, ok.content)
-        self.assertEqual(ok.json()["gstin"], "07ABCDE1234F1Z5")
+        self.assertEqual(ok.json()["gstin"], "07AAACV1234K1Z9")
 
     def test_website_rules(self) -> None:
         bad = self.post(COMPANY_URL, {**COMPANY, "website": "not a site"})
@@ -148,12 +156,16 @@ class CompanyTests(PortalTestCase):
 
     def test_patch(self) -> None:
         self.post(COMPANY_URL, COMPANY)
-        response = self.patch(COMPANY_URL, {"name": "Verma Fabrics", "gstin": "07ABCDE1234F1Z5"})
+        response = self.patch(COMPANY_URL, {"name": "Verma Fabrics", "gstin": "07AAACV1234K1Z9"})
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.json()["name"], "Verma Fabrics")
         self.assertEqual(response.json()["city"], "New Delhi")  # untouched
         self.user.refresh_from_db()
         self.assertEqual(self.user.company, "Verma Fabrics")
+        # Moving the company to another state with the Delhi GSTIN still on it is refused (checked on PATCH too).
+        moved = self.patch(COMPANY_URL, {"state": "Karnataka"})
+        self.assertEqual(moved.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("from Delhi", moved.json()["gstin"][0])
 
         bad = self.patch(COMPANY_URL, {"name": "", "gstin": "nope"})
         self.assertEqual(bad.status_code, status.HTTP_400_BAD_REQUEST)
@@ -183,24 +195,29 @@ class PlanListTests(PortalTestCase):
         response = self.get(PLANS_URL)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         plans = {p["code"]: p for p in response.json()}
-        self.assertEqual(list(plans), ["free", "startups", "businesses"])
+        self.assertEqual(list(plans), ["free", "startups", "teams", "businesses"])
         self.assertEqual(
             plans["businesses"],
             {
                 "code": "businesses", "name": "Businesses", "tagline": plans["businesses"]["tagline"],
                 "price_inr_monthly": "2834.00", "list_price_inr_monthly": "4049.00", "discount_percent": 30,
                 "price_usd_monthly": "34.00", "list_price_usd_monthly": "48.00", "quote": plans["businesses"]["quote"],
-                "trial_days": 0, "max_devices": 50,
+                "trial_days": 0, "max_devices": 50, "history_days": 365,
                 "features": plans["businesses"]["features"], "modules": plans["businesses"]["modules"],
                 "is_recommended": True,
                 "requires_payment": True, "sort_order": 30, "trial_available": False,
+                "gst_charged": plans["businesses"]["gst_charged"],
             },
+        )
+        self.assertEqual(
+            {code: p["history_days"] for code, p in plans.items()},
+            {"free": 7, "startups": 90, "teams": 180, "businesses": 365},
         )
         self.assertTrue(plans["businesses"]["tagline"])
         # Free forever is the free way in: no plan offers a time-limited trial.
-        self.assertEqual([p["trial_days"] for p in plans.values()], [0, 0, 0])
+        self.assertEqual([p["trial_days"] for p in plans.values()], [0, 0, 0, 0])
         self.assertNotIn("First 3 months free", plans["businesses"]["features"])
-        self.assertEqual(len(plans["businesses"]["features"]), 5)
+        self.assertEqual(len(plans["businesses"]["features"]), 4)
         self.assertEqual(plans["free"]["name"], "Free forever")
         self.assertEqual(plans["free"]["max_devices"], 3)
         self.assertFalse(plans["free"]["requires_payment"])
@@ -274,9 +291,10 @@ class SubscriptionTests(PortalTestCase):
             set(body["instructions"]),
             {
                 "upi_id", "payee_name", "bank_name", "account_type", "account_number", "ifsc", "paypal_url", "note",
-                "region", "currency", "skydo", "payment_link", "upi_qr_svg",
+                "region", "currency", "skydo", "payment_link", "upi_qr_svg", "upi_uri",
             },
         )
+        self.assertEqual(body["instructions"]["upi_uri"], "")  # nothing due
 
     @override_settings(
         ZINWE_PAYMENT_INSTRUCTIONS={
@@ -503,12 +521,23 @@ class PaymentTests(MediaMixin, PortalTestCase):
         self.assertRegex(payment.proof.name, rf"^payments/{now:%Y}/{now:%m}/[0-9a-f]{{32}}\.png$")
         self.assertTrue((Path(self.media) / payment.proof.name).exists())
 
-        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(len(mail.outbox), 2)
         alert = mail.outbox[0]
         self.assertEqual(alert.to, [TEAM])
         self.assertIn("Verma Textiles", alert.subject)
         self.assertIn("UTR123456", alert.body)
         self.assertTrue(Event.objects.filter(name="payment.submitted").exists())
+        # J3-04: the owner hears we've got the receipt, with the amount and a Billing link.
+        receipt = mail.outbox[1]
+        self.assertEqual(receipt.to, ["owner@acme.in"])
+        self.assertEqual(receipt.subject, "We've got your receipt for ₹971.00")
+        self.assertIn("UPI", receipt.body)
+        self.assertIn("/app/settings/billing", receipt.body)
+        self.assertIn("please don't pay again", receipt.body)
+        # The receipt's hash is stored, for spotting the same receipt sent twice.
+        import hashlib
+
+        self.assertEqual(payment.proof_sha256, hashlib.sha256(PNG).hexdigest())
 
         me = self.get(ME).json()
         self.assertEqual(me["onboarding"], {"step": "payment_review", "has_company": True, "subscription_status": "pending_payment"})

@@ -104,8 +104,10 @@ class PublicImageView(APIView):
 def sitemap(request: Request) -> HttpResponse:
     """GET /api/blog/sitemap.xml -- the blog index + every published article, for search engines."""
     base = settings.ZINWE_APP_URL
-    urls = [(f"{base}/blog", timezone.now())]
-    urls += [(f"{base}/blog/{a.slug}", a.updated_at) for a in services.published()]
+    articles = list(services.published())
+    # The index changes when an article does (not on every request), so its lastmod is the newest article's.
+    urls = [(f"{base}/blog", max((a.updated_at for a in articles), default=timezone.now()))]
+    urls += [(f"{base}/blog/{a.slug}", a.updated_at) for a in articles]
     body = "".join(
         f"<url><loc>{escape(loc)}</loc><lastmod>{when:%Y-%m-%d}</lastmod></url>" for loc, when in urls
     )

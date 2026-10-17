@@ -1,13 +1,11 @@
 {% autoescape off %}Hi {{ first_name }},
 
-Thanks for signing up for Zinwe early access. Your spot is reserved.
+Thanks for booking a free setup call. Someone from Zinwe will call or email you within one working day to pick a time that suits you, and set Zinwe up with you on the {{ platforms_text|default:"computers" }} at {{ company }}. Most teams are running in under an hour.
 
-What you get: Zinwe free forever for up to 3 PCs at {{ company }}, with setup done with you.
+You don't have to wait for the call: Zinwe is live, and Free forever covers up to 3 PCs with no payment. Start free now:
+{{ signup_url }}
 
-What happens next:
-1. We are letting teams in a few at a time. We'll email you here when your workspace is ready.
-2. You'll get a short setup guide for your {{ platforms_text|default:"computers" }}. Most teams are running in under an hour.
-3. Need more than 3 PCs? Upgrade any time from your dashboard.
+Need more than 3 PCs? Upgrade any time from your dashboard.
 
 Questions? Just reply to this email.
 

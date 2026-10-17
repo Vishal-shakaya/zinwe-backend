@@ -1,0 +1,12 @@
+{% autoescape off %}Hi {{ first_name }},
+
+The password for your Zinwe account ({{ email }}) was {% if via_reset %}reset with an emailed code{% else %}changed from your dashboard{% endif %} on {{ changed_at|date:"j M Y, g:i A" }} (India time). Every other device was signed out.
+
+If this was you, there's nothing to do.
+
+Wasn't you? Set a new password now and reply to this email so we can help:
+{{ reset_url }}
+
+The Zinwe team
+SKYTECHNO, New Delhi
+{% endautoescape %}
