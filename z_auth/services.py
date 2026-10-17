@@ -59,6 +59,7 @@ def register_early_access(
     email = data["email"].strip().lower()
 
     existing = EAR.objects.filter(email__iexact=email).first()
+    _record_setup_call(data, email, ip, user_agent, repeat=existing is not None)
     if existing is not None:
         _schedule_duplicate_tracking(existing)
         return existing, False
@@ -90,6 +91,23 @@ def register_early_access(
 
     transaction.on_commit(lambda: _after_early_access_created(registration))
     return registration, True
+
+
+def _record_setup_call(data: dict[str, Any], email: str, ip: str | None, user_agent: str, repeat: bool) -> None:
+    """Every "Book a setup call" submission (repeats too: they still want the call) goes to admin -> Forms."""
+    from z_forms.kinds import SETUP_CALL
+    from z_forms.services import record_submission
+
+    record_submission(
+        SETUP_CALL, name=data["name"], email=email, company=data.get("company") or "", phone=data.get("phone") or "",
+        details={
+            "team_size": data.get("team_size") or "",
+            "platforms": [PLATFORM_LABELS.get(p, p) for p in data.get("platforms") or []],
+            "concerns": [CONCERN_LABELS.get(c, c) for c in data.get("concerns") or []],
+            "booked_before": repeat,
+        },
+        ip=ip, user_agent=user_agent,
+    )
 
 
 def _schedule_duplicate_tracking(registration: EAR) -> None:

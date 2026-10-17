@@ -79,6 +79,7 @@ INSTALLED_APPS = [
     "z_adminapi",
     "z_support",
     "z_blog",
+    "z_forms",
 ]
 
 MIDDLEWARE = [

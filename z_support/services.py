@@ -10,6 +10,8 @@ from django.db.models import Count, Q, QuerySet
 
 from z_analytics.services import track
 from z_auth.models import User
+from z_forms.kinds import CONTACT
+from z_forms.services import record_submission
 from z_notification.services import notify
 
 from .models import SupportMessage, SupportTicket
@@ -141,8 +143,8 @@ def _tell_owner(ticket: SupportTicket, message: SupportMessage) -> None:
 
 def send_contact_message(data: dict, ip: str | None = None, user_agent: str = "") -> None:
     """
-    A visitor wrote to us from the website contact form (J1-01): email the team inbox (reply-to = the
-    visitor, so "Reply" answers them) and send the visitor a short "we got your message". Never raises.
+    A visitor wrote to us from the website contact form (J1-01): store it for admin -> Forms, email the team
+    inbox (reply-to = the visitor, so "Reply" answers them) and send the visitor a short "we got your message".
     """
     context = {
         "name": data["name"],
@@ -155,6 +157,10 @@ def send_contact_message(data: dict, ip: str | None = None, user_agent: str = ""
         "ip": ip or "",
         "user_agent": user_agent,
     }
+    record_submission(
+        CONTACT, name=data["name"], email=data["email"], company=context["company"], phone=context["phone"],
+        subject=context["topic"], message=data["message"], ip=ip, user_agent=user_agent,
+    )
 
     def _send() -> None:
         track("contact.sent", {"topic": context["topic"]}, actor_email=data["email"])

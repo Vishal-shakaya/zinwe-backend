@@ -221,7 +221,7 @@ class SendPasswordResetView(StaffView):
 
 
 class BadgesView(StaffView):
-    """GET /api/admin/badges/ -- {payments_waiting, support_waiting} for the sidebar."""
+    """GET /api/admin/badges/ -- {payments_waiting, support_waiting, forms_new} for the sidebar."""
 
     def get(self, request: Request) -> Response:
         return Response(services.badges())

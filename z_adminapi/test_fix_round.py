@@ -229,7 +229,7 @@ class HelperEndpointTests(SubscriberFixture):
     def test_badges(self) -> None:
         self._pending_with_payment()
         body = self.client.get("/api/admin/badges/").json()
-        self.assertEqual(body, {"payments_waiting": 1, "support_waiting": 0})
+        self.assertEqual(body, {"payments_waiting": 1, "support_waiting": 0, "forms_new": 0})
         self.assertIn("support_waiting", self.client.get("/api/admin/metrics/").json()["totals"])
 
     @override_settings(ZINWE_INVOICE_SELLER={"gstin": ""})
