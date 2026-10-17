@@ -8,7 +8,9 @@ from django.test import TestCase, override_settings
 
 PAGES_XML = (
     '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
-    "  <url><loc>https://zinwe.io/</loc></url>\n  <url><loc>https://zinwe.io/plans</loc></url>\n</urlset>\n"
+    "  <url><loc>https://zinwe.io/</loc><lastmod>2026-10-01</lastmod></url>\n"
+    "  <url><loc>https://zinwe.io/plans</loc><lastmod>2026-10-01</lastmod></url>\n"
+    "  <url><loc>https://zinwe.io/blog</loc><lastmod>2026-10-01</lastmod></url>\n</urlset>\n"
 )
 
 PROD = {"ZINWE_SEARCH_INDEXING": True, "ZINWE_APP_URL": "https://zinwe.io", "ALLOWED_HOSTS": ["*"]}
@@ -49,16 +51,28 @@ class SeoFilesTests(TestCase):
 
     # --- sitemaps ----------------------------------------------------------------
 
-    def test_sitemap_index_lists_pages_and_the_blog_once_it_has_an_article(self) -> None:
+    def test_sitemap_lists_every_page_and_published_article_in_one_file(self) -> None:
         with override_settings(**PROD, ZINWE_FRONTEND_INDEX=self.index):
-            body = self.client.get("/sitemap.xml").content.decode()
-            self.assertIn("<sitemapindex", body)
-            self.assertIn("<loc>https://zinwe.io/sitemap-pages.xml</loc>", body)
-            self.assertNotIn("/api/blog/sitemap.xml", body)  # no published article yet
+            response = self.client.get("/sitemap.xml")
+            body = response.content.decode()
+            self.assertEqual(response["Content-Type"], "application/xml")
+            self.assertIn("<urlset", body)
+            self.assertNotIn("<sitemapindex", body)
+            for page in ("https://zinwe.io/", "https://zinwe.io/plans", "https://zinwe.io/blog"):
+                self.assertIn(f"<loc>{page}</loc>", body)
+            self.assertEqual(body.count("<url>"), 3)  # no article yet
 
             self._publish_article()
             body = self.client.get("/sitemap.xml").content.decode()
-            self.assertIn("<loc>https://zinwe.io/api/blog/sitemap.xml</loc>", body)
+            self.assertEqual(body.count("<loc>https://zinwe.io/blog</loc>"), 1)  # listed once, not twice
+            self.assertRegex(body, r"<loc>https://zinwe.io/blog/[-a-z0-9]+</loc><lastmod>\d{4}-\d{2}-\d{2}</lastmod>")
+            self.assertEqual(body.count("<url>"), 4)
+
+    def test_sitemap_uses_this_environments_address(self) -> None:
+        with override_settings(ZINWE_APP_URL="https://dev.frontend.zinwe.io", ZINWE_FRONTEND_INDEX=self.index):
+            body = self.client.get("/sitemap.xml").content.decode()
+        self.assertIn("<loc>https://dev.frontend.zinwe.io/plans</loc>", body)
+        self.assertNotIn("https://zinwe.io/", body)
 
     def test_pages_sitemap_moves_to_this_environments_address(self) -> None:
         with override_settings(ZINWE_APP_URL="https://dev.frontend.zinwe.io", ZINWE_FRONTEND_INDEX=self.index):
@@ -74,7 +88,8 @@ class SeoFilesTests(TestCase):
             self.assertEqual(self.client.get("/sitemap-pages.xml").status_code, 404)
             response = self.client.get("/sitemap.xml")
         self.assertEqual(response.status_code, 200)
-        self.assertNotIn("sitemap-pages.xml", response.content.decode())
+        self.assertIn("<urlset", response.content.decode())
+        self.assertEqual(response.content.decode().count("<url>"), 0)
 
     def _publish_article(self) -> None:
         from django.utils import timezone

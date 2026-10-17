@@ -6,18 +6,20 @@ dev server proxies them.
 - robots.txt: on the production portal host (ZINWE_SEARCH_INDEXING), public pages are open and the signed-in
   app, onboarding, personal links and the API are not. Everywhere else (local, dev, the admin and API hosts)
   everything is closed.
-- sitemap.xml: a sitemap index -> the website's pages (sitemap-pages.xml) and, once an article is published,
-  the blog's own sitemap (/api/blog/sitemap.xml).
+- sitemap.xml: ONE list of every public URL: all the website's pages (from the frontend build's
+  sitemap-pages.xml, which build/seoPages.ts checks against the app's routes) plus every published blog
+  article. /blog's lastmod is the newest article's when that's later than the build.
 - sitemap-pages.xml: the file the frontend build writes next to index.html (build/seoPages.ts), with its URLs
-  moved onto this environment's own address.
+  moved onto this environment's own address (kept for reference; sitemap.xml already includes it).
 """
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone as dt_timezone
+import re
+from datetime import date
 from pathlib import Path
 from urllib.parse import urlsplit
-from xml.sax.saxutils import escape
+from xml.sax.saxutils import escape, unescape
 
 from django.conf import settings
 from django.http import HttpRequest, HttpResponse, HttpResponseNotFound
@@ -69,6 +71,44 @@ def pages_file() -> Path:
     return Path(settings.ZINWE_FRONTEND_INDEX).with_name("sitemap-pages.xml")
 
 
+# One <url> of the build's sitemap: our own generated file, so a plain pattern is enough (no XML parser).
+_URL_RE = re.compile(r"<url>\s*<loc>([^<]+)</loc>(?:\s*<lastmod>([^<]+)</lastmod>)?", re.S)
+
+
+def frontend_pages() -> list[tuple[str, date | None]]:
+    """(URL on this environment's address, lastmod) for every page in the frontend build's sitemap."""
+    try:
+        xml = pages_file().read_text(encoding="utf-8")
+    except OSError:
+        log.warning("sitemap: %s is missing (frontend not built?)", pages_file())
+        return []
+    pages: list[tuple[str, date | None]] = []
+    for loc, lastmod in _URL_RE.findall(xml):
+        url = unescape(loc.strip())
+        if url.startswith(BUILD_SITE_URL):
+            url = settings.ZINWE_APP_URL + url[len(BUILD_SITE_URL):]
+        try:
+            when = date.fromisoformat(lastmod.strip()[:10]) if lastmod else None
+        except ValueError:
+            when = None
+        pages.append((url, when))
+    return pages
+
+
+def sitemap_urls() -> list[tuple[str, date | None]]:
+    """Every public URL: the website's pages, then the published blog articles (newest first)."""
+    base = settings.ZINWE_APP_URL
+    urls: dict[str, date | None] = dict(frontend_pages())
+    articles = list(blog.published().order_by("-updated_at"))
+    if articles:
+        newest = articles[0].updated_at.date()
+        index = f"{base}/blog"
+        urls[index] = max(filter(None, [urls.get(index), newest]))
+        for article in articles:
+            urls[f"{base}/blog/{article.slug}"] = article.updated_at.date()
+    return list(urls.items())
+
+
 @require_GET
 @cache_control(public=True, max_age=3600)
 def robots_txt(request: HttpRequest) -> HttpResponse:
@@ -79,21 +119,12 @@ def robots_txt(request: HttpRequest) -> HttpResponse:
 @require_GET
 @cache_control(public=True, max_age=3600)
 def sitemap_index(request: HttpRequest) -> HttpResponse:
-    """GET /sitemap.xml -- the website's pages, plus the blog once it has an article."""
-    base = settings.ZINWE_APP_URL
-    entries: list[tuple[str, datetime]] = []
-    pages = pages_file()
-    if pages.is_file():
-        entries.append((f"{base}/sitemap-pages.xml", datetime.fromtimestamp(pages.stat().st_mtime, tz=dt_timezone.utc)))
-    else:
-        log.warning("sitemap: %s is missing (frontend not built?)", pages)
-    latest = blog.published().order_by("-updated_at").values_list("updated_at", flat=True).first()
-    if latest is not None:
-        entries.append((f"{base}/api/blog/sitemap.xml", latest))
-    body = "".join(
-        f"<sitemap><loc>{escape(loc)}</loc><lastmod>{when:%Y-%m-%d}</lastmod></sitemap>" for loc, when in entries
-    )
-    xml = f'<?xml version="1.0" encoding="UTF-8"?>\n<sitemapindex xmlns="{SITEMAP_NS}">{body}</sitemapindex>\n'
+    """GET /sitemap.xml -- every public URL in one list: the website's pages + published blog articles."""
+    lines = []
+    for loc, when in sitemap_urls():
+        lastmod = f"<lastmod>{when:%Y-%m-%d}</lastmod>" if when else ""
+        lines.append(f"  <url><loc>{escape(loc)}</loc>{lastmod}</url>")
+    xml = f'<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="{SITEMAP_NS}">\n' + "\n".join(lines) + "\n</urlset>\n"
     return HttpResponse(xml, content_type="application/xml")
 
 
