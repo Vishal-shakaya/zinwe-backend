@@ -1,8 +1,8 @@
 """
 "How are we doing?" emails (run by `manage.py send_feedback_requests`, or the `run_jobs` loop).
 
-The dashboard has no Feedback page in its menu any more: owners rate us from the sidebar
-modal, Help → Feedback, or the link in this email, which lands on `/app/feedback`. Each
+The dashboard has no Feedback page in its menu any more: owners rate us from the account
+menu's feedback modal, or the link in this email, which lands on `/app/feedback`. Each
 rating in the email is a one-tap link that opens the page with that score picked.
 
 Who gets one:
