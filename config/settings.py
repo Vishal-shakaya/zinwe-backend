@@ -344,6 +344,10 @@ ZINWE_FEEDBACK_REQUEST_EVERY_DAYS = 90
 # Early access now starts on Free forever (no time-limited trial since v1.2).
 ZINWE_EARLY_ACCESS_TRIAL_DAYS = 0
 # Agent heartbeat cadence; a device is "offline" after 3 missed beats.
+# Fictional email domains of demo accounts (z_main/demo.py, manage.py seed_demo_company): mail to them
+# is never delivered and they're left out of the admin dashboard's numbers.
+ZINWE_DEMO_EMAIL_DOMAINS = env_list("ZINWE_DEMO_EMAIL_DOMAINS", "kitecrestdigital.com")
+
 ZINWE_DEVICE_HEARTBEAT_SECONDS = 60
 ZINWE_DEVICE_OFFLINE_AFTER_SECONDS = 3 * ZINWE_DEVICE_HEARTBEAT_SECONDS
 # Where members download the Windows agent; included in the invite email when a member is added.

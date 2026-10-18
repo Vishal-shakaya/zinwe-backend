@@ -16,6 +16,7 @@ from django.conf import settings
 from django.template.loader import render_to_string
 from django.utils import timezone
 
+from z_main.demo import is_demo_email
 from z_main.refs import Ref, resolve_ref
 
 from .channels import get_channel
@@ -118,6 +119,14 @@ def notify(
             extra["attachments"] = attachments
         if reply_to:
             extra["reply_to"] = [r for r in reply_to if r]
+        if channel == "email" and is_demo_email(recipient):
+            # A demo account's made-up address (z_main/demo.py): logged, never delivered. Callers see
+            # "sent", so a demo's screens behave like the real thing.
+            notification.error = "Not delivered: demo address (ZINWE_DEMO_EMAIL_DOMAINS)."
+            notification.status = Notification.Status.SENT
+            notification.sent_at = timezone.now()
+            notification.save(update_fields=["subject", "body", "status", "sent_at", "error"])
+            return notification
         get_channel(channel).send(recipient, subject, body, html=html, **extra)
         notification.status = Notification.Status.SENT
         notification.sent_at = timezone.now()

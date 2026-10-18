@@ -45,6 +45,7 @@ from z_auth.models import (
 )
 from z_auth.services import activate_plan, request_password_reset, starts_as_trial
 from z_devices.models import Device, Member
+from z_main.demo import demo_email_q
 from z_main.refs import resolve_ref
 from z_notification.models import Notification
 from z_notification.services import notify
@@ -673,15 +674,14 @@ def feedback_summary() -> dict[str, Any]:
 
 
 def dashboard_metrics() -> dict[str, Any]:
-    """Headline numbers + simple time series for the admin dashboard charts."""
-    owners = User.objects.filter(is_staff=False)
+    """Headline numbers + simple time series for the admin dashboard charts (demo accounts left out)."""
+    owners = User.objects.filter(is_staff=False).exclude(demo_email_q())
     total_users = owners.count()
     verified_users = owners.filter(email_verified_at__isnull=False).count()
-    active_subs = Subscription.objects.filter(status=Status.ACTIVE).count()
-    trials = Subscription.objects.filter(status=Status.ACTIVE, is_trial=True).count()
-    paying = Subscription.objects.filter(
-        status=Status.ACTIVE, is_trial=False, amount_inr__gt=0
-    ).count()
+    subscriptions = Subscription.objects.exclude(demo_email_q("owner__email"))
+    active_subs = subscriptions.filter(status=Status.ACTIVE).count()
+    trials = subscriptions.filter(status=Status.ACTIVE, is_trial=True).count()
+    paying = subscriptions.filter(status=Status.ACTIVE, is_trial=False, amount_inr__gt=0).count()
     pending_payments = ManualPayment.objects.filter(status=PaymentStatus.SUBMITTED).count()
     revenue = ManualPayment.objects.filter(status=PaymentStatus.VERIFIED).aggregate(
         total=Sum("amount_inr")
@@ -762,6 +762,7 @@ def _signups_series(days: int) -> list[dict[str, Any]]:
     start_day = since.date()
     rows = (
         User.objects.filter(is_staff=False, date_joined__date__gte=start_day)
+        .exclude(demo_email_q())
         .annotate(day=TruncDate("date_joined"))
         .values("day")
         .annotate(count=Count("id"))
