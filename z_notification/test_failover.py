@@ -122,3 +122,42 @@ class NotifyThroughFailoverTests(TestCase):
             note = notify("email", "owner@acme.in", "otp_signup", {"first_name": "Asha", "code": "123456"})
         self.assertEqual(note.status, Notification.Status.SENT)
         self.assertEqual([c[0] for c in FakeSMTP.calls], [PRIMARY_HOST, FALLBACK_HOST])
+
+
+@FAILOVER
+@override_settings(ZINWE_NEWSLETTER_FROM="Zinwe <hello@zinwe.tech>", ZINWE_NEWSLETTER_REPLY_TO="hello@zinwe.io")
+class NewsletterSenderTests(TestCase):
+    """The blog newsletter: its own From domain, replies to the main inbox, never the backup Gmail account."""
+
+    def setUp(self) -> None:
+        backends.reset_pause()
+        FakeSMTP.calls, FakeSMTP.failing = [], set()
+        patcher = mock.patch.object(backends, "SMTPBackend", FakeSMTP)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(backends.reset_pause)
+
+    def test_confirm_email_comes_from_the_newsletter_domain(self) -> None:
+        from z_blog.newsletter import subscribe
+
+        subscribe("reader@acme.in", source="/blog")
+        self.assertEqual(FakeSMTP.calls, [(PRIMARY_HOST, "Zinwe <hello@zinwe.tech>", ["reader@acme.in"], ["hello@zinwe.io"])])
+
+    def test_newsletter_never_falls_back_to_gmail(self) -> None:
+        FakeSMTP.failing = {PRIMARY_HOST}
+        note = notify("email", "reader@acme.in", "newsletter_confirm", {"confirm_url": "https://zinwe.io/x"},
+                      from_email="Zinwe <hello@zinwe.tech>", fallback=False)
+        self.assertEqual(note.status, Notification.Status.FAILED)
+        self.assertEqual([c[0] for c in FakeSMTP.calls], [PRIMARY_HOST])
+
+    def test_newsletter_still_tries_the_primary_while_it_is_paused(self) -> None:
+        backends.pause_primary(600)
+        notify("email", "reader@acme.in", "newsletter_confirm", {"confirm_url": "https://zinwe.io/x"}, fallback=False)
+        self.assertEqual([c[0] for c in FakeSMTP.calls], [PRIMARY_HOST])
+
+    def test_other_email_keeps_the_default_sender_and_the_fallback(self) -> None:
+        FakeSMTP.failing = {PRIMARY_HOST}
+        with self.assertLogs("zinwe.notification.email", "WARNING"):
+            notify("email", "owner@acme.in", "otp_signup", {"first_name": "Asha", "code": "123456"})
+        self.assertEqual(FakeSMTP.calls[0][1], "Zinwe <hello@zinwe.io>")
+        self.assertEqual(FakeSMTP.calls[1][0], FALLBACK_HOST)

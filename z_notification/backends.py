@@ -88,6 +88,14 @@ class FailoverEmailBackend(BaseEmailBackend):
         return sent
 
     def _send_one(self, message: EmailMessage) -> bool:
+        if getattr(message, "primary_only", False):
+            # Bulk mail (the newsletter) goes through the primary or not at all: the backup is a personal Gmail
+            # account. Tried even while the primary is paused; a failure is raised so the caller can retry later.
+            if self.primary is None:
+                raise RuntimeError("No primary SMTP configured for a primary-only message")
+            if self.primary.send_messages([message]):
+                return True
+            raise RuntimeError("primary SMTP accepted no message")
         primary_error: Exception | None = None
         if self.primary is not None and not primary_paused():
             try:
