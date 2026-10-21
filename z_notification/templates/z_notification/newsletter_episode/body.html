@@ -22,14 +22,23 @@
         <a href="{{ episode_url }}" style="display:inline-block;padding:15px 30px;background:#C8102E;color:#ffffff;border-radius:3px;font-weight:700;font-size:15px;letter-spacing:1px;text-decoration:none;">READ THE FULL CASE FILE</a>
         <p style="margin:12px 0 0;font-size:13px;color:#6b7280;">{{ article.reading_minutes }} min read{% if files %} · includes {{ files|join:", " }}{% endif %}</p>
       </div>
+      <div style="padding:0 32px 22px;font-size:14px;line-height:1.6;color:#374151;">
+        {% if next_episode %}<p style="margin:0 0 10px;"><b style="color:#111827;">Next{% if next_day %}, {{ next_day|date:"l" }} morning{% endif %}:</b> Episode {{ next_episode.episode|stringformat:"02d" }} · {{ next_episode.title }}.{% if is_first %} One episode a morning, four days a week, in order.{% endif %}</p>
+        {% else %}<p style="margin:0 0 10px;"><b style="color:#111827;">That's the last file.</b> Thank you for reading the whole series. Your Playbook, every worksheet in one PDF, is on the finale page.</p>{% endif %}
+        <p style="margin:0;">Tried the 10-minute challenge? Reply and tell us what you found. We read every reply (please leave out passwords and client details).</p>
+      </div>
+      <div style="margin:0 32px 26px;padding:16px 18px;background:#f3f1ea;border-radius:6px;font-size:13.5px;line-height:1.6;color:#374151;">
+        <p style="margin:0 0 8px;"><b style="color:#111827;">Know a business owner who'd want this?</b> <a href="{{ share_url }}" style="color:#C8102E;">Send them the series</a>. Membership is free for them too.</p>
+        <p style="margin:0;"><b style="color:#111827;">P.S.</b> Zinwe tells you, in plain English, when company files leave your team's PCs by USB, upload or email. Free forever for up to 3 PCs. <a href="{{ signup_url }}" style="color:#C8102E;">Start free</a></p>
+      </div>
       <div style="padding:18px 32px;border-top:1px solid #e6e6e1;font-size:13px;line-height:1.55;color:#6b7280;">
         <b style="color:#111827;">{{ series.title }}</b> is a members' series. {{ series.tagline }} <a href="{{ series_url }}" style="color:#C8102E;">All episodes</a>
       </div>
     </div>
     <p style="margin:16px auto 0;font-size:12px;line-height:1.6;color:#9a9a96;text-align:center;">
-      Zinwe · IT Is OK. · SKYTECHNO, New Delhi<br>
+      Zinwe · IT Is OK. · {{ postal_address }}<br>
       Northstar Studio is a fictional composite. The lessons are real.<br>
-      Your reading link is personal: please don't forward it.<br>
+      Your reading link is personal: to share the series, use the "Send them the series" link above.<br>
       You get this because you subscribed on zinwe.io. <a href="{{ unsubscribe_url }}" style="color:#9a9a96;">Unsubscribe</a>
     </p>
   </div>

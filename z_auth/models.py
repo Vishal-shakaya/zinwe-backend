@@ -58,6 +58,9 @@ class User(AbstractBaseUser, PermissionsMixin):
     )
     is_active = models.BooleanField(default=True)
     date_joined = models.DateTimeField(default=timezone.now)
+    # Where the sign-up came from when we know it, e.g. "tlf:ep07:email" (The Last File newsletter, Episode 7,
+    # from an episode email) or "tlf:series:ref". Set once, at the first sign-up.
+    signup_source = models.CharField(max_length=120, blank=True, default="")
     email_verified_at = models.DateTimeField(
         null=True, blank=True,
         help_text="When the owner proved they control this email (signup code). Empty = unverified.",

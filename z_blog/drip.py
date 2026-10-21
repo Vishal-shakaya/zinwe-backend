@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.conf import settings
@@ -222,3 +222,76 @@ def episode_sent(article: Article) -> int:
 def schedule_label(show: Series) -> str:
     days = sorted(weekdays(show))
     return f"{', '.join(WEEKDAY_NAMES[d] for d in days)} from {show.drip_hour:02d}:00 (reader's time)"
+
+
+# --- Per-member unlocking -----------------------------------------------------------
+# With the drip on, a member's episodes open as their emails arrive: an episode is theirs once the drip has
+# taken it for them (sent, or tried). Episode 1 is always theirs (it goes out the moment they confirm).
+# With the drip off, every released episode is open to every member.
+
+
+def unlocked_ids(sub: NewsletterSubscriber, show: Series) -> set[int]:
+    return set(SeriesSend.objects.filter(subscriber=sub, series=show).values_list("article_id", flat=True))
+
+
+def member_unlocked(article: Article, sub: NewsletterSubscriber) -> bool:
+    show = article.series
+    if not show.drip_enabled:
+        return True
+    released = svc.lineup(show).released
+    if released and released[0].pk == article.pk:
+        return True
+    return article.pk in unlocked_ids(sub, show)
+
+
+def _send_days_from(show: Series, sub: NewsletterSubscriber, now: datetime, include_today: bool):
+    """Yield the subscriber's coming send dates (their local calendar)."""
+    days = weekdays(show)
+    day = now.astimezone(zone(sub.timezone)).date()
+    if not include_today:
+        day += timedelta(days=1)
+    for _ in range(400):
+        if day.weekday() in days:
+            yield day
+        day += timedelta(days=1)
+
+
+def _sent_today(show: Series, sub: NewsletterSubscriber, now: datetime) -> bool:
+    today = now.astimezone(zone(sub.timezone)).date()
+    return SeriesSend.objects.filter(series=show, subscriber=sub, local_date=today).exists()
+
+
+def unlocks_on(article: Article, sub: NewsletterSubscriber, now: datetime | None = None) -> date | None:
+    """The day this episode's email should reach this member (None if it's theirs already or the drip is off)."""
+    now = now or timezone.now()
+    show = article.series
+    if not show.drip_enabled or member_unlocked(article, sub):
+        return None
+    done = unlocked_ids(sub, show)
+    queue = [a.pk for a in svc.lineup(show, now).released if a.pk not in done]
+    if article.pk not in queue:
+        return None
+    k = queue.index(article.pk)
+    for i, day in enumerate(_send_days_from(show, sub, now, include_today=not _sent_today(show, sub, now))):
+        if i == k:
+            return day
+    return None
+
+
+def next_for(sub: NewsletterSubscriber, current: Article, now: datetime | None = None) -> tuple[Article | None, date | None]:
+    """For an episode email: the member's next episode and the day it arrives (after today)."""
+    now = now or timezone.now()
+    show = current.series
+    done = unlocked_ids(sub, show) | {current.pk}
+    nxt = next((a for a in svc.lineup(show, now).released if a.pk not in done), None)
+    if nxt is None or not show.drip_enabled:
+        return nxt, None
+    return nxt, next(_send_days_from(show, sub, now, include_today=False), None)
+
+
+def progress(sub: NewsletterSubscriber, show: Series) -> dict[str, int]:
+    released = svc.lineup(show).released
+    if not show.drip_enabled:
+        return {"unlocked": len(released), "released": len(released)}
+    ids = unlocked_ids(sub, show) | ({released[0].pk} if released else set())
+    return {"unlocked": sum(1 for a in released if a.pk in ids), "released": len(released)}

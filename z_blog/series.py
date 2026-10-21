@@ -49,7 +49,15 @@ def reader(key: str | None) -> NewsletterSubscriber | None:
 
 
 def can_read(article: Article, sub: NewsletterSubscriber | None) -> bool:
-    return article.series_id is None or article.free_preview or sub is not None
+    """Ordinary articles and free episodes: everyone. Other episodes: members, and with the drip on only the
+    episodes their emails have reached (z_blog.drip.member_unlocked)."""
+    if article.series_id is None or article.free_preview:
+        return True
+    if sub is None:
+        return False
+    from .drip import member_unlocked
+
+    return member_unlocked(article, sub)
 
 
 def masked(email: str) -> str:
@@ -254,3 +262,29 @@ def episode_ready(article: Article) -> None:
     """Refuse to publish an episode with nothing members can read."""
     if article.series_id is not None and not plain_text(article.teaser_html):
         raise BlogError("Write the public opening (the teaser everyone sees) before publishing the episode.")
+
+
+# --- The series on blog articles ------------------------------------------------------
+
+_STOP = {
+    "the", "and", "for", "with", "your", "you", "that", "this", "from", "what", "when", "how", "why", "who",
+    "small", "business", "businesses", "zinwe", "last", "file", "data", "company", "into", "about", "their",
+}
+
+
+def _words(text: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z]{4,}", (text or "").lower()) if w not in _STOP}
+
+
+def related_episode(article: Article) -> Article | None:
+    """The released episode of a live series that best matches a blog article (tags, then title words);
+    the series' first episode when nothing matches."""
+    want = _words(article.tags) | _words(article.title)
+    best, best_score, first = None, 0, None
+    for show in live_series():
+        for ep in lineup(show).released:
+            first = first or ep
+            score = 2 * len(want & _words(ep.tags)) + len(want & _words(ep.title + " " + ep.summary))
+            if score > best_score:
+                best, best_score = ep, score
+    return best or first

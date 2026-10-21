@@ -277,7 +277,7 @@ def accept_terms(user: User) -> User:
 
 @transaction.atomic  # select_for_update below: PostgreSQL refuses it outside a transaction (SQLite ignores it)
 def signup(
-    full_name: str, email: str, password: str, ip: str | None, accepted_terms: bool = False
+    full_name: str, email: str, password: str, ip: str | None, accepted_terms: bool = False, source: str = ""
 ) -> tuple[User, bool, int]:
     """
     Create an unverified account (or refresh an unverified one) and send a code.
@@ -296,10 +296,13 @@ def signup(
         user.set_password(password)
         for field, value in terms.items():
             setattr(user, field, value)
-        user.save(update_fields=["full_name", "password", *terms.keys()])
+        if source and not user.signup_source:
+            user.signup_source = source[:120]
+        user.save(update_fields=["full_name", "password", "signup_source", *terms.keys()])
     else:
         user = User.objects.create_user(
-            email=email, password=password, full_name=full_name, is_active=False, **terms
+            email=email, password=password, full_name=full_name, is_active=False, signup_source=(source or "")[:120],
+            **terms,
         )
     transaction.on_commit(lambda: track("auth.signup_started", {}, actor_email=email, ref=user))
     try:

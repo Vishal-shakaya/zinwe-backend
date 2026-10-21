@@ -33,6 +33,7 @@ class SubscribeInput(serializers.Serializer):
     email = serializers.EmailField(max_length=254)
     source = serializers.CharField(max_length=240, required=False, allow_blank=True)
     timezone = serializers.CharField(max_length=64, required=False, allow_blank=True)
+    ref = serializers.CharField(max_length=16, required=False, allow_blank=True)
 
 
 class TokenInput(serializers.Serializer):
@@ -50,7 +51,8 @@ class SubscribeView(APIView):
         data = SubscribeInput(data=request.data)
         data.is_valid(raise_exception=True)
         newsletter.subscribe(
-            data.validated_data["email"], data.validated_data.get("source", ""), data.validated_data.get("timezone", "")
+            data.validated_data["email"], data.validated_data.get("source", ""), data.validated_data.get("timezone", ""),
+            data.validated_data.get("ref", ""),
         )
         return Response({"status": "check_inbox"}, status=status.HTTP_202_ACCEPTED)
 

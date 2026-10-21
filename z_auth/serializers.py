@@ -230,6 +230,8 @@ def _check_password(password: str, user: User, field: str) -> None:
 
 class SignupSerializer(serializers.Serializer):
     full_name = serializers.CharField(max_length=150, error_messages=REQUIRED_MESSAGES)
+    # Where the visitor came from, when the site knows (e.g. "tlf:ep07:email"); see User.signup_source.
+    source = serializers.RegexField(r"^[a-z0-9:_-]{0,120}$", required=False, allow_blank=True, max_length=120)
     email = email_field()
     password = serializers.CharField(
         write_only=True, trim_whitespace=False, max_length=128, error_messages=REQUIRED_MESSAGES

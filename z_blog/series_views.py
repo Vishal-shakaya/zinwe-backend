@@ -57,8 +57,29 @@ def upcoming_card(a: Article) -> dict[str, Any]:
     return {"slug": a.slug, "title": a.title, "season": a.season, "episode": a.episode, "published_at": a.published_at}
 
 
-def reader_payload(sub: NewsletterSubscriber | None) -> dict[str, Any] | None:
-    return {"email": svc.masked(sub.email)} if sub else None
+def reader_payload(sub: NewsletterSubscriber | None, show: Series | None = None) -> dict[str, Any] | None:
+    if sub is None:
+        return None
+    out: dict[str, Any] = {"email": svc.masked(sub.email), "ref_code": sub.ref_code}
+    if show is not None:
+        from . import drip
+
+        out["progress"] = drip.progress(sub, show)
+        out["drip"] = show.drip_enabled
+    return out
+
+
+def record_read(article: Article, sub: NewsletterSubscriber, via_email: bool) -> None:
+    """A member opened an episode in full: count it (first read keeps how they came)."""
+    from django.db.models import F
+
+    from .models import SeriesRead
+
+    updated = SeriesRead.objects.filter(subscriber=sub, article=article).update(reads=F("reads") + 1)
+    if not updated:
+        SeriesRead.objects.get_or_create(
+            subscriber=sub, article=article, defaults={"series_id": article.series_id, "via_email": via_email}
+        )
 
 
 # --- Public -------------------------------------------------------------------------
@@ -86,12 +107,20 @@ class PublicSeriesView(APIView):
         if s is None:
             raise Http404("No such series.")
         line = svc.lineup(s)
+        sub = svc.reader(request.query_params.get("k"))
+        episodes = [episode_card(a) for a in line.released]
+        if sub is not None:
+            from . import drip
+
+            for card, a in zip(episodes, line.released):
+                card["unlocked"] = svc.can_read(a, sub)
+                card["unlocks_on"] = None if card["unlocked"] else drip.unlocks_on(a, sub)
         return Response({
             **series_card(s, len(line.released)),
             "seasons": svc.seasons(s, [*line.released, *line.upcoming]),
-            "episodes": [episode_card(a) for a in line.released],
+            "episodes": episodes,
             "upcoming": [upcoming_card(a) for a in line.upcoming],
-            "reader": reader_payload(svc.reader(request.query_params.get("k"))),
+            "reader": reader_payload(sub, s),
         })
 
 
@@ -109,6 +138,13 @@ class PublicEpisodeView(APIView):
         sub = svc.reader(request.query_params.get("k"))
         unlocked = svc.can_read(a, sub)
         files = list(a.attachments.all())
+        unlocks_on = None
+        if sub is not None and unlocked and not a.free_preview:
+            record_read(a, sub, via_email=request.query_params.get("via") == "email")
+        elif sub is not None and not unlocked:
+            from . import drip
+
+            unlocks_on = drip.unlocks_on(a, sub)
         prev, nxt = svc.neighbours(a)
         upcoming = svc.lineup(a.series).upcoming
         return Response({
@@ -122,6 +158,9 @@ class PublicEpisodeView(APIView):
             "updated_at": a.updated_at,
             "teaser_html": a.teaser_html,
             "locked": not unlocked,
+            # A member whose email for this episode hasn't arrived yet (the drip): when it will.
+            "member_locked": sub is not None and not unlocked,
+            "unlocks_on": unlocks_on,
             "body_html": a.body_html if unlocked else "",
             # Locked: names and sizes only, so the reader sees what membership opens.
             "attachments": [
@@ -131,7 +170,7 @@ class PublicEpisodeView(APIView):
             "previous": episode_card(prev) if prev else None,
             "next": episode_card(nxt) if nxt else None,
             "next_upcoming": upcoming_card(upcoming[0]) if (nxt is None and upcoming) else None,
-            "reader": reader_payload(sub),
+            "reader": reader_payload(sub, a.series),
         })
 
 
@@ -249,3 +288,49 @@ class StaffAttachmentView(APIView):
         att.file.delete(save=False)
         att.delete()
         return Response(StaffArticleSerializer(article).data)
+
+
+class StaffSeriesStatsView(APIView):
+    """GET /api/admin/blog/series/<id>/stats/ -- per episode: emails sent, members who read it (and how many came
+    from the email), Zinwe sign-ups that started from it; plus members, referrals and top sharers."""
+
+    permission_classes = [IsAdminUser]
+
+    def get(self, request: Request, pk: int) -> Response:
+        from django.db.models import Count, Q
+
+        from z_auth.models import User
+
+        from .models import SeriesRead, SeriesSend
+
+        show = get_object_or_404(Series, pk=pk)
+        sent = dict(
+            SeriesSend.objects.filter(series=show, status=SeriesSend.Status.SENT)
+            .values_list("article_id").annotate(n=Count("id")).order_by()
+        )
+        reads = {
+            r["article_id"]: r
+            for r in SeriesRead.objects.filter(series=show).values("article_id")
+            .annotate(readers=Count("id"), via_email=Count("id", filter=Q(via_email=True))).order_by()
+        }
+        sources = list(User.objects.filter(signup_source__startswith="tlf:").values_list("signup_source", flat=True))
+        rows = []
+        for a in Article.objects.filter(series=show).order_by("season", "episode"):
+            tag = f"tlf:ep{a.episode or 0:02d}:"
+            r = reads.get(a.pk, {})
+            rows.append({
+                "episode": a.episode, "title": a.title, "slug": a.slug,
+                "sent": int(sent.get(a.pk, 0)), "readers": int(r.get("readers", 0)), "via_email": int(r.get("via_email", 0)),
+                "signups": sum(1 for src in sources if src.startswith(tag)),
+            })
+        top = (
+            NewsletterSubscriber.objects.annotate(n=Count("referrals")).filter(n__gt=0).order_by("-n")[:5]
+        )
+        return Response({
+            "episodes": rows,
+            "members": NewsletterSubscriber.objects.filter(status=NewsletterSubscriber.Status.ACTIVE).count(),
+            "referred": NewsletterSubscriber.objects.filter(referred_by__isnull=False).count(),
+            "signups": len(sources),
+            "signups_by_referral": sum(1 for src in sources if src.endswith(":ref")),
+            "top_sharers": [{"email": svc.masked(t.email), "referrals": t.n} for t in top],
+        })

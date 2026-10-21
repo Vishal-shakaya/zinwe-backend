@@ -114,6 +114,7 @@ class SignupView(PublicView):
         data = serializer.validated_data
         user, sent, resend_in = services.signup(
             data["full_name"], data["email"], data["password"], ip=get_client_ip(request), accepted_terms=True,
+            source=data.get("source", ""),
         )
         return Response(
             {"email": user.email, "otp_sent": sent, "resend_in": resend_in},

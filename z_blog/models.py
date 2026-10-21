@@ -189,6 +189,11 @@ def new_token() -> str:
     return secrets.token_urlsafe(24)
 
 
+def new_ref_code() -> str:
+    """Short, URL-safe code for a member's share links (?ref=)."""
+    return secrets.token_urlsafe(6).replace("-", "x").replace("_", "z")[:8]
+
+
 class NewsletterSubscriber(models.Model):
     """Someone who asked for blog emails on the website. Double opt-in: only `active` ones get mail."""
 
@@ -207,6 +212,11 @@ class NewsletterSubscriber(models.Model):
     source = models.CharField(max_length=240, blank=True, help_text="Page they signed up on, e.g. /blog/<slug>.")
     # From the browser at sign-up: series emails go out in the reader's morning (z_blog.drip).
     timezone = models.CharField(max_length=64, blank=True, default="")
+    # Sharing: every member has a code for "send this to a business owner" links; who brought whom.
+    ref_code = models.CharField(max_length=16, unique=True, default=new_ref_code, editable=False)
+    referred_by = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.SET_NULL, related_name="referrals"
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     confirm_sent_at = models.DateTimeField(null=True, blank=True)
     confirmed_at = models.DateTimeField(null=True, blank=True)
@@ -288,3 +298,21 @@ class SeriesSend(models.Model):
 
     def __str__(self) -> str:
         return f"{self.article_id} -> {self.subscriber_id} ({self.status})"
+
+
+class SeriesRead(models.Model):
+    """A member opened a series episode in full (first and last time). Feeds the admin's per-episode numbers."""
+
+    series = models.ForeignKey(Series, on_delete=models.CASCADE, related_name="reads")
+    subscriber = models.ForeignKey(NewsletterSubscriber, on_delete=models.CASCADE, related_name="series_reads")
+    article = models.ForeignKey(Article, on_delete=models.CASCADE, related_name="series_reads")
+    via_email = models.BooleanField(default=False, help_text="First opened from an episode email link.")
+    reads = models.PositiveIntegerField(default=1)
+    first_read_at = models.DateTimeField(auto_now_add=True)
+    last_read_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["subscriber", "article"], name="z_blog_one_read_row_each")]
+
+    def __str__(self) -> str:
+        return f"{self.article_id} read by {self.subscriber_id}"

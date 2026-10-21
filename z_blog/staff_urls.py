@@ -20,6 +20,7 @@ urlpatterns = [
     path("attachments/<int:pk>/", series_views.StaffAttachmentView.as_view(), name="attachment"),
     path("series/", series_views.StaffSeriesListView.as_view(), name="series-list"),
     path("series/<int:pk>/", series_views.StaffSeriesView.as_view(), name="series"),
+    path("series/<int:pk>/stats/", series_views.StaffSeriesStatsView.as_view(), name="series-stats"),
     path("subscribers/", newsletter_views.StaffSubscribersView.as_view(), name="subscribers"),
     path("subscribers/<int:pk>/", newsletter_views.StaffSubscriberView.as_view(), name="subscriber"),
 ]

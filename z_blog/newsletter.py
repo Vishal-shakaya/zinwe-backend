@@ -64,7 +64,7 @@ def _live_series_title() -> str:
     return first.title if first else ""
 
 
-def subscribe(email: str, source: str = "", tz: str = "") -> None:
+def subscribe(email: str, source: str = "", tz: str = "", ref: str = "") -> None:
     """Start (or restart) a sign-up and email the confirmation link. An address that's already a member
     gets its reading link instead (a new browser or device: the series opens from it).
 
@@ -81,12 +81,14 @@ def subscribe(email: str, source: str = "", tz: str = "") -> None:
         if not member:
             sub.status = Sub.PENDING
             sub.source = (source or "")[:240]
+            if ref and sub.referred_by_id is None:  # a member's share link brought them
+                sub.referred_by = NewsletterSubscriber.objects.filter(ref_code=ref[:16]).exclude(pk=sub.pk).first()
         from .drip import valid_zone
 
         if valid_zone(tz):
             sub.timezone = valid_zone(tz)  # series emails go out in the reader's morning
         sub.confirm_sent_at = now
-        sub.save(update_fields=["status", "source", "confirm_sent_at", "timezone"])
+        sub.save(update_fields=["status", "source", "confirm_sent_at", "timezone", "referred_by"])
     if member:
         notify(
             "email", email, "newsletter_access",
@@ -186,9 +188,24 @@ def _episode_context(article: Article, subject: str, unsubscribe_url: str, sub: 
     The link carries the subscriber's reader key, so it opens the episode in any browser."""
     from . import series
 
-    key = f"?k={sub.access_key}" if sub is not None else ""
+    from . import drip
+
+    n = f"ep{article.episode or 0:02d}"
+    tags = f"utm_source=newsletter&utm_medium=email&utm_campaign=tlf&utm_content={n}"
+    key = f"?k={sub.access_key}&{tags}" if sub is not None else f"?{tags}"
     cover = article.cover_image or article.series.cover_image
+    nxt, nxt_day = drip.next_for(sub, article) if sub is not None else (None, None)
     return {
+        "next_episode": nxt,
+        "next_day": nxt_day,
+        "is_first": article.episode == 1,
+        "signup_url": f"{_site()}/signup?plan=free&{tags}",
+        "share_url": (
+            f"{_site()}/blog/series/{article.series.slug}?ref={sub.ref_code}"
+            "&utm_source=newsletter&utm_medium=referral&utm_campaign=tlf"
+            if sub is not None else f"{_site()}/blog/series/{article.series.slug}"
+        ),
+        "postal_address": getattr(settings, "ZINWE_POSTAL_ADDRESS", "") or "SKYTECHNO, New Delhi, India",
         "subject": subject,
         "article": article,
         "series": article.series,

@@ -78,9 +78,16 @@ class PublicArticleView(APIView):
         article = services.published().filter(slug=slug).first()
         if article is None:
             raise Http404("No such article.")
+        pick = series.related_episode(article)
         return Response({
             **ArticleDetailSerializer(article).data,
             "related": ArticleCardSerializer(services.related(article), many=True).data,
+            # "From the members' series": the episode closest to this article's topic.
+            "series_pick": None if pick is None else {
+                "series_slug": pick.series.slug, "series_title": pick.series.title, "slug": pick.slug,
+                "title": pick.title, "label": series.label(pick), "summary": pick.summary, "free_preview": pick.free_preview,
+                "cover": image_payload(pick.cover_image or pick.series.cover_image),
+            },
         })
 
 

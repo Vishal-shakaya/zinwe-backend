@@ -10,11 +10,19 @@ Read the full case file (members only, your personal link):
 {% if files %}
 Included for members: {{ files|join:", " }}
 {% endif %}
+{% if next_episode %}Next{% if next_day %}, {{ next_day|date:"l" }} morning{% endif %}: Episode {{ next_episode.episode|stringformat:"02d" }} · {{ next_episode.title }}.{% else %}That's the last file. Thank you for reading the whole series. Your Playbook, every worksheet in one PDF, is on the finale page.{% endif %}
+
+Tried the 10-minute challenge? Reply and tell us what you found. We read every reply (please leave out passwords and client details).
+
+Know a business owner who'd want this? Send them the series (free for them too): {{ share_url }}
+
+P.S. Zinwe tells you, in plain English, when company files leave your team's PCs by USB, upload or email. Free forever for up to 3 PCs: {{ signup_url }}
+
 --
 {{ series.title }}: a Zinwe members' series. {{ series.tagline }}
 Northstar Studio is a fictional composite. The lessons are real.
 
-Zinwe · IT Is OK. · SKYTECHNO, New Delhi
-Your reading link is personal: please don't forward it.
+Zinwe · IT Is OK. · {{ postal_address }}
+Your reading link is personal: to share the series, use the link above.
 You get this because you subscribed on zinwe.io. Unsubscribe: {{ unsubscribe_url }}
 {% endautoescape %}

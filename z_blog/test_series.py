@@ -128,7 +128,7 @@ class PublicSeriesTests(SeriesTestCase):
         opened = self.client.get(url, {"k": sub.access_key}).json()
         self.assertFalse(opened["locked"])
         self.assertIn(SECRET, opened["body_html"])
-        self.assertEqual(opened["reader"], {"email": "r•••@example.com"})
+        self.assertEqual(opened["reader"]["email"], "r•••@example.com")
 
         # The unsubscribe token is not a reader key, and a cancelled membership closes the episode again.
         self.assertTrue(self.client.get(url, {"k": sub.token}).json()["locked"])
