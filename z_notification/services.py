@@ -86,7 +86,6 @@ def notify(
     headers: dict[str, str] | None = None,
     attachments: list[Attachment] | None = None,
     reply_to: list[str] | None = None,
-    from_email: str | None = None,
     fallback: bool = True,
 ) -> Notification | None:
     """
@@ -97,7 +96,6 @@ def notify(
     `headers`: extra message headers for channels that take them (email: e.g. List-Unsubscribe).
     `attachments`: files for channels that take them (email: e.g. the quote PDF); not logged.
     `reply_to`: addresses a reply goes to (email only), e.g. the visitor who wrote to the team.
-    `from_email`: sender instead of DEFAULT_FROM_EMAIL (email only), e.g. the newsletter's own domain.
     `fallback=False`: primary SMTP only, never the backup Gmail account (email only; bulk mail like the
     newsletter must not go out through it).
 
@@ -124,8 +122,6 @@ def notify(
             extra["attachments"] = attachments
         if reply_to:
             extra["reply_to"] = [r for r in reply_to if r]
-        if from_email:
-            extra["from_email"] = from_email
         if not fallback:
             extra["fallback"] = False
         if channel == "email" and is_demo_email(recipient):

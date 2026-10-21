@@ -269,10 +269,6 @@ SECURE_REFERRER_POLICY = "same-origin"
 EMAIL_BACKEND = env_str("EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend")
 DEFAULT_FROM_EMAIL = env_str("DEFAULT_FROM_EMAIL", "Zinwe <hello@zinwe.io>")
 SERVER_EMAIL = DEFAULT_FROM_EMAIL
-# The blog newsletter sends from its own domain (authenticated in the same Brevo account), so spam reports on
-# bulk mail never touch the reputation of zinwe.io's sign-in codes and invoices. Replies go to the main inbox.
-ZINWE_NEWSLETTER_FROM = env_str("ZINWE_NEWSLETTER_FROM", "Zinwe <hello@zinwe.tech>")
-ZINWE_NEWSLETTER_REPLY_TO = env_str("ZINWE_NEWSLETTER_REPLY_TO", "hello@zinwe.io")
 EMAIL_HOST = env_str("EMAIL_HOST", "localhost")
 EMAIL_PORT = int(env_str("EMAIL_PORT", "25"))
 EMAIL_HOST_USER = env_str("EMAIL_HOST_USER", "")

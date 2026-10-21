@@ -67,7 +67,7 @@ def subscribe(email: str, source: str = "") -> None:
     notify(
         "email", email, "newsletter_confirm",
         {"confirm_url": f"{_site()}/newsletter?confirm={sub.token}"},
-        ref=sub, **_sender(),
+        ref=sub, fallback=False,
     )
 
 
@@ -173,13 +173,10 @@ def _send(article: Article, subject: str, sub: NewsletterSubscriber | None, to: 
         }
     else:  # a test send: there's no subscription to cancel
         page, headers = f"{_site()}/blog", None
-    return notify("email", to, "newsletter_issue", _context(article, subject, page), ref=article, headers=headers, **_sender())
-
-
-def _sender() -> dict:
-    """Newsletter mail: its own From domain, replies to the main inbox, primary SMTP only (never the backup Gmail)."""
-    reply_to = (settings.ZINWE_NEWSLETTER_REPLY_TO or "").strip()
-    return {"from_email": settings.ZINWE_NEWSLETTER_FROM, "reply_to": [reply_to] if reply_to else None, "fallback": False}
+    # From hello@zinwe.io like every other email; primary SMTP only: bulk mail never goes out through the backup Gmail.
+    return notify(
+        "email", to, "newsletter_issue", _context(article, subject, page), ref=article, headers=headers, fallback=False,
+    )
 
 
 def send_test(article: Article, to: str) -> Notification | None:

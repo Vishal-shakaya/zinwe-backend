@@ -26,13 +26,12 @@ class EmailChannel(Channel):
         headers: dict[str, str] | None = None,
         attachments: list[Attachment] | None = None,
         reply_to: list[str] | None = None,
-        from_email: str | None = None,
         fallback: bool = True,
     ) -> None:
         message = EmailMultiAlternatives(
             subject=subject,
             body=body,
-            from_email=from_email or settings.DEFAULT_FROM_EMAIL,
+            from_email=settings.DEFAULT_FROM_EMAIL,
             to=[recipient],
             headers=headers or None,
             reply_to=reply_to or None,
