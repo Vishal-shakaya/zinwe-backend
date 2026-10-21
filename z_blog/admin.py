@@ -1,6 +1,8 @@
 from django.contrib import admin
 
-from .models import Article, Attachment, BlogImage, NewsletterDelivery, NewsletterIssue, NewsletterSubscriber, Series
+from .models import (
+    Article, Attachment, BlogImage, NewsletterDelivery, NewsletterIssue, NewsletterSubscriber, Series, SeriesSend,
+)
 
 
 @admin.register(Article)
@@ -55,3 +57,12 @@ class SeriesAdmin(admin.ModelAdmin):
 class AttachmentAdmin(admin.ModelAdmin):
     list_display = ("title", "article", "content_type", "size", "created_at")
     readonly_fields = ("key", "content_type", "size", "created_at")
+
+
+@admin.register(SeriesSend)
+class SeriesSendAdmin(admin.ModelAdmin):
+    """The series drip's log: one row per episode emailed to one subscriber."""
+
+    list_display = ("article", "subscriber", "status", "local_date", "sent_at")
+    list_filter = ("status", "series")
+    readonly_fields = ("series", "subscriber", "article", "status", "local_date", "error", "sent_at", "created_at")

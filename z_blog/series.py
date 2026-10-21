@@ -183,6 +183,17 @@ def save_series(series: Series | None, data: dict[str, Any]) -> Series:
         series.seasons = parse_seasons(data["seasons"])
     if "status" in data and data["status"] in Series.Status.values:
         series.status = data["status"]
+    if "drip_enabled" in data:
+        series.drip_enabled = bool(data["drip_enabled"])
+    if "drip_hour" in data:
+        series.drip_hour = max(0, min(23, int(data["drip_hour"])))
+    if "drip_weekdays" in data:
+        from .drip import clean_weekdays
+
+        try:
+            series.drip_weekdays = clean_weekdays(data["drip_weekdays"])
+        except ValueError as exc:
+            raise BlogError(str(exc)) from exc
     series.title = re.sub(r"\s+", " ", series.title or "").strip()
     if not series.title:
         raise BlogError("Give the series a title.")

@@ -18,6 +18,7 @@ from django.utils import timezone
 
 from z_auth.feedback_requests import send_feedback_requests
 from z_auth.renewals import send_due_reminders
+from z_blog.drip import send_due as send_series_emails
 from z_blog.newsletter import send_pending as send_newsletters
 from z_devices.retention import prune_history
 
@@ -26,6 +27,7 @@ JOBS = (
     ("renewal reminders", send_due_reminders),
     ("feedback requests", send_feedback_requests),
     ("newsletters", send_newsletters),
+    ("series emails", send_series_emails),
     ("history clean-up", prune_history),
 )
 

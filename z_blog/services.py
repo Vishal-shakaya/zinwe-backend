@@ -92,7 +92,7 @@ def normalise_tags(raw: str) -> str:
 EDITABLE = (
     "title", "type", "summary", "body_html", "cover_image", "cover_alt", "tags",
     "seo_title", "meta_description", "author_name",
-    "series", "season", "episode", "teaser_html", "free_preview",
+    "series", "season", "episode", "teaser_html", "free_preview", "newsletter_subject",
 )
 
 

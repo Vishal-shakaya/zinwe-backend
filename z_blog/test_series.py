@@ -236,11 +236,18 @@ class MembershipTests(SeriesTestCase):
 class EpisodeEmailTests(SeriesTestCase):
     def test_episode_email_is_a_teaser_with_the_members_link(self) -> None:
         s = self.make_series()
-        a = self.make_episode(s["id"], title="The File That Almost Destroyed Everything")
+        a = self.make_episode(
+            s["id"], title="The File That Almost Destroyed Everything",
+            newsletter_subject="The file was correct. The recipient wasn't.",
+        )
         sub = self.member()
         article = Article.objects.get(pk=a["id"])
-        newsletter.queue(article, "The file was correct. The recipient wasn't.", self.staff)
-        newsletter.send_pending()
+        with self.assertRaises(newsletter.BlogError):  # episodes go out through the drip, never as a one-off
+            newsletter.queue(article, "", self.staff)
+        from . import drip
+
+        row = drip._claim(article.series, sub, article, timezone.localdate())
+        self.assertTrue(drip._deliver(row, sub, article))
         message = mail.outbox[-1]
         self.assertEqual(message.subject, "The file was correct. The recipient wasn't.")
         html = message.alternatives[0][0]

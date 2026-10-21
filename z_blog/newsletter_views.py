@@ -32,6 +32,7 @@ class SignupThrottle(AnonRateThrottle):
 class SubscribeInput(serializers.Serializer):
     email = serializers.EmailField(max_length=254)
     source = serializers.CharField(max_length=240, required=False, allow_blank=True)
+    timezone = serializers.CharField(max_length=64, required=False, allow_blank=True)
 
 
 class TokenInput(serializers.Serializer):
@@ -48,7 +49,9 @@ class SubscribeView(APIView):
     def post(self, request: Request) -> Response:
         data = SubscribeInput(data=request.data)
         data.is_valid(raise_exception=True)
-        newsletter.subscribe(data.validated_data["email"], data.validated_data.get("source", ""))
+        newsletter.subscribe(
+            data.validated_data["email"], data.validated_data.get("source", ""), data.validated_data.get("timezone", "")
+        )
         return Response({"status": "check_inbox"}, status=status.HTTP_202_ACCEPTED)
 
 
@@ -127,7 +130,18 @@ class QueueInput(serializers.Serializer):
 
 def _state(article: Article) -> dict:
     issue = NewsletterIssue.objects.filter(article=article).select_related("queued_by", "article").first()
+    drip_info = None
+    if article.series_id is not None:
+        from . import drip
+
+        drip_info = {
+            "enabled": article.series.drip_enabled,
+            "schedule": drip.schedule_label(article.series),
+            "subject": drip.subject_for(article),
+            "sent": drip.episode_sent(article),
+        }
     return {
+        "series_drip": drip_info,
         "audience": newsletter.audience(),
         "default_subject": newsletter.default_subject(article),
         "full_article": article.type == Article.Type.NEWSLETTER and article.series_id is None,

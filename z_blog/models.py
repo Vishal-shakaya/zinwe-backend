@@ -64,6 +64,13 @@ class Series(models.Model):
     seasons = models.JSONField(default=list, blank=True)
     status = models.CharField(max_length=12, choices=Status.choices, default=Status.DRAFT, db_index=True)
     position = models.PositiveSmallIntegerField(default=0, help_text="Order on the series page (lowest first).")
+    # The drip (z_blog.drip): every confirmed subscriber gets the released episodes one by one, from Episode 1,
+    # one a day on the chosen weekdays, from `drip_hour` in their own time zone. Episode 1 goes out on confirming.
+    drip_enabled = models.BooleanField(default=False, help_text="Email the episodes to every subscriber, one a day.")
+    drip_weekdays = models.CharField(
+        max_length=20, default="0,1,3,4", help_text="Send days, 0 = Monday … 6 = Sunday (default Mon, Tue, Thu, Fri)."
+    )
+    drip_hour = models.PositiveSmallIntegerField(default=9, help_text="Local hour (0–23) from which the day's email goes.")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -115,6 +122,7 @@ class Article(models.Model):
     episode = models.PositiveSmallIntegerField(null=True, blank=True, help_text="Episode number within the series.")
     teaser_html = models.TextField(blank=True, help_text="The public opening of an episode (cleaned rich text).")
     free_preview = models.BooleanField(default=False, help_text="An episode anyone can read in full (e.g. the pilot).")
+    newsletter_subject = models.CharField(max_length=200, blank=True, help_text="Email subject; the title if empty.")
     published_at = models.DateTimeField(null=True, blank=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -197,6 +205,8 @@ class NewsletterSubscriber(models.Model):
     # every episode email). Separate from `token` so a shared reading link can't unsubscribe anyone.
     access_key = models.CharField(max_length=64, unique=True, default=new_token, editable=False)
     source = models.CharField(max_length=240, blank=True, help_text="Page they signed up on, e.g. /blog/<slug>.")
+    # From the browser at sign-up: series emails go out in the reader's morning (z_blog.drip).
+    timezone = models.CharField(max_length=64, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     confirm_sent_at = models.DateTimeField(null=True, blank=True)
     confirmed_at = models.DateTimeField(null=True, blank=True)
@@ -252,3 +262,29 @@ class NewsletterDelivery(models.Model):
 
     def __str__(self) -> str:
         return f"{self.issue_id} -> {self.subscriber_id} ({self.status})"
+
+
+class SeriesSend(models.Model):
+    """One series episode emailed to one subscriber by the drip. (subscriber, episode) is unique, so nobody
+    gets an episode twice; `local_date` (the reader's date when it went) keeps it to one email a day."""
+
+    class Status(models.TextChoices):
+        SENDING = "sending", "Sending"
+        SENT = "sent", "Sent"
+        FAILED = "failed", "Failed"  # tried again on their next send day
+
+    series = models.ForeignKey(Series, on_delete=models.CASCADE, related_name="sends")
+    subscriber = models.ForeignKey(NewsletterSubscriber, on_delete=models.CASCADE, related_name="series_sends")
+    article = models.ForeignKey(Article, on_delete=models.CASCADE, related_name="series_sends")
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.SENDING, db_index=True)
+    local_date = models.DateField()
+    error = models.CharField(max_length=300, blank=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["subscriber", "article"], name="z_blog_one_send_each")]
+        indexes = [models.Index(fields=["series", "subscriber", "local_date"])]
+
+    def __str__(self) -> str:
+        return f"{self.article_id} -> {self.subscriber_id} ({self.status})"

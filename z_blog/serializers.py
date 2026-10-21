@@ -71,6 +71,7 @@ class StaffArticleSerializer(serializers.ModelSerializer):
             "cover_alt", "tags", "seo_title", "meta_description", "author_name", "author_email",
             "reading_minutes", "published_at", "created_at", "updated_at",
             "series", "series_title", "series_slug", "season", "episode", "teaser_html", "free_preview", "attachments",
+            "newsletter_subject",
         ]
 
     def get_cover(self, obj: Article) -> dict[str, Any] | None:
@@ -109,18 +110,38 @@ class ArticleInputSerializer(serializers.Serializer):
     episode = serializers.IntegerField(min_value=1, max_value=999, required=False, allow_null=True)
     teaser_html = serializers.CharField(max_length=50_000, required=False, allow_blank=True, trim_whitespace=False)
     free_preview = serializers.BooleanField(required=False)
+    newsletter_subject = serializers.CharField(max_length=200, required=False, allow_blank=True)
 
 
 class StaffSeriesSerializer(serializers.ModelSerializer):
     cover = serializers.SerializerMethodField()
     episode_count = serializers.SerializerMethodField()
+    drip_weekdays = serializers.SerializerMethodField()
+    drip_schedule = serializers.SerializerMethodField()
+    drip_stats = serializers.SerializerMethodField()
 
     class Meta:
         model = Series
         fields = [
             "id", "title", "slug", "tagline", "description", "cover", "cover_alt", "planned_episodes", "cadence",
             "seasons", "status", "position", "episode_count", "created_at", "updated_at",
+            "drip_enabled", "drip_weekdays", "drip_hour", "drip_schedule", "drip_stats",
         ]
+
+    def get_drip_weekdays(self, obj: Series) -> list[int]:
+        from .drip import weekdays
+
+        return sorted(weekdays(obj))
+
+    def get_drip_schedule(self, obj: Series) -> str:
+        from .drip import schedule_label
+
+        return schedule_label(obj)
+
+    def get_drip_stats(self, obj: Series) -> dict[str, int]:
+        from .drip import stats
+
+        return stats(obj)
 
     def get_cover(self, obj: Series) -> dict[str, Any] | None:
         return image_payload(obj.cover_image)
@@ -143,3 +164,6 @@ class SeriesInputSerializer(serializers.Serializer):
     seasons = serializers.JSONField(required=False)
     status = serializers.ChoiceField(choices=Series.Status.choices, required=False)
     position = serializers.IntegerField(min_value=0, max_value=999, required=False)
+    drip_enabled = serializers.BooleanField(required=False)
+    drip_weekdays = serializers.JSONField(required=False)
+    drip_hour = serializers.IntegerField(min_value=0, max_value=23, required=False)

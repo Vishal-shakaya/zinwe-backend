@@ -64,7 +64,7 @@ def _live_series_title() -> str:
     return first.title if first else ""
 
 
-def subscribe(email: str, source: str = "") -> None:
+def subscribe(email: str, source: str = "", tz: str = "") -> None:
     """Start (or restart) a sign-up and email the confirmation link. An address that's already a member
     gets its reading link instead (a new browser or device: the series opens from it).
 
@@ -81,8 +81,12 @@ def subscribe(email: str, source: str = "") -> None:
         if not member:
             sub.status = Sub.PENDING
             sub.source = (source or "")[:240]
+        from .drip import valid_zone
+
+        if valid_zone(tz):
+            sub.timezone = valid_zone(tz)  # series emails go out in the reader's morning
         sub.confirm_sent_at = now
-        sub.save(update_fields=["status", "source", "confirm_sent_at"])
+        sub.save(update_fields=["status", "source", "confirm_sent_at", "timezone"])
     if member:
         notify(
             "email", email, "newsletter_access",
@@ -112,6 +116,9 @@ def confirm(token: str) -> NewsletterSubscriber:
         sub.status = Sub.ACTIVE
         sub.confirmed_at = timezone.now()
         sub.save(update_fields=["status", "confirmed_at"])
+        from .drip import start_welcome
+
+        start_welcome(sub)  # Episode 1 of each drip series, straight away
     return sub
 
 
@@ -242,6 +249,10 @@ def send_test(article: Article, to: str) -> Notification | None:
 
 def queue(article: Article, subject: str, staff: Any) -> NewsletterIssue:
     """Email this article to every confirmed subscriber: now if it's live, else when it goes live."""
+    if article.series_id is not None:
+        raise BlogError(
+            "Series episodes go out on each subscriber's own schedule (the series drip), not as a one-off email."
+        )
     article_state = services.state(article)
     if article_state == "draft":
         raise BlogError("Publish or schedule the article before emailing it.")
