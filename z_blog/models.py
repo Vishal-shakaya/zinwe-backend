@@ -41,6 +41,40 @@ class BlogImage(models.Model):
         return f"/api/blog/images/{self.key}/"
 
 
+class Series(models.Model):
+    """A story told in episodes (e.g. THE LAST FILE): a members-only newsletter series shown at
+    /blog/series/<slug>. Its episodes are Articles with `series` set; their full text is for confirmed
+    newsletter subscribers only (z_blog.series)."""
+
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+        PUBLISHED = "published", "Published"
+
+    title = models.CharField(max_length=120)
+    slug = models.SlugField(max_length=140, unique=True, help_text="The URL: /blog/series/<slug>.")
+    tagline = models.CharField(max_length=200, blank=True, help_text="One line under the title.")
+    description = models.TextField(max_length=1200, blank=True, help_text="What the series is about (plain text).")
+    cover_image = models.ForeignKey(
+        BlogImage, null=True, blank=True, on_delete=models.SET_NULL, related_name="cover_of_series"
+    )
+    cover_alt = models.CharField(max_length=200, blank=True)
+    planned_episodes = models.PositiveSmallIntegerField(default=0, help_text="Episodes planned in all (0 = open-ended).")
+    cadence = models.CharField(max_length=80, blank=True, help_text='e.g. "A new episode every week".')
+    # [{"number": 1, "title": "The Warning", "theme": "Trust"}, ...]
+    seasons = models.JSONField(default=list, blank=True)
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.DRAFT, db_index=True)
+    position = models.PositiveSmallIntegerField(default=0, help_text="Order on the series page (lowest first).")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["position", "-created_at", "-id"]
+        verbose_name_plural = "series"
+
+    def __str__(self) -> str:
+        return self.title
+
+
 class Article(models.Model):
     class Type(models.TextChoices):
         PRESS_RELEASE = "press_release", "Press release"
@@ -75,6 +109,12 @@ class Article(models.Model):
     )
     author_name = models.CharField(max_length=120, blank=True, help_text="Shown on the article.")
     reading_minutes = models.PositiveSmallIntegerField(default=1)
+    # A series episode (None = an ordinary blog article). Its body is for subscribers; `teaser_html` is public.
+    series = models.ForeignKey(Series, null=True, blank=True, on_delete=models.SET_NULL, related_name="episodes")
+    season = models.PositiveSmallIntegerField(default=1)
+    episode = models.PositiveSmallIntegerField(null=True, blank=True, help_text="Episode number within the series.")
+    teaser_html = models.TextField(blank=True, help_text="The public opening of an episode (cleaned rich text).")
+    free_preview = models.BooleanField(default=False, help_text="An episode anyone can read in full (e.g. the pilot).")
     published_at = models.DateTimeField(null=True, blank=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -82,6 +122,12 @@ class Article(models.Model):
     class Meta:
         ordering = ["-published_at", "-updated_at", "-id"]
         indexes = [models.Index(fields=["status", "type", "published_at"])]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["series", "episode"], condition=models.Q(series__isnull=False, episode__isnull=False),
+                name="z_blog_one_episode_number",
+            )
+        ]
 
     def __str__(self) -> str:
         return self.title
@@ -93,6 +139,39 @@ class Article(models.Model):
     @property
     def is_published(self) -> bool:
         return self.status == self.Status.PUBLISHED and self.published_at is not None
+
+
+def attachment_upload_to(instance: "Attachment", filename: str) -> str:
+    """blog/files/<yyyy>/<mm>/<uuid>.<ext> (not under a guessable name; served only through the API)."""
+    ext = os.path.splitext(filename)[1].lower()[:8]
+    now = timezone.now()
+    return f"blog/files/{now:%Y}/{now:%m}/{instance.key.hex}{ext}"
+
+
+class Attachment(models.Model):
+    """A file that comes with an article (the case-file PDF, a checklist...). For a series episode it's
+    for subscribers only, like the body."""
+
+    key = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    article = models.ForeignKey(Article, on_delete=models.CASCADE, related_name="attachments")
+    title = models.CharField(max_length=120)
+    file = models.FileField(upload_to=attachment_upload_to)
+    filename = models.CharField(max_length=120, help_text="Name the download is saved as.")
+    content_type = models.CharField(max_length=60)
+    size = models.PositiveIntegerField(default=0)
+    position = models.PositiveSmallIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["position", "id"]
+
+    def __str__(self) -> str:
+        return f"{self.title} ({self.article_id})"
+
+    @property
+    def url(self) -> str:
+        """Public path (relative to the API origin); a members-only file also needs the reader key (?k=)."""
+        return f"/api/blog/files/{self.key}/"
 
 
 # --- Newsletter -------------------------------------------------------------------
@@ -114,6 +193,9 @@ class NewsletterSubscriber(models.Model):
     status = models.CharField(max_length=14, choices=Status.choices, default=Status.PENDING, db_index=True)
     # Secret for the confirm and unsubscribe links (and the one-click List-Unsubscribe URL).
     token = models.CharField(max_length=64, unique=True, default=new_token, editable=False)
+    # Opens members-only series episodes and their files (kept in the reader's browser, and in the links of
+    # every episode email). Separate from `token` so a shared reading link can't unsubscribe anyone.
+    access_key = models.CharField(max_length=64, unique=True, default=new_token, editable=False)
     source = models.CharField(max_length=240, blank=True, help_text="Page they signed up on, e.g. /blog/<slug>.")
     created_at = models.DateTimeField(auto_now_add=True)
     confirm_sent_at = models.DateTimeField(null=True, blank=True)

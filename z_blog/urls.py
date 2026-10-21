@@ -1,6 +1,6 @@
 from django.urls import path
 
-from . import newsletter_views, views
+from . import newsletter_views, series_views, views
 
 app_name = "z_blog"
 
@@ -9,6 +9,10 @@ urlpatterns = [
     path("articles/", views.PublicArticlesView.as_view(), name="articles"),
     path("articles/<slug:slug>/", views.PublicArticleView.as_view(), name="article"),
     path("images/<uuid:key>/", views.PublicImageView.as_view(), name="image"),
+    path("series/", series_views.PublicSeriesListView.as_view(), name="series-list"),
+    path("series/<slug:slug>/", series_views.PublicSeriesView.as_view(), name="series"),
+    path("series/<slug:slug>/<slug:episode>/", series_views.PublicEpisodeView.as_view(), name="episode"),
+    path("files/<uuid:key>/", series_views.PublicFileView.as_view(), name="file"),
     path("sitemap.xml", views.sitemap, name="sitemap"),
     path("rss.xml", views.rss, name="rss"),
     path("newsletter/subscribe/", newsletter_views.SubscribeView.as_view(), name="newsletter-subscribe"),

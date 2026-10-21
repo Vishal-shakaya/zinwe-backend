@@ -35,8 +35,12 @@ Sub = NewsletterSubscriber.Status
 Issue = NewsletterIssue.Status
 Delivery = NewsletterDelivery.Status
 
-# A pending address gets at most one confirmation email an hour, however often the form is sent.
+# An address gets at most one link email (confirmation, or a member's reading link) an hour, however
+# often the form is sent.
 CONFIRM_RESEND_AFTER = timedelta(hours=1)
+
+# Where a member's reading link may point: a page of the series section (else the series hub).
+_SERIES_PAGE = re.compile(r"^/blog/series(/[-a-zA-Z0-9_]+){0,2}$")
 
 
 def _site() -> str:
@@ -46,8 +50,23 @@ def _site() -> str:
 # --- Subscribers ------------------------------------------------------------------
 
 
+def reading_page(source: str) -> str:
+    """The series page a member's reading link opens: where they asked from, if it's a series page."""
+    source = (source or "").split("?", 1)[0].rstrip("/")
+    return source if _SERIES_PAGE.match(source) else "/blog/series"
+
+
+def _live_series_title() -> str:
+    """The members' series the confirmation email names (none live yet: the plain blog wording)."""
+    from .models import Series
+
+    first = Series.objects.filter(status=Series.Status.PUBLISHED).order_by("position", "-created_at").first()
+    return first.title if first else ""
+
+
 def subscribe(email: str, source: str = "") -> None:
-    """Start (or restart) a sign-up and email the confirmation link.
+    """Start (or restart) a sign-up and email the confirmation link. An address that's already a member
+    gets its reading link instead (a new browser or device: the series opens from it).
 
     Says nothing about whether the address was already subscribed (the caller always shows
     "check your inbox"), so the form can't be used to test who's on the list.
@@ -56,19 +75,26 @@ def subscribe(email: str, source: str = "") -> None:
     now = timezone.now()
     with transaction.atomic():
         sub, _ = NewsletterSubscriber.objects.select_for_update().get_or_create(email=email)
-        if sub.status == Sub.ACTIVE:
+        if sub.status != Sub.UNSUBSCRIBED and sub.confirm_sent_at and now - sub.confirm_sent_at < CONFIRM_RESEND_AFTER:
             return
-        if sub.status == Sub.PENDING and sub.confirm_sent_at and now - sub.confirm_sent_at < CONFIRM_RESEND_AFTER:
-            return
-        sub.status = Sub.PENDING
-        sub.source = (source or "")[:240]
+        member = sub.status == Sub.ACTIVE
+        if not member:
+            sub.status = Sub.PENDING
+            sub.source = (source or "")[:240]
         sub.confirm_sent_at = now
         sub.save(update_fields=["status", "source", "confirm_sent_at"])
-    notify(
-        "email", email, "newsletter_confirm",
-        {"confirm_url": f"{_site()}/newsletter?confirm={sub.token}"},
-        ref=sub, fallback=False,
-    )
+    if member:
+        notify(
+            "email", email, "newsletter_access",
+            {"reading_url": f"{_site()}{reading_page(source)}?k={sub.access_key}"},
+            ref=sub, fallback=False,
+        )
+    else:
+        notify(
+            "email", email, "newsletter_confirm",
+            {"confirm_url": f"{_site()}/newsletter?confirm={sub.token}", "series_title": _live_series_title()},
+            ref=sub, fallback=False,
+        )
 
 
 def _by_token(token: str) -> NewsletterSubscriber:
@@ -148,6 +174,29 @@ def default_subject(article: Article) -> str:
     return article.title[:200]
 
 
+def _episode_context(article: Article, subject: str, unsubscribe_url: str, sub: NewsletterSubscriber | None) -> dict[str, Any]:
+    """A series episode: the public opening in the email, and a members' link to the full case file.
+    The link carries the subscriber's reader key, so it opens the episode in any browser."""
+    from . import series
+
+    key = f"?k={sub.access_key}" if sub is not None else ""
+    cover = article.cover_image or article.series.cover_image
+    return {
+        "subject": subject,
+        "article": article,
+        "series": article.series,
+        "label": series.label(article),
+        "teaser_html": email_html(article.teaser_html),
+        "teaser_text": email_text(article.teaser_html),
+        "cover_url": f"{_site()}{cover.url}" if cover else "",
+        "cover_alt": article.cover_alt or article.series.cover_alt or article.title,
+        "episode_url": f"{_site()}{series.path(article)}{key}",
+        "series_url": f"{_site()}/blog/series/{article.series.slug}{key}",
+        "files": [f.title for f in article.attachments.all()],
+        "unsubscribe_url": unsubscribe_url,
+    }
+
+
 def _context(article: Article, subject: str, unsubscribe_url: str) -> dict[str, Any]:
     full = article.type == Article.Type.NEWSLETTER  # a newsletter is read in the inbox; others are teasers
     return {
@@ -173,10 +222,12 @@ def _send(article: Article, subject: str, sub: NewsletterSubscriber | None, to: 
         }
     else:  # a test send: there's no subscription to cancel
         page, headers = f"{_site()}/blog", None
+    if article.series_id is not None:
+        template, context = "newsletter_episode", _episode_context(article, subject, page, sub)
+    else:
+        template, context = "newsletter_issue", _context(article, subject, page)
     # From hello@zinwe.io like every other email; primary SMTP only: bulk mail never goes out through the backup Gmail.
-    return notify(
-        "email", to, "newsletter_issue", _context(article, subject, page), ref=article, headers=headers, fallback=False,
-    )
+    return notify("email", to, template, context, ref=article, headers=headers, fallback=False)
 
 
 def send_test(article: Article, to: str) -> Notification | None:
@@ -285,7 +336,7 @@ def send_pending(issue_id: int | None = None, limit: int = 500, now: datetime | 
     now = now or timezone.now()
     result = RunResult()
     issues = NewsletterIssue.objects.filter(status__in=[Issue.QUEUED, Issue.SENDING]).select_related(
-        "article", "article__cover_image"
+        "article", "article__cover_image", "article__series", "article__series__cover_image"
     ).order_by("created_at")
     if issue_id is not None:
         issues = issues.filter(pk=issue_id)

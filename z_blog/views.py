@@ -17,7 +17,7 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from . import newsletter, services
+from . import newsletter, series, services
 from .models import Article, BlogImage
 from .serializers import (
     ArticleCardSerializer,
@@ -108,6 +108,12 @@ def sitemap(request: Request) -> HttpResponse:
     # The index changes when an article does (not on every request), so its lastmod is the newest article's.
     urls = [(f"{base}/blog", max((a.updated_at for a in articles), default=timezone.now()))]
     urls += [(f"{base}/blog/{a.slug}", a.updated_at) for a in articles]
+    # Members-only series: each series and its released episodes (their public openings). The hub,
+    # /blog/series, is in the website's own sitemap-pages.xml.
+    for show in series.live_series():
+        episodes = series.lineup(show).released
+        urls.append((f"{base}/blog/series/{show.slug}", max([show.updated_at, *(a.updated_at for a in episodes)])))
+        urls += [(f"{base}{series.path(a)}", a.updated_at) for a in episodes]
     body = "".join(
         f"<url><loc>{escape(loc)}</loc><lastmod>{when:%Y-%m-%d}</lastmod></url>" for loc, when in urls
     )
@@ -145,7 +151,11 @@ class StaffArticlesView(APIView):
     permission_classes = [IsAdminUser]
 
     def get(self, request: Request) -> Response:
-        qs = Article.objects.select_related("cover_image", "author").order_by("-updated_at", "-id")
+        qs = (
+            Article.objects.select_related("cover_image", "author", "series")
+            .prefetch_related("attachments")
+            .order_by("-updated_at", "-id")
+        )
         wanted = request.query_params.get("status")
         now = timezone.now()
         if wanted == "draft":
@@ -159,6 +169,11 @@ class StaffArticlesView(APIView):
         q = (request.query_params.get("q") or "").strip()
         if q:
             qs = qs.filter(title__icontains=q)
+        series = request.query_params.get("series") or ""
+        if series == "none":
+            qs = qs.filter(series__isnull=True)
+        elif series.isdigit():
+            qs = qs.filter(series_id=int(series))
         return Response(StaffArticleSerializer(qs, many=True).data)
 
     def post(self, request: Request) -> Response:

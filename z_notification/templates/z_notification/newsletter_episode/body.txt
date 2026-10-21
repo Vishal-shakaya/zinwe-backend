@@ -1,0 +1,20 @@
+{% autoescape off %}{{ label }}
+{{ article.title }}
+{% if article.summary %}
+{{ article.summary }}
+{% endif %}
+{{ teaser_text }}
+
+Read the full case file (members only, your personal link):
+{{ episode_url }}
+{% if files %}
+Included for members: {{ files|join:", " }}
+{% endif %}
+--
+{{ series.title }}: a Zinwe members' series. {{ series.tagline }}
+Northstar Studio is a fictional composite. The lessons are real.
+
+Zinwe · IT Is OK. · SKYTECHNO, New Delhi
+Your reading link is personal: please don't forward it.
+You get this because you subscribed on zinwe.io. Unsubscribe: {{ unsubscribe_url }}
+{% endautoescape %}

@@ -1,9 +1,14 @@
 {% autoescape off %}Hi,
 
-Someone (hopefully you) asked to get the Zinwe blog by email: practical guides, product releases
+{% if series_title %}Someone (hopefully you) asked to join the Zinwe members' list. Membership is free. It
+opens our members-only series, {{ series_title }}: short business stories about the small
+mistakes that put company data at risk, each with a 10-minute fix and the case-file downloads.
+Plus practical guides and product news.
+
+Confirm and unlock the series:{% else %}Someone (hopefully you) asked to get the Zinwe blog by email: practical guides, product releases
 and news about keeping a small business's data safe. Usually one or two emails a month.
 
-Confirm here:
+Confirm here:{% endif %}
 {{ confirm_url }}
 
 If it wasn't you, ignore this email. Nothing happens until the link is opened.

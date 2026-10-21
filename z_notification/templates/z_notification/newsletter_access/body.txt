@@ -1,0 +1,13 @@
+{% autoescape off %}Hi,
+
+You (or someone using your address) asked for your reading link. You're already a member, so
+here it is. It opens every members-only episode in the browser you open it in:
+
+{{ reading_url }}
+
+The link is personal: please don't forward it. If you didn't ask for it, ignore this email.
+
+--
+The Zinwe team
+SKYTECHNO, New Delhi
+{% endautoescape %}

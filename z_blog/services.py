@@ -65,8 +65,14 @@ def reading_minutes(html: str) -> int:
     return max(1, math.ceil(words / WORDS_PER_MINUTE))
 
 
+# /blog/<slug> URLs the site itself uses.
+RESERVED_SLUGS = {"series"}
+
+
 def unique_slug(text: str, exclude_id: int | None = None) -> str:
     base = slugify(text)[:200] or "article"
+    if base in RESERVED_SLUGS:
+        base = f"{base}-article"
     slug, n = base, 2
     taken = Article.objects.exclude(pk=exclude_id) if exclude_id else Article.objects.all()
     while taken.filter(slug=slug).exists():
@@ -86,6 +92,7 @@ def normalise_tags(raw: str) -> str:
 EDITABLE = (
     "title", "type", "summary", "body_html", "cover_image", "cover_alt", "tags",
     "seo_title", "meta_description", "author_name",
+    "series", "season", "episode", "teaser_html", "free_preview",
 )
 
 
@@ -100,8 +107,12 @@ def save_article(article: Article | None, data: dict[str, Any], staff: Any) -> A
     if not article.title:
         raise BlogError("Give the article a title.")
     article.body_html = clean_body(article.body_html)
+    article.teaser_html = clean_body(article.teaser_html)
     article.tags = normalise_tags(article.tags)
-    article.reading_minutes = reading_minutes(article.body_html)
+    article.reading_minutes = reading_minutes(f"{article.teaser_html} {article.body_html}")
+    from .series import check_episode  # series.py builds on this module
+
+    check_episode(article)
     if not article.author_name and staff is not None:
         article.author_name = getattr(staff, "full_name", "") or "Zinwe team"
     wanted = data.get("slug") or (article.slug if article.pk else "") or article.title
@@ -118,6 +129,9 @@ def publish(article: Article, at: datetime | None = None) -> Article:
     """
     if not plain_text(article.body_html):
         raise BlogError("Write the article before publishing it.")
+    from .series import episode_ready
+
+    episode_ready(article)
     article.status = Status.PUBLISHED
     article.published_at = at or article.published_at or timezone.now()
     article.save(update_fields=["status", "published_at", "updated_at"])
@@ -162,8 +176,11 @@ def save_image(upload: UploadedFile, staff: Any) -> BlogImage:
 
 
 def published() -> QuerySet[Article]:
+    """Live blog articles. Series episodes live on their series page (z_blog.series), not in the blog list."""
     return (
-        Article.objects.filter(status=Status.PUBLISHED, published_at__isnull=False, published_at__lte=timezone.now())
+        Article.objects.filter(
+            status=Status.PUBLISHED, published_at__isnull=False, published_at__lte=timezone.now(), series__isnull=True
+        )
         .select_related("cover_image")
         .order_by("-published_at", "-id")
     )

@@ -65,7 +65,8 @@ class ConfirmView(APIView):
             sub = newsletter.confirm(data.validated_data["token"])
         except BlogError as exc:
             return _refused(exc)
-        return Response({"status": sub.status, "email": sub.email})
+        # The reader key opens the members-only series in this browser; `source` is where they signed up.
+        return Response({"status": sub.status, "email": sub.email, "access_key": sub.access_key, "source": sub.source})
 
 
 class UnsubscribeView(APIView):
@@ -129,7 +130,7 @@ def _state(article: Article) -> dict:
     return {
         "audience": newsletter.audience(),
         "default_subject": newsletter.default_subject(article),
-        "full_article": article.type == Article.Type.NEWSLETTER,
+        "full_article": article.type == Article.Type.NEWSLETTER and article.series_id is None,
         "issue": newsletter.progress(issue),
     }
 

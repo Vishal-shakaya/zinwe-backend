@@ -238,3 +238,144 @@ def blog_article(request: HttpRequest, slug: str) -> HttpResponse:
         f"{cover}{article.body_html}</article>"
     )
     return page.render(body)
+
+
+# --- Members-only series (/blog/series...) -------------------------------------------------
+# Search engines get each episode's public opening only (the same thing a visitor sees before joining),
+# marked as members-only content in the structured data, so nothing is cloaked.
+
+SERIES_TITLE = "Zinwe series — members-only stories for business owners"
+SERIES_DESCRIPTION = (
+    "Short business-drama series about the small mistakes that put company data at risk, each episode with a "
+    "10-minute fix. Free membership."
+)
+
+
+def _series_nav(show: Any = None) -> str:
+    crumbs = '<a href="/">Zinwe</a> / <a href="/blog">Blog</a> / <a href="/blog/series">Series</a>'
+    if show is not None:
+        crumbs += f' / <a href="/blog/series/{_attr(show.slug)}">{escape(show.title)}</a>'
+    return f"<nav>{crumbs}</nav>"
+
+
+def _describe(page: _Page, title: str, description: str, url: str, image: str = "") -> None:
+    page.meta("name", "description", description)
+    page.meta("property", "og:title", title)
+    page.meta("property", "og:description", description)
+    page.meta("name", "twitter:title", title)
+    page.meta("name", "twitter:description", description)
+    page.meta("property", "og:url", url)
+    if image:
+        page.meta("property", "og:image", image)
+        page.meta("name", "twitter:image", image)
+    page.link("canonical", url)
+
+
+def _not_found(what: str) -> HttpResponse:
+    page = _Page()
+    page.title(f"{what.capitalize()} not found — Zinwe")
+    page.meta("name", "robots", "noindex")
+    return page.render(
+        f'{_series_nav()}<h1>This {what} isn\'t here</h1><p><a href="/blog/series">All series</a></p>', status=404
+    )
+
+
+def series_index(request: HttpRequest) -> HttpResponse:
+    """GET /blog/series -- every live series."""
+    from . import series as svc
+
+    page = _Page()
+    page.title(SERIES_TITLE)
+    _describe(page, SERIES_TITLE, SERIES_DESCRIPTION, f"{_site()}/blog/series")
+    items = "".join(
+        f'<li><a href="/blog/series/{_attr(s.slug)}">{escape(s.title)}</a>'
+        f"{f'<p>{escape(s.tagline)}</p>' if s.tagline else ''}</li>"
+        for s in svc.live_series()
+    )
+    return page.render(f"{_series_nav()}<h1>Zinwe series</h1><p>{escape(SERIES_DESCRIPTION)}</p><ul>{items}</ul>")
+
+
+def series_page(request: HttpRequest, slug: str) -> HttpResponse:
+    """GET /blog/series/<slug> -- a series and its released episodes."""
+    from . import series as svc
+
+    show = svc.live_series().filter(slug=slug).first()
+    if show is None:
+        return _not_found("series")
+    url = f"{_site()}/blog/series/{show.slug}"
+    image = f"{_site()}{show.cover_image.url}" if show.cover_image else ""
+    page = _Page()
+    page.title(f"{show.title} — a Zinwe series")
+    _describe(page, show.title, show.tagline or show.description[:160], url, image)
+    episodes = svc.lineup(show).released
+    page.json_ld({
+        "@context": "https://schema.org",
+        "@type": "CreativeWorkSeries",
+        "name": show.title,
+        "description": show.description or show.tagline,
+        "url": url,
+        **({"image": image} if image else {}),
+        "publisher": {"@type": "Organization", "name": "Zinwe"},
+        "hasPart": [
+            {"@type": "Article", "headline": a.title, "url": f"{_site()}{svc.path(a)}", "position": a.episode}
+            for a in episodes
+        ],
+    })
+    items = "".join(
+        f'<li><a href="{_attr(svc.path(a))}">{escape(svc.label(a))}: {escape(a.title)}</a>'
+        f"{f'<p>{escape(a.summary)}</p>' if a.summary else ''}</li>"
+        for a in episodes
+    )
+    body = (
+        f"{_series_nav()}<h1>{escape(show.title)}</h1>"
+        f"{f'<p>{escape(show.tagline)}</p>' if show.tagline else ''}"
+        f"{f'<p>{escape(show.description)}</p>' if show.description else ''}<ol>{items}</ol>"
+    )
+    return page.render(body)
+
+
+def episode_page(request: HttpRequest, slug: str, episode: str) -> HttpResponse:
+    """GET /blog/series/<slug>/<episode> -- the episode's public opening (the full text is for members)."""
+    from . import series as svc
+
+    a = svc.released_episode(slug, episode)
+    if a is None:
+        return _not_found("episode")
+    show = a.series
+    url = f"{_site()}{svc.path(a)}"
+    title = a.seo_title or a.title
+    cover = a.cover_image or show.cover_image
+    image = f"{_site()}{cover.url}" if cover else ""
+    page = _Page()
+    page.title(f"{title} — {show.title}")
+    _describe(page, title, a.meta_description or a.summary, url, image)
+    page.meta("property", "og:type", "article")
+    page.meta("property", "article:published_time", a.published_at.isoformat())
+    free = a.free_preview
+    page.json_ld({
+        "@context": "https://schema.org",
+        "@type": "Article",
+        "headline": title,
+        "description": a.meta_description or a.summary,
+        "datePublished": a.published_at.isoformat(),
+        "dateModified": a.updated_at.isoformat(),
+        "author": {"@type": "Organization", "name": a.author_name or "Zinwe"},
+        "publisher": {
+            "@type": "Organization", "name": "Zinwe",
+            "logo": {"@type": "ImageObject", "url": f"{_site()}/brand/zinwe-logo-96.png"},
+        },
+        "mainEntityOfPage": url,
+        "isPartOf": {"@type": "CreativeWorkSeries", "name": show.title, "url": f"{_site()}/blog/series/{show.slug}"},
+        **({"image": image} if image else {}),
+        "isAccessibleForFree": free,
+        **({} if free else {"hasPart": {"@type": "WebPageElement", "isAccessibleForFree": False, "cssSelector": ".ep-members"}}),
+    })
+    img = f'<img src="{_attr(cover.url)}" alt="{_attr(a.cover_alt or show.cover_alt)}" />' if cover else ""
+    members = "" if free else "<p>The rest of this episode is for members. Membership is free.</p>"
+    # teaser_html is allow-list cleaned on save (services.clean_body), the same HTML the app shows.
+    body = (
+        f"{_series_nav(show)}<article><p>{escape(svc.label(a))}</p><h1>{escape(a.title)}</h1>"
+        f"{f'<p>{escape(a.summary)}</p>' if a.summary else ''}{img}{a.teaser_html}"
+        f'<div class="ep-members">{members}</div></article>'
+    )
+    return page.render(body)
