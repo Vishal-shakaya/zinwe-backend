@@ -22,7 +22,7 @@ P.S. Zinwe tells you, in plain English, when company files leave your team's PCs
 {{ series.title }}: a Zinwe members' series. {{ series.tagline }}
 Northstar Studio is a fictional composite. The lessons are real.
 
-Zinwe · IT Is OK. · {{ postal_address }}
+Zinwe · Security, simplified. IT Is OK. · {{ postal_address }}
 Your reading link is personal: to share the series, use the link above.
 You get this because you subscribed on zinwe.io. Unsubscribe: {{ unsubscribe_url }}
 {% endautoescape %}
