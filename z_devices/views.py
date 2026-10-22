@@ -537,7 +537,7 @@ class BreakDecisionView(APIView):
         try:
             log = services.decide_break(request.user, log, data.validated_data["decision"], data.validated_data["note"])
         except services.NotABreak:
-            return Response({"detail": "Only breaks can be approved or denied."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"detail": "Only breaks and log-outs can be approved or denied."}, status=status.HTTP_400_BAD_REQUEST)
         return Response(WorkLogSerializer(log).data)
 
 

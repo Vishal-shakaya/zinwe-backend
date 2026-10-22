@@ -631,6 +631,8 @@ def monitoring_allowed(device: Device) -> bool:
 
 
 LOGGED_WORK_STATES = {Device.WorkState.WORKING, Device.WorkState.ON_BREAK, Device.WorkState.ENDED}
+# What the owner approves or questions: breaks, and since FR-16 log-outs too.
+APPROVED_STATES = {Device.WorkState.ON_BREAK, Device.WorkState.ENDED}
 
 
 def _log_work_change(device: Device, data: dict[str, Any], now: Any) -> WorkLog | None:
@@ -648,12 +650,14 @@ def _log_work_change(device: Device, data: dict[str, Any], now: Any) -> WorkLog 
     on_break = new_state == Device.WorkState.ON_BREAK
     # A break carries the break reason/note; logging out carries its own (the widget asks for both).
     prefix = "break" if on_break else "end" if new_state == Device.WorkState.ENDED else None
+    # Breaks and log-outs wait for the owner's OK, after the fact (FR-16: log-outs like breaks).
+    needs_ok = new_state in APPROVED_STATES
     reason = (data.get(f"{prefix}_reason") or "").strip()[:120] if prefix else ""
     note = (data.get(f"{prefix}_note") or "").strip()[:280] if prefix else ""
     return WorkLog.objects.create(
         owner_id=device.owner_id, device=device, member_id=device.member_id,
         state=new_state, previous_state=device.work_state or "", at=at, reason=reason, note=note,
-        approval=WorkLog.Approval.PENDING if on_break else "",
+        approval=WorkLog.Approval.PENDING if needs_ok else "",
     )
 
 
@@ -691,45 +695,45 @@ def _log_work_events(device: Device, events: list[dict[str, Any]], now: Any) -> 
         ) or ""
         if previous == state:
             continue
-        on_break = state == Device.WorkState.ON_BREAK
-        explained = state in (Device.WorkState.ON_BREAK, Device.WorkState.ENDED)
+        explained = state in APPROVED_STATES
         WorkLog.objects.create(
             owner_id=device.owner_id, device=device, member_id=device.member_id,
             state=state, previous_state=previous, at=at,
             reason=(event.get("reason") or "").strip()[:120] if explained else "",
             note=(event.get("note") or "").strip()[:280] if explained else "",
-            approval=WorkLog.Approval.PENDING if on_break else "",
+            approval=WorkLog.Approval.PENDING if explained else "",
         )
         added += 1
     return added
 
 
 class NotABreak(Exception):
-    """Only breaks can be approved or denied."""
+    """Only breaks and log-outs can be approved or denied."""
 
 
 def decide_break(owner: User, log: WorkLog, decision: str, note: str = "") -> WorkLog:
     """
-    Approve or deny a break (after the fact: the member isn't blocked). The member is told
+    Approve or deny a break or a log-out (FR-16) after the fact: the member isn't blocked. The member is told
     in their Zinwe widget, with the owner's note if any. Deciding again overwrites.
     """
     if log.owner_id != owner.id:
         raise PermissionError("Not your team's break.")
-    if log.state != WorkLog.State.ON_BREAK:
+    if log.state not in APPROVED_STATES:
         raise NotABreak()
     log.approval = decision
     log.decision_note = note.strip()[:280]
     log.decided_at = timezone.now()
     log.save(update_fields=["approval", "decision_note", "decided_at"])
     if log.member_id and log.member and log.member.is_active:
-        what = f"{log.reason} break" if log.reason else "break"
+        is_break = log.state == WorkLog.State.ON_BREAK
+        what = (f"{log.reason} break" if log.reason else "break") if is_break else "log-out"
         when = timezone.localtime(log.at).strftime("%I:%M %p").lstrip("0")
         approved = decision == WorkLog.Approval.APPROVED
         # Kind wording either way (J6-18): a questioned break is a conversation, not a warning. Without a note
         # the member is invited to reply, so they're never left guessing.
         manager = owner.full_name.split()[0] if owner.full_name.strip() else "Your manager"
         body = log.decision_note or (
-            "" if approved else f"{manager} would like a word about this break. You can reply here."
+            "" if approved else f"{manager} would like a word about this {'break' if is_break else 'log-out'}. You can reply here."
         )
         send_message(
             owner, log.member,

@@ -49,7 +49,7 @@ class WorkLogTests(DeviceTestCase):
             ("working", "", "", "", ""),
             ("on_break", "working", "Lunch", "quick bite", "pending"),
             ("working", "on_break", "", "", ""),               # "back from break", not a new log in
-            ("ended", "working", "Leaving early", "Doctor", ""),
+            ("ended", "working", "Leaving early", "Doctor", "pending"),  # FR-16: log-outs wait for an OK too
         ])
 
         # A retry (lost response) re-sends the same changes: nothing is added twice.
@@ -104,7 +104,7 @@ class WorkLogTests(DeviceTestCase):
         self.beat("ended", end_reason="Leaving early", end_note="Doctor's appointment",
                   break_reason="Lunch", break_note="stale break fields are ignored")
         ended = WorkLog.objects.get(state="ended")
-        self.assertEqual((ended.reason, ended.note, ended.approval), ("Leaving early", "Doctor's appointment", ""))
+        self.assertEqual((ended.reason, ended.note, ended.approval), ("Leaving early", "Doctor's appointment", "pending"))
         # Logging in carries no reason, even if an agent sends some.
         self.beat("working", end_reason="Leaving early")
         self.assertEqual(WorkLog.objects.filter(state="working").last().reason, "")
@@ -317,3 +317,43 @@ class LiveWorkTimeTests(DeviceTestCase):
                   work_changed_at=(timezone.now() - timedelta(hours=1)).isoformat())
         device = self._member_device()
         self.assertEqual((device["worked_seconds"], device["break_seconds"]), (7 * 3600, 1800))
+
+
+class LogOutApprovalTests(DeviceTestCase):  # FR-16
+    """A log-out is approved or questioned like a break, after the fact; the member hears in their widget."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.token = self.enroll().json()["device_token"]
+
+    def test_owner_approves_or_questions_a_log_out(self) -> None:
+        from .models import Message, WorkLog
+
+        self.as_device(self.token)
+        self.client.post("/api/devices/heartbeat/", {"work_state": "working"}, format="json")
+        self.client.post("/api/devices/heartbeat/", {"work_state": "ended", "end_reason": "Leaving early"}, format="json")
+        ended = WorkLog.objects.get(state="ended")
+        self.assertEqual(ended.approval, "pending")
+
+        self.as_owner()
+        url = f"/api/devices/work-log/{ended.pk}/decision/"
+        response = self.client.post(url, {"decision": "denied", "note": ""}, format="json")
+        self.assertEqual(response.status_code, 200, response.content)
+        msg = Message.objects.filter(member=self.member).latest("created_at")
+        self.assertTrue(msg.title.startswith("About your log-out at "))
+        self.assertIn("would like a word about this log-out", msg.body)
+
+        self.client.post(url, {"decision": "approved", "note": "Feel better"}, format="json")
+        msg = Message.objects.filter(member=self.member).latest("created_at")
+        self.assertTrue(msg.title.startswith("Your log-out at ") and msg.title.endswith("was approved"))
+        self.assertEqual(msg.body, "Feel better")
+
+    def test_logging_in_is_not_something_to_approve(self) -> None:
+        from .models import WorkLog
+
+        self.as_device(self.token)
+        self.client.post("/api/devices/heartbeat/", {"work_state": "working"}, format="json")
+        start = WorkLog.objects.get(state="working")
+        self.as_owner()
+        response = self.client.post(f"/api/devices/work-log/{start.pk}/decision/", {"decision": "approved"}, format="json")
+        self.assertEqual(response.status_code, 400)
