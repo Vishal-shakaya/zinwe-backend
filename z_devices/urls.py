@@ -39,6 +39,7 @@ urlpatterns = [
     ),
     path("messages/", views.DeviceMessagesView.as_view(), name="messages"),
     path("messages/read/", views.DeviceMessagesReadView.as_view(), name="messages-read"),
+    path("feedback/", views.DeviceFeedbackView.as_view(), name="feedback"),
     path("releases/<int:pk>/download/", views.DeviceReleaseDownloadView.as_view(), name="release-download"),
     path("policy/", views.PolicyView.as_view(), name="policy"),
     path("policy/current/", views.CurrentPolicyView.as_view(), name="policy-current"),

@@ -240,6 +240,7 @@ REST_FRAMEWORK = {
         "quote_email": "10/hour",
         "quote_public": "120/hour",
         "upi_qr": "60/hour",
+        "member_feedback": "10/hour",
         "contact": "10/hour",
     },
     # Adds `retry_after` (seconds) to every 429 body.

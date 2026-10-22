@@ -169,6 +169,13 @@ class MemberReplySerializer(serializers.Serializer):
     body = serializers.CharField(max_length=2000, trim_whitespace=True)
 
 
+class MemberFeedbackSerializer(serializers.Serializer):
+    """POST /api/devices/feedback/ (Device auth) -- the member's feedback on Zinwe, from the Zinwe window (FR-14)."""
+
+    rating = serializers.IntegerField(min_value=1, max_value=10)
+    message = serializers.CharField(required=False, allow_blank=True, max_length=2000, trim_whitespace=True)
+
+
 MAX_WORK_EVENTS = 200
 
 

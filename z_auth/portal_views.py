@@ -223,7 +223,8 @@ class FeedbackView(APIView):
         return [ScopedRateThrottle()] if self.request.method == "POST" else []
 
     def get(self, request: Request) -> Response:
-        rows = Feedback.objects.filter(owner=request.user)[:10]
+        # Only what the owner sent: their members' feedback from the Zinwe window goes to the Zinwe team (FR-14).
+        rows = Feedback.objects.filter(owner=request.user, source=Feedback.Source.OWNER)[:10]
         return Response(FeedbackSerializer(rows, many=True).data)
 
     def post(self, request: Request) -> Response:

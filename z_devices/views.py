@@ -18,6 +18,7 @@ from . import services
 from .models import AgentRelease, DeviceEvent, WorkLog
 from .authentication import DeviceTokenAuthentication, IsDevice, IsOwner
 from .serializers import (
+    MemberFeedbackSerializer,
     DevicePolicySerializer,
     DeviceSerializer,
     EnrollmentKeySerializer,
@@ -132,6 +133,35 @@ class DeviceMessagesView(APIView):
         if message is None:
             return Response({"detail": "This PC isn't linked to a member."}, status=status.HTTP_400_BAD_REQUEST)
         return Response(MessageSerializer(message).data, status=status.HTTP_201_CREATED)
+
+
+class DeviceFeedbackView(APIView):
+    """
+    POST /api/devices/feedback/ (Device auth) -- {rating 1-10, message?} from the member's Zinwe window (FR-14).
+    It goes to the Zinwe team (admin app, Feedback), filed under the company it came from; the owner doesn't see it.
+    """
+
+    authentication_classes = [DeviceTokenAuthentication]
+    permission_classes = [IsDevice]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "member_feedback"
+
+    def post(self, request: Request) -> Response:
+        from z_auth.models import Feedback
+
+        serializer = MemberFeedbackSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        device = request.auth
+        feedback = Feedback.objects.create(
+            owner=device.owner,
+            source=Feedback.Source.MEMBER,
+            member=device.member,
+            device=device,
+            rating=serializer.validated_data["rating"],
+            message=serializer.validated_data.get("message", ""),
+            page="Zinwe window",
+        )
+        return Response({"id": feedback.pk}, status=status.HTTP_201_CREATED)
 
 
 class DeviceMessagesReadView(APIView):

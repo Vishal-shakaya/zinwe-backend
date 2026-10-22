@@ -233,10 +233,20 @@ class PaymentQueueSerializer(serializers.Serializer):
 
 class FeedbackRowSerializer(serializers.ModelSerializer):
     customer = serializers.SerializerMethodField()
+    member = serializers.SerializerMethodField()
 
     class Meta:
         model = Feedback
-        fields = ["id", "rating", "message", "page", "created_at", "customer"]
+        fields = ["id", "rating", "message", "page", "created_at", "customer", "source", "member"]
+
+    def get_member(self, obj: Feedback) -> dict[str, Any] | None:
+        """Who sent it from their Zinwe window (FR-14); None for the owner's own feedback."""
+        if obj.source != Feedback.Source.MEMBER:
+            return None
+        return {
+            "name": obj.member.name if obj.member else "",
+            "hostname": obj.device.hostname if obj.device else "",
+        }
 
     def get_customer(self, obj: Feedback) -> dict[str, Any]:
         company = getattr(obj.owner, "owned_company", None)

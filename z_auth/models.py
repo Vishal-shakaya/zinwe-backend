@@ -543,13 +543,28 @@ class ManualPayment(models.Model):
 
 
 class Feedback(models.Model):
-    """What an owner thinks of Zinwe: a 1-10 rating plus an optional note, read by the team in the admin app."""
+    """
+    What someone thinks of Zinwe: a 1-10 rating plus an optional note, read by the team in the admin app. From the
+    owner's dashboard, or (FR-14) from a member's Zinwe window: then `owner` is the company owner (the customer it
+    belongs to) and `member` / `device` say who sent it. Member feedback goes to the Zinwe team, not to the owner.
+    """
 
     RATING_MIN = 1
     RATING_MAX = 10
 
+    class Source(models.TextChoices):
+        OWNER = "owner", "Owner dashboard"
+        MEMBER = "member", "Member's Zinwe window"
+
     owner = models.ForeignKey(
         "z_auth.User", on_delete=models.CASCADE, related_name="feedback"
+    )
+    source = models.CharField(max_length=10, choices=Source.choices, default=Source.OWNER, db_index=True)
+    member = models.ForeignKey(
+        "z_devices.Member", on_delete=models.SET_NULL, null=True, blank=True, related_name="feedback"
+    )
+    device = models.ForeignKey(
+        "z_devices.Device", on_delete=models.SET_NULL, null=True, blank=True, related_name="feedback"
     )
     rating = models.PositiveSmallIntegerField(
         validators=[MinValueValidator(RATING_MIN), MaxValueValidator(RATING_MAX)],
