@@ -1,0 +1,26 @@
+{% autoescape off %}{{ series.title|upper }} · EPISODE {{ article.episode|stringformat:"02d" }}{% if series.planned_episodes %} OF {{ series.planned_episodes }}{% endif %}
+{{ article.title }}
+
+{{ teaser_text }}
+
+Read the full episode (members only, your personal link):
+{{ episode_url }}
+{% if action_title %}
+This week's action: {{ action_title }} (about 10 minutes, in the full episode){% endif %}{% if files %}
+Included for members: {{ files|join:", " }}{% endif %}
+
+{% if next_episode %}Next{% if next_day %}, {{ next_day|date:"l" }} morning{% endif %}: Episode {{ next_episode.episode|stringformat:"02d" }} · {{ next_episode.title }}.{% if is_first and look.pace %} {{ look.pace }}{% endif %}{% else %}{{ look.finale }}{% endif %}
+
+{{ look.reply_prompt }}
+
+Know someone who'd want this? Send them the series (free for them too): {{ share_url }}
+
+P.S. Zinwe tells you, in plain English, when company files leave your team's Windows PCs by USB drive, shared folder or email. There's a Free forever plan to start with: {{ signup_url }}
+
+--
+Zinwe · Security, simplified. IT Is OK.
+Data protection and activity monitoring for small businesses. {{ postal_address }}
+{{ look.disclaimer }}
+Your reading link is personal: to share the series, use the link above.
+You are reading this because you subscribed at zinwe.io. Unsubscribe: {{ unsubscribe_url }}
+{% endautoescape %}

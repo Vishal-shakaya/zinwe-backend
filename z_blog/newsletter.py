@@ -56,12 +56,15 @@ def reading_page(source: str) -> str:
     return source if _SERIES_PAGE.match(source) else "/blog/series"
 
 
-def _live_series_title() -> str:
-    """The members' series the confirmation email names (none live yet: the plain blog wording)."""
+def _live_series(source: str = "") -> tuple[str, str]:
+    """The members' series the confirmation email names, and its one-line blurb: the series they signed up on,
+    else the first live one (none live yet: empty, the plain blog wording)."""
     from .models import Series
+    from .series_brand import brand
 
-    first = Series.objects.filter(status=Series.Status.PUBLISHED).order_by("position", "-created_at").first()
-    return first.title if first else ""
+    shows = list(Series.objects.filter(status=Series.Status.PUBLISHED).order_by("position", "-created_at"))
+    show = next((s for s in shows if (source or "").startswith(f"/blog/series/{s.slug}")), shows[0] if shows else None)
+    return (show.title, brand(show).blurb) if show else ("", "")
 
 
 def subscribe(email: str, source: str = "", tz: str = "", ref: str = "") -> None:
@@ -98,7 +101,7 @@ def subscribe(email: str, source: str = "", tz: str = "", ref: str = "") -> None
     else:
         notify(
             "email", email, "newsletter_confirm",
-            {"confirm_url": f"{_site()}/newsletter?confirm={sub.token}", "series_title": _live_series_title()},
+            {"confirm_url": f"{_site()}/newsletter?confirm={sub.token}", **dict(zip(("series_title", "series_blurb"), _live_series(source)))},
             ref=sub, fallback=False,
         )
 
@@ -189,9 +192,13 @@ def _episode_context(article: Article, subject: str, unsubscribe_url: str, sub: 
     from . import series
 
     from . import drip
+    from .series_brand import brand
 
+    look = brand(article.series)
     n = f"ep{article.episode or 0:02d}"
-    tags = f"utm_source=newsletter&utm_medium=email&utm_campaign=tlf&utm_content={n}"
+    tags = f"utm_source=newsletter&utm_medium=email&utm_campaign={look.code}&utm_content={n}"
+    # The episode's one protective step ("Do this once: ..."), shown under the opening in the email.
+    action = re.search(r"<h2>\s*Do this once:\s*(.*?)</h2>", article.body_html or "", re.S)
     key = f"?k={sub.access_key}&{tags}" if sub is not None else f"?{tags}"
     cover = article.cover_image or article.series.cover_image
     nxt, nxt_day = drip.next_for(sub, article) if sub is not None else (None, None)
@@ -202,7 +209,7 @@ def _episode_context(article: Article, subject: str, unsubscribe_url: str, sub: 
         "signup_url": f"{_site()}/signup?plan=free&{tags}",
         "share_url": (
             f"{_site()}/blog/series/{article.series.slug}?ref={sub.ref_code}"
-            "&utm_source=newsletter&utm_medium=referral&utm_campaign=tlf"
+            f"&utm_source=newsletter&utm_medium=referral&utm_campaign={look.code}"
             if sub is not None else f"{_site()}/blog/series/{article.series.slug}"
         ),
         "postal_address": getattr(settings, "ZINWE_POSTAL_ADDRESS", "") or "SKYTECHNO, New Delhi, India",
@@ -218,6 +225,9 @@ def _episode_context(article: Article, subject: str, unsubscribe_url: str, sub: 
         "series_url": f"{_site()}/blog/series/{article.series.slug}{key}",
         "files": [f.title for f in article.attachments.all()],
         "unsubscribe_url": unsubscribe_url,
+        "look": look,
+        "action_title": html_lib.unescape(re.sub(r"<[^>]+>", "", action[1])).strip() if action else "",
+        "published_on": timezone.localtime(article.published_at) if article.published_at else None,
     }
 
 
@@ -247,7 +257,8 @@ def _send(article: Article, subject: str, sub: NewsletterSubscriber | None, to: 
     else:  # a test send: there's no subscription to cancel
         page, headers = f"{_site()}/blog", None
     if article.series_id is not None:
-        template, context = "newsletter_episode", _episode_context(article, subject, page, sub)
+        context = _episode_context(article, subject, page, sub)
+        template = context["look"].template
     else:
         template, context = "newsletter_issue", _context(article, subject, page)
     # From hello@zinwe.io like every other email; primary SMTP only: bulk mail never goes out through the backup Gmail.

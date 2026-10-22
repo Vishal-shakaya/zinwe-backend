@@ -162,11 +162,24 @@ def send_due(now: datetime | None = None, limit: int = 500) -> DripResult:
     return result
 
 
+def welcome_series(sub: NewsletterSubscriber) -> Series | None:
+    """The one drip series whose Episode 1 goes out on confirming: the series they signed up on (their `source`
+    is /blog/series/<slug>...), else the first by position. The others start on their next send day, so a new
+    member never gets two welcome emails at once."""
+    shows = list(Series.objects.filter(status=Series.Status.PUBLISHED, drip_enabled=True))
+    for show in shows:
+        if (sub.source or "").startswith(f"/blog/series/{show.slug}"):
+            return show
+    return shows[0] if shows else None
+
+
 def welcome(sub: NewsletterSubscriber, now: datetime | None = None) -> int:
-    """Just confirmed: Episode 1 of every drip series, straight away (whatever the day). Returns emails sent."""
+    """Just confirmed: Episode 1 of their welcome series (welcome_series), straight away (whatever the day).
+    Returns emails sent."""
     now = now or timezone.now()
     sent = 0
-    for show in Series.objects.filter(status=Series.Status.PUBLISHED, drip_enabled=True):
+    first = welcome_series(sub)
+    for show in [first] if first is not None else []:
         released = svc.lineup(show, now).released
         if not released:
             continue

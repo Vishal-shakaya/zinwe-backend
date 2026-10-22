@@ -313,10 +313,13 @@ class StaffSeriesStatsView(APIView):
             for r in SeriesRead.objects.filter(series=show).values("article_id")
             .annotate(readers=Count("id"), via_email=Count("id", filter=Q(via_email=True))).order_by()
         }
-        sources = list(User.objects.filter(signup_source__startswith="tlf:").values_list("signup_source", flat=True))
+        from .series_brand import code_of
+
+        code = code_of(show)
+        sources = list(User.objects.filter(signup_source__startswith=f"{code}:").values_list("signup_source", flat=True))
         rows = []
         for a in Article.objects.filter(series=show).order_by("season", "episode"):
-            tag = f"tlf:ep{a.episode or 0:02d}:"
+            tag = f"{code}:ep{a.episode or 0:02d}:"
             r = reads.get(a.pk, {})
             rows.append({
                 "episode": a.episode, "title": a.title, "slug": a.slug,
