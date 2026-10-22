@@ -264,6 +264,10 @@ def payment_instructions(subscription: Subscription | None = None, company: Comp
     currency = subscription.currency if subscription else pricing.currency_for(company)
     data["region"] = "IN" if currency == pricing.INR else "INTL"
     data["currency"] = currency
+    # Online payment (Razorpay) for rupee customers when it's on; None = only the manual ways (z_payments).
+    from z_payments.services import checkout_config
+
+    data["online"] = checkout_config(currency)
     skydo = {k: v for k, v in settings.ZINWE_SKYDO_ACCOUNT.items() if v}
     data["skydo"] = skydo if skydo.get("account_number") else None
     data["payment_link"] = (subscription.payment_link if subscription else "") or settings.ZINWE_SKYDO_PAYMENT_URL
@@ -424,6 +428,30 @@ def submit_payment(
     """
     upgrade_plan: Plan | None = data.pop("upgrade_plan", None)
     accepted_terms = bool(data.pop("accept_terms", False))
+    subscription, upgrade_plan, renewal, due = payment_target(user, upgrade_plan)
+    _fill_receipt_defaults(data, user, subscription, due)
+    payment = ManualPayment(subscription=subscription, is_renewal=renewal, upgrade_plan=upgrade_plan, **data)
+    payment.currency = subscription.currency
+    payment.due = due.as_dict()
+    if accepted_terms:
+        payment.terms_accepted_at = timezone.now()
+        payment.terms_version = settings.ZINWE_LEGAL_VERSION
+    if proof is not None:
+        payment.proof = proof
+    payment.save()
+    transaction.on_commit(lambda: _after_payment_submitted(payment))
+    return payment
+
+
+def payment_target(
+    user: User, upgrade_plan: Plan | None = None
+) -> tuple[Subscription, Plan | None, bool, pricing.Quote]:
+    """
+    What a payment from `user` now is for: (the subscription, locked; the upgrade plan or None; whether it's a
+    renewal; the amount due). Shared by the receipt upload and online payment (z_payments), so both take money for
+    exactly the same thing. Call inside a transaction. On a plan waiting for its first payment, choosing another
+    plan swaps the pending choice. Raises `NothingToPay`, `PaymentUnderReview` or `UpgradeNotAllowed`.
+    """
     subscription = current_subscription(user)
     if subscription is None:
         raise NothingToPay()
@@ -448,19 +476,7 @@ def submit_payment(
     subscription = Subscription.objects.select_for_update().get(pk=subscription.pk)
     if has_payment_under_review(subscription):
         raise PaymentUnderReview()
-    due = amount_due(subscription, upgrade_plan)
-    _fill_receipt_defaults(data, user, subscription, due)
-    payment = ManualPayment(subscription=subscription, is_renewal=renewal, upgrade_plan=upgrade_plan, **data)
-    payment.currency = subscription.currency
-    payment.due = due.as_dict()
-    if accepted_terms:
-        payment.terms_accepted_at = timezone.now()
-        payment.terms_version = settings.ZINWE_LEGAL_VERSION
-    if proof is not None:
-        payment.proof = proof
-    payment.save()
-    transaction.on_commit(lambda: _after_payment_submitted(payment))
-    return payment
+    return subscription, upgrade_plan, renewal, amount_due(subscription, upgrade_plan)
 
 
 def _fill_receipt_defaults(data: dict[str, Any], user: User, subscription: Subscription, due: pricing.Quote) -> None:

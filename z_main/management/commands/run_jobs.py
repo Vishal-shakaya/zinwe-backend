@@ -24,9 +24,13 @@ from z_blog.guide_followups import send_due as send_guide_followups
 from z_blog.newsletter import send_pending as send_newsletters
 from z_devices.report_schedules import send_due as send_scheduled_reports
 from z_devices.retention import prune_history
+from z_payments.services import reconcile as check_online_payments
 
 # (label, job): each returns a result with .summary(). One failing job doesn't stop the others.
 JOBS = (
+    # Razorpay payments whose browser closed before confirming (z_payments): before the renewal reminders, so
+    # nobody is reminded to pay for something they just paid.
+    ("online payments check", check_online_payments),
     ("renewal reminders", send_due_reminders),
     ("feedback requests", send_feedback_requests),
     ("newsletters", send_newsletters),

@@ -339,12 +339,12 @@ class LogOutApprovalTests(DeviceTestCase):  # FR-16
         url = f"/api/devices/work-log/{ended.pk}/decision/"
         response = self.client.post(url, {"decision": "denied", "note": ""}, format="json")
         self.assertEqual(response.status_code, 200, response.content)
-        msg = Message.objects.filter(member=self.member).latest("created_at")
+        msg = Message.objects.filter(member=self.member).order_by("-id").first()
         self.assertTrue(msg.title.startswith("About your log-out at "))
         self.assertIn("would like a word about this log-out", msg.body)
 
         self.client.post(url, {"decision": "approved", "note": "Feel better"}, format="json")
-        msg = Message.objects.filter(member=self.member).latest("created_at")
+        msg = Message.objects.filter(member=self.member).order_by("-id").first()
         self.assertTrue(msg.title.startswith("Your log-out at ") and msg.title.endswith("was approved"))
         self.assertEqual(msg.body, "Feel better")
 

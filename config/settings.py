@@ -80,6 +80,7 @@ INSTALLED_APPS = [
     "z_support",
     "z_blog",
     "z_forms",
+    "z_payments",
 ]
 
 MIDDLEWARE = [
@@ -242,6 +243,7 @@ REST_FRAMEWORK = {
         "quote_public": "120/hour",
         "upi_qr": "60/hour",
         "member_feedback": "10/hour",
+        "online_payment": "60/hour",
         "contact": "10/hour",
     },
     # Adds `retry_after` (seconds) to every 429 body.
@@ -330,6 +332,17 @@ ZINWE_SKYDO_ACCOUNT = {
 }
 # The general Skydo payment page (card or US bank), shown when a customer has no payment link of their own.
 ZINWE_SKYDO_PAYMENT_URL = env_str("ZINWE_SKYDO_PAYMENT_URL", "")
+# Online payment (z_payments): Razorpay Standard Checkout for customers billed in rupees. On only when both keys
+# are set and ZINWE_RAZORPAY_ENABLED isn't "false" (the kill switch: the manual ways to pay always stay). The
+# key id is public (it goes to the browser); the secrets never leave the server. Test keys (rzp_test_) are
+# refused on the live site unless ZINWE_RAZORPAY_ALLOW_TEST is set, so nobody can "pay" with a test card there.
+RAZORPAY_KEY_ID = env_str("RAZORPAY_KEY_ID", "")
+RAZORPAY_KEY_SECRET = env_str("RAZORPAY_KEY_SECRET", "")
+# Dashboard → Webhooks secret (payment.captured, order.paid): catches payments whose browser closed before
+# confirming. Optional; without it the hourly check (run_jobs) still finds them.
+RAZORPAY_WEBHOOK_SECRET = env_str("RAZORPAY_WEBHOOK_SECRET", "")
+ZINWE_RAZORPAY_ENABLED = env_bool("ZINWE_RAZORPAY_ENABLED", True)
+ZINWE_RAZORPAY_ALLOW_TEST = env_bool("ZINWE_RAZORPAY_ALLOW_TEST", False)
 # Shared quotes (z_auth.quotes): the PDF emailed to the owner and the public /quote/<token> page.
 ZINWE_QUOTE_VALID_DAYS = 15
 # The internal admin app, for links in team emails (support tickets).

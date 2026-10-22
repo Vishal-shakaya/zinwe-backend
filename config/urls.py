@@ -6,6 +6,7 @@ urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/", include("z_main.urls")),
     path("api/auth/", include("z_auth.urls")),
+    path("api/payments/", include("z_payments.urls")),
     path("api/analytics/", include("z_analytics.urls")),
     path("api/devices/", include("z_devices.urls")),
     path("api/support/", include("z_support.urls")),

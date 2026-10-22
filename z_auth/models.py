@@ -433,6 +433,8 @@ class ManualPayment(models.Model):
         SKYDO = "skydo", "Skydo (card or US bank)"  # payments from outside India
         CHEQUE = "cheque", "Cheque"
         CASH = "cash", "Cash"
+        # Paid online and confirmed by Razorpay (z_payments): approved automatically, no receipt to check.
+        RAZORPAY = "razorpay", "Online (Razorpay)"
 
     class Status(models.TextChoices):
         SUBMITTED = "submitted", "Submitted"
