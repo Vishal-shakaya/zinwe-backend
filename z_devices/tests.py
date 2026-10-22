@@ -1769,3 +1769,33 @@ class WorkStateOnOwnerReadsTests(DeviceTestCase):
         self.assertEqual(row["device"]["work_state"], "working")
         self.assertEqual(row["device"]["worked_seconds"], 1800)
         self.assertEqual(row["device"]["break_seconds"], 60)
+
+
+class DataUsedMetricsTests(DeviceTestCase):
+    """FR-04: internet data used per app / site arrives from the agent and ranks by bytes."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.token = self.enroll().json()["device_token"]
+
+    def test_upload_then_top_ranks_by_data(self) -> None:
+        from z_auth import entitlements
+
+        hour = (timezone.now() - timedelta(hours=2)).replace(minute=0, second=0, microsecond=0).isoformat()
+        rows = [
+            {"bucket_start": hour, "category": "web.data.app", "key": "chrome", "count": 1, "bytes": 3_000_000_000},
+            {"bucket_start": hour, "category": "web.data.app", "key": "whatsapp", "count": 1, "bytes": 50_000_000},
+            {"bucket_start": hour, "category": "web.data.site", "key": "googlevideo.com", "count": 1, "bytes": 2_500_000_000},
+        ]
+        self.as_device(self.token)
+        response = self.client.post(METRICS_UPLOAD_URL, {"metrics": rows}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.content)
+
+        self.as_owner()
+        apps = self.client.get(METRICS_TOP_URL, {"category": "web.data.app"}).json()["items"]
+        self.assertEqual([i["key"] for i in apps], ["chrome", "whatsapp"])
+        self.assertEqual(apps[0]["bytes"], 3_000_000_000)  # over 2 GB in one hour fits
+        sites = self.client.get(METRICS_TOP_URL, {"category": "web.data.site"}).json()["items"]
+        self.assertEqual(sites[0]["key"], "googlevideo.com")
+        # Plan-gated with Online protection (web).
+        self.assertEqual(entitlements.module_for("web.data.app"), entitlements.WEB)
