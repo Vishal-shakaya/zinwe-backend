@@ -479,3 +479,26 @@ class AgentRelease(models.Model):
 
     def __str__(self) -> str:
         return f"Zinwe Agent {self.version}{' (required)' if self.required else ''}"
+
+
+class NotificationPrefs(models.Model):
+    """
+    What the owner wants to hear about in the browser while the dashboard is open (FR-15): new chat replies,
+    alerts from a chosen severity up, and break / log-out requests waiting for their OK. One row per owner, made
+    on first use; missing = the defaults.
+    """
+
+    class AlertLevel(models.TextChoices):
+        ALL = "all", "Every alert"
+        WARNING = "warning", "Warnings and critical"
+        CRITICAL = "critical", "Critical only"
+        OFF = "off", "None"
+
+    owner = models.OneToOneField("z_auth.User", on_delete=models.CASCADE, related_name="notification_prefs")
+    chat = models.BooleanField(default=True)
+    alerts = models.CharField(max_length=10, choices=AlertLevel.choices, default=AlertLevel.WARNING)
+    approvals = models.BooleanField(default=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self) -> str:
+        return f"Notifications for {self.owner}"

@@ -7,7 +7,7 @@ from typing import Any
 from rest_framework import serializers
 
 from .events import EVENT_TYPE_PATTERN, build_title, event_kind
-from .models import Device, DeviceEvent, EnrollmentKey, Member, Message, Policy, WorkLog
+from .models import Device, DeviceEvent, EnrollmentKey, Member, Message, NotificationPrefs, Policy, WorkLog
 
 
 class EnrollSerializer(serializers.Serializer):
@@ -167,6 +167,14 @@ class MemberReplySerializer(serializers.Serializer):
     """POST /api/devices/messages/ (Device auth) -- the member replies in the thread."""
 
     body = serializers.CharField(max_length=2000, trim_whitespace=True)
+
+
+class NotificationPrefsSerializer(serializers.ModelSerializer):
+    """GET/PATCH /api/devices/notifications/settings/ -- what the owner is notified about in the browser (FR-15)."""
+
+    class Meta:
+        model = NotificationPrefs
+        fields = ["chat", "alerts", "approvals"]
 
 
 class MemberFeedbackSerializer(serializers.Serializer):

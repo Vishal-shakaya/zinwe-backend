@@ -19,6 +19,7 @@ from .models import AgentRelease, DeviceEvent, WorkLog
 from .authentication import DeviceTokenAuthentication, IsDevice, IsOwner
 from .serializers import (
     MemberFeedbackSerializer,
+    NotificationPrefsSerializer,
     DevicePolicySerializer,
     DeviceSerializer,
     EnrollmentKeySerializer,
@@ -133,6 +134,47 @@ class DeviceMessagesView(APIView):
         if message is None:
             return Response({"detail": "This PC isn't linked to a member."}, status=status.HTTP_400_BAD_REQUEST)
         return Response(MessageSerializer(message).data, status=status.HTTP_201_CREATED)
+
+
+class OwnerFeedView(APIView):
+    """
+    GET /api/devices/notifications/?since=<iso> -- what's new for the owner since then (FR-15): {now, items}. The
+    dashboard polls it and shows browser notifications; pass back `now` as the next `since`. No `since` = no items.
+    """
+
+    permission_classes = [IsOwner]
+
+    def get(self, request: Request) -> Response:
+        from django.utils.dateparse import parse_datetime
+
+        from .owner_feed import feed
+
+        raw = request.query_params.get("since", "")
+        since = parse_datetime(raw) if raw else None
+        if raw and since is None:
+            return Response({"since": ["Use an ISO date and time."]}, status=status.HTTP_400_BAD_REQUEST)
+        if since is not None and timezone.is_naive(since):
+            since = timezone.make_aware(since)
+        return Response(feed(request.user, since))
+
+
+class NotificationPrefsView(APIView):
+    """GET/PATCH /api/devices/notifications/settings/ -- {chat, alerts: all|warning|critical|off, approvals}."""
+
+    permission_classes = [IsOwner]
+
+    def get(self, request: Request) -> Response:
+        from .owner_feed import prefs_for
+
+        return Response(NotificationPrefsSerializer(prefs_for(request.user)).data)
+
+    def patch(self, request: Request) -> Response:
+        from .owner_feed import prefs_for
+
+        serializer = NotificationPrefsSerializer(prefs_for(request.user), data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
 
 
 class DeviceFeedbackView(APIView):
