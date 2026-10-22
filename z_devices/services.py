@@ -98,7 +98,7 @@ def generate_unique_member_code() -> str:
 
 
 @transaction.atomic
-def create_member(owner: User, name: str, email: str) -> Member:
+def create_member(owner: User, name: str, email: str, role: str = "") -> Member:
     """
     Register an employee under `owner` and mint their enrol id.
 
@@ -109,7 +109,7 @@ def create_member(owner: User, name: str, email: str) -> Member:
         raise MemberAlreadyExists("A member with this email already exists.")
     try:
         member = Member.objects.create(
-            owner=owner, name=name.strip(), email=email, member_code=generate_unique_member_code()
+            owner=owner, name=name.strip(), email=email, role=role, member_code=generate_unique_member_code()
         )
     except IntegrityError as exc:  # the unique (owner, email) lost a race
         raise MemberAlreadyExists("A member with this email already exists.") from exc

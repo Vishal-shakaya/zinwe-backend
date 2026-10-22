@@ -19,6 +19,7 @@ from .models import AgentRelease, DeviceEvent, WorkLog
 from .authentication import DeviceTokenAuthentication, IsDevice, IsOwner
 from .serializers import (
     MemberFeedbackSerializer,
+    MemberUpdateSerializer,
     NotificationPrefsSerializer,
     DevicePolicySerializer,
     DeviceSerializer,
@@ -311,10 +312,38 @@ class MemberListCreateView(APIView):
                 request.user,
                 name=serializer.validated_data["name"],
                 email=serializer.validated_data["email"],
+                role=serializer.validated_data.get("role", ""),
             )
         except services.MemberAlreadyExists as exc:
             return Response({"email": [str(exc)]}, status=status.HTTP_409_CONFLICT)
         return Response(MemberSerializer(member).data, status=status.HTTP_201_CREATED)
+
+
+class MemberDetailView(APIView):
+    """PATCH /api/devices/members/<id>/ {role} -- what this member does (FR-19: their card's colour theme)."""
+
+    permission_classes = [IsOwner]
+
+    def patch(self, request: Request, member_id: int) -> Response:
+        from .models import Member
+
+        member = get_object_or_404(Member, pk=member_id, owner=request.user)
+        data = MemberUpdateSerializer(data=request.data)
+        data.is_valid(raise_exception=True)
+        member.role = data.validated_data["role"]
+        member.save(update_fields=["role"])
+        return Response(MemberSerializer(member).data)
+
+
+class MemberTagsView(APIView):
+    """GET /api/devices/members/tags/ -- playful, kind tags per member from the last 7 days (FR-19), owner only."""
+
+    permission_classes = [IsOwner]
+
+    def get(self, request: Request) -> Response:
+        from .tags import tags_for_owner
+
+        return Response(tags_for_owner(request.user))
 
 
 class MemberRotateIdView(APIView):

@@ -15,6 +15,8 @@ urlpatterns = [
         name="enrollment-key-rotate",
     ),
     path("members/", views.MemberListCreateView.as_view(), name="members"),
+    path("members/tags/", views.MemberTagsView.as_view(), name="member-tags"),
+    path("members/<int:member_id>/", views.MemberDetailView.as_view(), name="member-detail"),
     path(
         "members/<int:member_id>/rotate-id/",
         views.MemberRotateIdView.as_view(),

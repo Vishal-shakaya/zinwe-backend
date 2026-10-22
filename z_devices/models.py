@@ -68,9 +68,22 @@ class Member(models.Model):
     replacing the old org-wide enrollment key.
     """
 
+    class Role(models.TextChoices):
+        """What they do (FR-19): gives their card a colour theme on the owner's dashboard. Optional."""
+
+        DEVELOPER = "developer", "Developer"
+        DESIGNER = "designer", "Designer"
+        SALES = "sales", "Sales"
+        SUPPORT = "support", "Support"
+        ACCOUNTS = "accounts", "Accounts"
+        OPERATIONS = "operations", "Operations"
+        MANAGEMENT = "management", "Management"
+        OTHER = "other", "Other"
+
     owner = models.ForeignKey("z_auth.User", on_delete=models.CASCADE, related_name="members")
     name = models.CharField(max_length=150)
     email = models.EmailField()
+    role = models.CharField(max_length=20, choices=Role.choices, blank=True, default="")
     member_code = models.CharField(max_length=16, unique=True, default=generate_member_code)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)

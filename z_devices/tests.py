@@ -368,7 +368,7 @@ class MemberTests(DeviceTestCase):
         self.assertEqual(
             set(row),
             {
-                "id", "name", "email", "member_id", "is_active", "created_at",
+                "id", "name", "email", "member_id", "role", "is_active", "created_at",
                 "online", "device", "download_url", "unread",
             },
         )

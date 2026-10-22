@@ -36,6 +36,13 @@ class MemberCreateSerializer(serializers.Serializer):
 
     name = serializers.CharField(max_length=150)
     email = serializers.EmailField(max_length=254)
+    role = serializers.ChoiceField(choices=Member.Role.choices, required=False, allow_blank=True, default="")
+
+
+class MemberUpdateSerializer(serializers.Serializer):
+    """PATCH /api/devices/members/<id>/ -- the owner sets what a member does (FR-19)."""
+
+    role = serializers.ChoiceField(choices=Member.Role.choices, allow_blank=True)
 
 
 class MemberSerializer(serializers.Serializer):
@@ -48,6 +55,7 @@ class MemberSerializer(serializers.Serializer):
     name = serializers.CharField(read_only=True)
     email = serializers.EmailField(read_only=True)
     member_id = serializers.CharField(source="member_code", read_only=True)
+    role = serializers.CharField(read_only=True)
     is_active = serializers.BooleanField(read_only=True)
     created_at = serializers.DateTimeField(read_only=True)
     online = serializers.SerializerMethodField()
