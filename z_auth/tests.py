@@ -343,13 +343,15 @@ class PlanTests(APITestCase):
         teams.save()
         teams.refresh_from_db()
         self.assertEqual(str(teams.price_inr_monthly), "1799.00")
-        # 0022: every plan has every feature; plans differ by PCs and history kept.
-        self.assertEqual(plans["free"].features[0], "Every Zinwe feature")
+        # 0022: every plan has every feature; plans differ by PCs and history kept. 0029: except reports_pro (PDF,
+        # emailed and scheduled reports), on the paid plans only.
+        self.assertEqual(plans["free"].features[0], "Every protection and team feature")
+        self.assertIn("PDF reports by email: daily, weekly or monthly", plans["startups"].features)
         self.assertEqual(plans["startups"].features[0], "Everything in Free forever")
         self.assertEqual(plans["businesses"].features[0], "Everything in Teams")
         self.assertEqual(
             {code: (sorted(p.modules), p.history_days) for code, p in plans.items() if p.is_active},
-            {"free": (sorted(MODULES), 7), "startups": (sorted(MODULES), 90), "teams": (sorted(MODULES), 180),
+            {"free": (sorted(set(MODULES) - {"reports_pro"}), 7), "startups": (sorted(MODULES), 90), "teams": (sorted(MODULES), 180),
              "businesses": (sorted(MODULES), 365)},
         )
         # Pricing (0017): list prices up 35%, then 28% / 30% off — what owners pay follows the list price.

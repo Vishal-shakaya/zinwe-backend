@@ -7,7 +7,9 @@ from typing import Any
 from rest_framework import serializers
 
 from .events import EVENT_TYPE_PATTERN, build_title, event_kind
-from .models import Device, DeviceEvent, EnrollmentKey, Member, Message, NotificationPrefs, Policy, WorkLog
+from .models import (
+    Device, DeviceEvent, EnrollmentKey, Member, Message, NotificationPrefs, Policy, ReportSchedule, WorkLog,
+)
 
 
 class EnrollSerializer(serializers.Serializer):
@@ -582,3 +584,100 @@ class MetricsTopQuerySerializer(serializers.Serializer):
     device = serializers.IntegerField(min_value=1, required=False)
     days = serializers.IntegerField(min_value=1, max_value=31, default=7)
     limit = serializers.IntegerField(min_value=1, max_value=100, default=20)
+
+
+# ---- FR-22: emailed and scheduled reports ---------------------------------------------------------------------
+
+
+class _OwnMember(serializers.PrimaryKeyRelatedField):
+    """A member of the requesting owner's team (context["owner"]); anyone else's is "not found"."""
+
+    def get_queryset(self):  # type: ignore[no-untyped-def]
+        return Member.objects.filter(owner=self.context["owner"])
+
+
+class ReportSendSerializer(serializers.Serializer):
+    """POST reports/send/: the period shown, who it's about, and who gets it."""
+
+    start = serializers.DateField()
+    end = serializers.DateField()
+    member = _OwnMember(required=False, allow_null=True)
+    send_to_owner = serializers.BooleanField(default=True)
+    send_to_members = serializers.BooleanField(default=False)
+    emails = serializers.ListField(child=serializers.EmailField(), required=False, default=list, max_length=5)
+    include_csv = serializers.BooleanField(default=False)
+
+    def to_internal_value(self, data):  # type: ignore[no-untyped-def]
+        # The page sends "from"/"to" like the GET; "from" is a Python keyword, so map it here.
+        if hasattr(data, "copy"):
+            data = data.copy()
+        if "from" in data and "start" not in data:
+            data["start"] = data.get("from")
+        if "to" in data and "end" not in data:
+            data["end"] = data.get("to")
+        return super().to_internal_value(data)
+
+    def validate(self, attrs):  # type: ignore[no-untyped-def]
+        if not (attrs.get("send_to_owner") or attrs.get("send_to_members") or attrs.get("emails")):
+            raise serializers.ValidationError("Choose who gets the report.")
+        return attrs
+
+
+class ReportScheduleSerializer(serializers.ModelSerializer):
+    member = _OwnMember(required=False, allow_null=True)
+    member_name = serializers.SerializerMethodField()
+    description = serializers.SerializerMethodField()
+    weekday = serializers.IntegerField(min_value=0, max_value=6, required=False)
+    month_day = serializers.IntegerField(min_value=1, max_value=28, required=False)
+    every_days = serializers.IntegerField(min_value=2, max_value=90, required=False)
+    send_hour = serializers.IntegerField(min_value=0, max_value=23, required=False)
+    extra_emails = serializers.ListField(child=serializers.EmailField(), required=False, max_length=5)
+
+    class Meta:
+        model = ReportSchedule
+        fields = [
+            "id", "member", "member_name", "frequency", "weekday", "month_day", "every_days", "send_hour",
+            "send_to_owner", "send_to_members", "extra_emails", "include_csv", "is_active", "description",
+            "next_run_at", "last_sent_at", "last_status", "created_at",
+        ]
+        read_only_fields = ["next_run_at", "last_sent_at", "last_status", "created_at"]
+
+    def get_member_name(self, obj) -> str | None:  # type: ignore[no-untyped-def]
+        return obj.member.name if obj.member_id else None
+
+    def get_description(self, obj) -> str:  # type: ignore[no-untyped-def]
+        from .report_schedules import describe
+
+        return describe(obj)
+
+    def validate_extra_emails(self, value):  # type: ignore[no-untyped-def]
+        from .report_mail import clean_emails
+
+        return clean_emails(value)
+
+    def validate(self, attrs):  # type: ignore[no-untyped-def]
+        def pick(name: str):  # type: ignore[no-untyped-def]
+            if name in attrs:
+                return attrs[name]
+            if self.instance is not None:
+                return getattr(self.instance, name)
+            return ReportSchedule._meta.get_field(name).get_default()
+
+        if not (pick("send_to_owner") or pick("send_to_members") or (pick("extra_emails") or [])):
+            raise serializers.ValidationError("Choose who gets the report.")
+        return attrs
+
+
+class ReportDeliverySerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    schedule = serializers.IntegerField(source="schedule_id", allow_null=True)
+    member_name = serializers.SerializerMethodField()
+    period_from = serializers.DateField()
+    period_to = serializers.DateField()
+    recipients = serializers.ListField(child=serializers.CharField())
+    status = serializers.CharField()
+    detail = serializers.CharField()
+    created_at = serializers.DateTimeField()
+
+    def get_member_name(self, obj) -> str | None:  # type: ignore[no-untyped-def]
+        return obj.member.name if obj.member_id else None

@@ -1,0 +1,13 @@
+{% autoescape off %}Hi {{ first_name }},
+
+{% if owner_name %}{{ owner_name }}{% else %}{{ company }}{% endif %} shares a summary of your work days with you{% if scheduled %} regularly{% endif %}. This one covers {{ period }}.
+
+{% for label, value in summary %}{{ label }}: {{ value }}
+{% endfor %}
+Your day-by-day details are in the attached PDF. It covers only your own days.
+
+Something looks off? Reply to this email to reach {% if owner_name %}{{ owner_name }}{% else %}{{ company }}{% endif %}.
+
+Sent by Zinwe for {{ company }}
+SKYTECHNO, New Delhi
+{% endautoescape %}

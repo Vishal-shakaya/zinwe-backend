@@ -553,11 +553,26 @@ class WorkLogView(APIView):
         return Response({"date": day, "entries": WorkLogSerializer(logs, many=True).data})
 
 
+def _report_member(request: Request):  # type: ignore[no-untyped-def]
+    """The ?member=<id> a report is about (one of the owner's own), or None for the whole team."""
+    from .models import Member
+
+    raw = request.query_params.get("member", "")
+    if not raw:
+        return None
+    if not raw.isdigit():
+        raise Http404
+    return get_object_or_404(Member, pk=int(raw), owner=request.user)
+
+
 class ReportView(APIView):
     """
-    GET /api/devices/reports/?from=YYYY-MM-DD&to=YYYY-MM-DD -- the team's report for that period (FR-17): per
-    person days worked, time worked / on breaks, breaks, log-outs, waiting for OK, alerts; top apps and sites.
-    GET /api/devices/reports/download/?from=&to= -- the same as a CSV file.
+    GET /api/devices/reports/?from=YYYY-MM-DD&to=YYYY-MM-DD[&member=<id>] -- the report for that period (FR-17,
+    FR-22), for the team or one person: per person days worked, time worked / on breaks, breaks, log-outs, waiting
+    for OK, usual start and finish, active time, internet data, alerts; the day-by-day trend; top apps, sites and
+    data use; for one person, each of their days.
+    GET /api/devices/reports/download/?from=&to=[&member=][&file=csv|pdf] -- the same as a CSV or (paid plans,
+    reports_pro) PDF file.
     """
 
     permission_classes = [IsOwner]
@@ -566,6 +581,8 @@ class ReportView(APIView):
     def get(self, request: Request) -> Response | HttpResponse:
         from django.utils.dateparse import parse_date
 
+        from .report_mail import company_name
+        from .report_pdf import report_filename, report_pdf
         from .reports import BadPeriod, build_report, clamp_period, report_csv
 
         raw_from, raw_to = request.query_params.get("from", ""), request.query_params.get("to", "")
@@ -576,21 +593,161 @@ class ReportView(APIView):
         if start is None or end is None:
             return Response({"detail": "Choose the period's first and last day (YYYY-MM-DD)."},
                             status=status.HTTP_400_BAD_REQUEST)
+        member = _report_member(request)
+        fmt = request.query_params.get("file", "csv") if self.download else "json"  # not "format": DRF owns that
+        if fmt == "pdf":
+            plan.require(request.user, plan.REPORTS_PRO)
         try:
             start, end = clamp_period(request.user, start, end)
         except BadPeriod as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-        report = build_report(request.user, start, end)
+        report = build_report(request.user, start, end, member=member)
         if not self.download:
             return Response(report)
-        company = getattr(getattr(request.user, "owned_company", None), "name", "") or request.user.email
+        company = company_name(request.user)
+        if fmt == "pdf":
+            response = HttpResponse(report_pdf(report, company), content_type="application/pdf")
+            response["Content-Disposition"] = f'attachment; filename="{report_filename(report)}"'
+            return response
         response = HttpResponse(report_csv(report, company), content_type="text/csv; charset=utf-8")
-        response["Content-Disposition"] = f'attachment; filename="Zinwe-report-{start}-to-{end}.csv"'
+        name = f"Zinwe-report-{start}-to-{end}.csv" if member is None else report_filename(report, "csv")
+        response["Content-Disposition"] = f'attachment; filename="{name}"'
         return response
 
 
 class ReportDownloadView(ReportView):
     download = True
+
+
+class ReportSendView(APIView):
+    """
+    POST /api/devices/reports/send/ {from, to, member?, send_to_owner, send_to_members, emails[], include_csv}
+    -- email the report now (FR-22, reports_pro). 200 = the recorded delivery; 429 after 20 sends in a day.
+    """
+
+    permission_classes = [IsOwner]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "report_send"
+
+    def post(self, request: Request) -> Response:
+        from .report_mail import MAX_MANUAL_SENDS_PER_DAY, manual_sends_today, send_report
+        from .reports import BadPeriod
+        from .serializers import ReportDeliverySerializer, ReportSendSerializer
+
+        plan.require(request.user, plan.REPORTS_PRO)
+        data = ReportSendSerializer(data=request.data, context={"owner": request.user})
+        data.is_valid(raise_exception=True)
+        if manual_sends_today(request.user) >= MAX_MANUAL_SENDS_PER_DAY:
+            return Response({"detail": "That's 20 reports emailed today. Try again tomorrow, or download it."},
+                            status=status.HTTP_429_TOO_MANY_REQUESTS)
+        v = data.validated_data
+        try:
+            delivery = send_report(
+                request.user, v["start"], v["end"], member=v.get("member"), to_owner=v["send_to_owner"],
+                to_members=v["send_to_members"], emails=v["emails"], include_csv=v["include_csv"],
+            )
+        except BadPeriod as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(ReportDeliverySerializer(delivery).data)
+
+
+class ReportScheduleListView(APIView):
+    """GET/POST /api/devices/reports/schedules/ -- the owner's scheduled reports (FR-22; creating needs reports_pro)."""
+
+    permission_classes = [IsOwner]
+
+    def get(self, request: Request) -> Response:
+        from .models import ReportSchedule
+        from .serializers import ReportScheduleSerializer
+
+        schedules = ReportSchedule.objects.filter(owner=request.user).select_related("member")
+        return Response(ReportScheduleSerializer(schedules, many=True, context={"owner": request.user}).data)
+
+    def post(self, request: Request) -> Response:
+        from .models import ReportSchedule
+        from .report_schedules import MAX_SCHEDULES, schedule_first_run
+        from .serializers import ReportScheduleSerializer
+
+        plan.require(request.user, plan.REPORTS_PRO)
+        if ReportSchedule.objects.filter(owner=request.user).count() >= MAX_SCHEDULES:
+            return Response({"detail": f"You can have up to {MAX_SCHEDULES} scheduled reports."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        data = ReportScheduleSerializer(data=request.data, context={"owner": request.user})
+        data.is_valid(raise_exception=True)
+        schedule = ReportSchedule(owner=request.user, **data.validated_data)
+        schedule_first_run(schedule)
+        schedule.save()
+        return Response(ReportScheduleSerializer(schedule, context={"owner": request.user}).data,
+                        status=status.HTTP_201_CREATED)
+
+
+class ReportScheduleDetailView(APIView):
+    """PATCH/DELETE /api/devices/reports/schedules/<id>/ -- change (reports_pro), pause or remove a schedule."""
+
+    permission_classes = [IsOwner]
+
+    def patch(self, request: Request, schedule_id: int) -> Response:
+        from .models import ReportSchedule
+        from .report_schedules import schedule_first_run
+        from .serializers import ReportScheduleSerializer
+
+        schedule = get_object_or_404(ReportSchedule, pk=schedule_id, owner=request.user)
+        if set(request.data) - {"is_active"} or request.data.get("is_active"):
+            plan.require(request.user, plan.REPORTS_PRO)  # pausing is always allowed
+        data = ReportScheduleSerializer(schedule, data=request.data, partial=True, context={"owner": request.user})
+        data.is_valid(raise_exception=True)
+        timing = {"frequency", "weekday", "month_day", "every_days", "send_hour", "is_active"}
+        schedule = data.save()
+        if timing & set(data.validated_data):
+            schedule_first_run(schedule)
+            schedule.save(update_fields=["next_run_at"])
+        return Response(ReportScheduleSerializer(schedule, context={"owner": request.user}).data)
+
+    def delete(self, request: Request, schedule_id: int) -> Response:
+        from .models import ReportSchedule
+
+        get_object_or_404(ReportSchedule, pk=schedule_id, owner=request.user).delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class ReportScheduleSendNowView(APIView):
+    """POST /api/devices/reports/schedules/<id>/send-now/ -- send a schedule's latest period now (to try it)."""
+
+    permission_classes = [IsOwner]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "report_send"
+
+    def post(self, request: Request, schedule_id: int) -> Response:
+        from .models import ReportSchedule
+        from .report_mail import MAX_MANUAL_SENDS_PER_DAY, manual_sends_today, send_report
+        from .report_schedules import period_for
+        from .serializers import ReportDeliverySerializer
+
+        plan.require(request.user, plan.REPORTS_PRO)
+        schedule = get_object_or_404(ReportSchedule.objects.select_related("member"), pk=schedule_id, owner=request.user)
+        if manual_sends_today(request.user) >= MAX_MANUAL_SENDS_PER_DAY:
+            return Response({"detail": "That's 20 reports emailed today. Try again tomorrow."},
+                            status=status.HTTP_429_TOO_MANY_REQUESTS)
+        start, end = period_for(schedule, timezone.localdate())
+        delivery = send_report(
+            request.user, start, end, member=schedule.member, to_owner=schedule.send_to_owner,
+            to_members=schedule.send_to_members, emails=schedule.extra_emails, include_csv=schedule.include_csv,
+        )
+        ReportSchedule.objects.filter(pk=schedule.pk).update(last_status=f"Sent now: {delivery.detail}"[:200])
+        return Response(ReportDeliverySerializer(delivery).data)
+
+
+class ReportDeliveryListView(APIView):
+    """GET /api/devices/reports/deliveries/ -- the last 50 reports emailed (FR-22's "Sent" list)."""
+
+    permission_classes = [IsOwner]
+
+    def get(self, request: Request) -> Response:
+        from .models import ReportDelivery
+        from .serializers import ReportDeliverySerializer
+
+        rows = ReportDelivery.objects.filter(owner=request.user).select_related("member")[:50]
+        return Response(ReportDeliverySerializer(rows, many=True).data)
 
 
 class BreakDecisionView(APIView):

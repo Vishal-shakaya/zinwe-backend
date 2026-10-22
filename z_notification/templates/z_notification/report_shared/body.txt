@@ -1,0 +1,17 @@
+{% autoescape off %}Hi{% if first_name %} {{ first_name }}{% endif %},
+
+{% if scheduled %}Here is your scheduled {{ title|lower }} for {{ company }} ({{ schedule_label|lower }}).{% else %}Here is the {{ title|lower }} for {{ company }}.{% endif %}
+Period: {{ period }}
+
+{% for label, value in summary %}{{ label }}: {{ value }}
+{% endfor %}{% if people %}
+By person (time worked):
+{% for p in people %}- {{ p.name }}: {{ p.worked }} over {{ p.days }} day{{ p.days|pluralize }}
+{% endfor %}{% if more_people %}...and {{ more_people }} more in the attached PDF.
+{% endif %}{% endif %}
+The full report is attached as a PDF.{% if is_owner %} See it on your dashboard: {{ report_url }}{% endif %}
+
+{% if is_owner and scheduled %}You can change or stop scheduled reports on the dashboard's Reports page.
+{% endif %}Sent by Zinwe for {{ company }}
+SKYTECHNO, New Delhi
+{% endautoescape %}

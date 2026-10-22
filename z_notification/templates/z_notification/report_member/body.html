@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+<body style="margin:0;padding:24px;background:#f6f7f9;font-family:Segoe UI,Arial,sans-serif;color:#1d2433;">
+  <div style="max-width:560px;margin:0 auto;background:#ffffff;border-radius:8px;padding:28px;font-size:15px;line-height:1.55;">
+    {% include "z_notification/_brand.html" %}
+    <p style="margin:0 0 16px;">Hi {{ first_name }},</p>
+    <p style="margin:0 0 16px;">{% if owner_name %}{{ owner_name }}{% else %}{{ company }}{% endif %} shares a summary of your work days with you{% if scheduled %} regularly{% endif %}. This one covers <strong>{{ period }}</strong>.</p>
+    <table style="margin:0 0 18px;border-collapse:collapse;width:100%;background:#f7f7f4;border-radius:8px;">
+{% for label, value in summary %}      <tr><td style="padding:8px 14px;color:#6b7280;border-bottom:1px solid #ecece7;">{{ label }}</td><td style="padding:8px 14px;font-weight:600;text-align:right;border-bottom:1px solid #ecece7;">{{ value }}</td></tr>
+{% endfor %}    </table>
+    <p style="margin:0 0 16px;">Your day-by-day details are in the attached PDF. It covers only your own days.</p>
+    <p style="margin:0 0 16px;color:#4b5563;">Something looks off? Reply to this email to reach {% if owner_name %}{{ owner_name }}{% else %}{{ company }}{% endif %}.</p>
+    <p style="margin:0;color:#6b7280;">Sent by Zinwe for {{ company }}<br>SKYTECHNO, New Delhi</p>
+  </div>
+</body>
+</html>

@@ -234,6 +234,7 @@ REST_FRAMEWORK = {
         "auth_login_ip": "300/hour",
         "auth_otp": "30/hour",
         "alert_email": "60/hour",
+        "report_send": "30/hour",
         "support": "30/hour",
         "payment_submit": "10/hour",
         "feedback": "20/hour",

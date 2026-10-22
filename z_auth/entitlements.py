@@ -8,7 +8,8 @@ plan. `max_devices` 0 means no PC limit.
 
 Since 2026-10-17 every plan has every module (migration 0021): plans differ by PCs (`max_devices`) and by
 history kept (`history_days`: older alerts, activity and work log are hidden, then pruned by
-z_devices.retention). The module gating below stays, so features can be tied to plans again later
+z_devices.retention). The exception since 2026-10-23 is `reports_pro` (PDF, emailed and scheduled reports):
+paid plans only (migration 0029). The module gating below stays, so features can be tied to plans again later
 just by editing a plan's modules.
 
 Enforced in z_devices (see the "Plan enforcement" notes there): the PC limit at enrolment,
@@ -41,6 +42,7 @@ WORK_TIME = "work_time"
 APP_USAGE = "app_usage"
 TEAM_CHAT = "team_chat"
 ALERT_TO_EMPLOYEE = "alert_to_employee"
+REPORTS_PRO = "reports_pro"  # FR-22: PDF reports, emailing them, and scheduled reports (paid plans; migration 0029)
 
 # Owner-language names, used in "… is on the Startups plan" messages.
 MODULE_LABELS: dict[str, str] = {
@@ -54,11 +56,12 @@ MODULE_LABELS: dict[str, str] = {
     APP_USAGE: "App usage",
     TEAM_CHAT: "Chat with your team",
     ALERT_TO_EMPLOYEE: "Emailing an alert to the employee",
+    REPORTS_PRO: "PDF, emailed and scheduled reports",
 }
 MODULES: tuple[str, ...] = tuple(MODULE_LABELS)
 
 # Used only when the Free forever row is missing (it never should be).
-FALLBACK_MODULES = frozenset(MODULE_LABELS)  # every plan has every feature since 2026-10-17
+FALLBACK_MODULES = frozenset(MODULE_LABELS) - {REPORTS_PRO}  # what Free has: everything but reports_pro
 FALLBACK_MAX_DEVICES = 3
 FALLBACK_HISTORY_DAYS = 7
 

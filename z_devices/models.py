@@ -515,3 +515,70 @@ class NotificationPrefs(models.Model):
 
     def __str__(self) -> str:
         return f"Notifications for {self.owner}"
+
+
+class ReportSchedule(models.Model):
+    """
+    A report the owner gets by email on a schedule (FR-22): the whole team or one person, for the period that
+    just ended (yesterday, last week, last month or the last N days), sent around `send_hour` (local time; the
+    jobs loop runs hourly). Recipients: the owner, each person their own report, and/or a few other addresses.
+    `next_run_at` is when it's next due; the jobs loop (report_schedules.send_due) sends it and moves it on.
+    """
+
+    class Frequency(models.TextChoices):
+        DAILY = "daily", "Every day (yesterday)"
+        WEEKLY = "weekly", "Every week (last Monday to Sunday)"
+        MONTHLY = "monthly", "Every month (last month)"
+        CUSTOM = "custom", "Every few days (the last N days)"
+
+    owner = models.ForeignKey("z_auth.User", on_delete=models.CASCADE, related_name="report_schedules")
+    # Null = the whole team.
+    member = models.ForeignKey(Member, null=True, blank=True, on_delete=models.CASCADE, related_name="report_schedules")
+    frequency = models.CharField(max_length=10, choices=Frequency.choices, default=Frequency.WEEKLY)
+    weekday = models.PositiveSmallIntegerField(default=0, help_text="Weekly: the day it's sent, 0 = Monday.")
+    month_day = models.PositiveSmallIntegerField(default=1, help_text="Monthly: the day of the month it's sent (1-28).")
+    every_days = models.PositiveSmallIntegerField(default=14, help_text="Custom: sent every N days, covering them (2-90).")
+    send_hour = models.PositiveSmallIntegerField(default=9, help_text="Local hour it's sent (0-23).")
+    send_to_owner = models.BooleanField(default=True)
+    send_to_members = models.BooleanField(default=False, help_text="Each person gets their own report, nobody else's.")
+    extra_emails = models.JSONField(default=list, blank=True, help_text="Other addresses that get the report (max 5).")
+    include_csv = models.BooleanField(default=False)
+    is_active = models.BooleanField(default=True)
+    next_run_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    last_sent_at = models.DateTimeField(null=True, blank=True)
+    last_status = models.CharField(max_length=200, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]
+
+    def __str__(self) -> str:
+        who = self.member.name if self.member_id else "team"
+        return f"{self.get_frequency_display()} report ({who}) for {self.owner}"
+
+
+class ReportDelivery(models.Model):
+    """One report that went out by email (FR-22): sent from the Reports page or by a schedule. The "Sent" list."""
+
+    class Status(models.TextChoices):
+        SENT = "sent", "Sent"
+        PARTIAL = "partial", "Some emails failed"
+        FAILED = "failed", "Failed"
+        SKIPPED = "skipped", "Skipped"
+
+    owner = models.ForeignKey("z_auth.User", on_delete=models.CASCADE, related_name="report_deliveries")
+    schedule = models.ForeignKey(ReportSchedule, null=True, blank=True, on_delete=models.SET_NULL, related_name="deliveries")
+    member = models.ForeignKey(Member, null=True, blank=True, on_delete=models.SET_NULL, related_name="report_deliveries")
+    period_from = models.DateField()
+    period_to = models.DateField()
+    recipients = models.JSONField(default=list, blank=True)
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.SENT)
+    detail = models.CharField(max_length=300, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+
+    def __str__(self) -> str:
+        return f"Report {self.period_from}..{self.period_to} for {self.owner} ({self.status})"

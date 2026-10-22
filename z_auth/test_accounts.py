@@ -406,12 +406,12 @@ class LogoutAndMeTests(PortalTestCase):
         # No active plan yet: Free forever's modules and PC limit apply.
         self.assertEqual(body["entitlements"]["plan_code"], "free")
         self.assertFalse(body["entitlements"]["on_active_plan"])
-        # Every plan has every feature (0022); Free differs by PCs and history kept.
-        self.assertEqual(body["entitlements"]["modules"], sorted(MODULES))
+        # Every plan has every feature (0022) but reports_pro (0029, paid plans); Free also differs by PCs and history.
+        self.assertEqual(body["entitlements"]["modules"], sorted(set(MODULES) - {"reports_pro"}))
         self.assertEqual(body["entitlements"]["max_devices"], 3)
         self.assertEqual(body["entitlements"]["history_days"], 7)
         self.assertEqual(body["entitlements"]["devices_used"], 0)
-        self.assertEqual(body["entitlements"]["upgrade_for"], {})
+        self.assertEqual(body["entitlements"]["upgrade_for"], {"reports_pro": {"code": "startups", "name": "Startups"}})
         self.assertIsNone(body["company"])
         self.assertIsNone(body["subscription"])
         self.assertIsNone(body["active_plan"])

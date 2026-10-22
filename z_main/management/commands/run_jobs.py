@@ -2,7 +2,8 @@
 
 Runs every scheduled job now, then again every `--interval` seconds. Today that's renewal
 reminders (z_auth.renewals), feedback requests (z_auth.feedback_requests), blog newsletters
-(z_blog.newsletter: what a background send left, and issues of scheduled articles that went live) and
+(z_blog.newsletter: what a background send left, and issues of scheduled articles that went live), scheduled
+reports (z_devices.report_schedules) and
 the history clean-up (z_devices.retention: data past each plan's history window + 30 days). A failing job is logged and retried next round; the loop keeps
 going. Used by the local start script; a server can run this as a service or schedule the
 individual commands with cron instead.
@@ -21,6 +22,7 @@ from z_auth.renewals import send_due_reminders
 from z_blog.drip import send_due as send_series_emails
 from z_blog.guide_followups import send_due as send_guide_followups
 from z_blog.newsletter import send_pending as send_newsletters
+from z_devices.report_schedules import send_due as send_scheduled_reports
 from z_devices.retention import prune_history
 
 # (label, job): each returns a result with .summary(). One failing job doesn't stop the others.
@@ -30,6 +32,7 @@ JOBS = (
     ("newsletters", send_newsletters),
     ("series emails", send_series_emails),
     ("guide follow-ups", send_guide_followups),  # after the series: one Zinwe email a day per member
+    ("scheduled reports", send_scheduled_reports),  # FR-22: daily / weekly / monthly reports by email
     ("history clean-up", prune_history),
 )
 
