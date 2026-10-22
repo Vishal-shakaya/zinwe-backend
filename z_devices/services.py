@@ -772,6 +772,10 @@ def record_heartbeat(device: Device, data: dict[str, Any], ip: str | None) -> di
         _log_work_change(device, data, now)
     _record_consent(device, data, now)
     if ent.has(plan.WORK_TIME):
+        if data["work_state"] != device.work_state or data.get("work_changed_at"):
+            # When this state began (the widget's last change; older agents: when we first heard of it).
+            since = data.get("work_changed_at") or now
+            device.work_since = min(since, now)
         device.work_state = data["work_state"]
         device.worked_seconds = data["worked_seconds"]
         device.break_seconds = data["break_seconds"]
@@ -781,6 +785,7 @@ def record_heartbeat(device: Device, data: dict[str, Any], ip: str | None) -> di
         device.work_state = Device.WorkState.NOT_STARTED
         device.worked_seconds = 0
         device.break_seconds = 0
+        device.work_since = None
     device.work_updated_at = now
     # "Restore USB" (J5-02): told once, on the first heartbeat after the owner pressed it.
     usb_restore = bool(
@@ -792,7 +797,7 @@ def record_heartbeat(device: Device, data: dict[str, Any], ip: str | None) -> di
     device.save(
         update_fields=[
             "last_seen_at", "last_ip", "agent_version", "os_version", "hostname",
-            "work_state", "worked_seconds", "break_seconds", "work_updated_at",
+            "work_state", "worked_seconds", "break_seconds", "work_updated_at", "work_since",
             "consent_version", "consent_at", "consent_declined_at", "usb_restore_delivered_at",
         ]
     )

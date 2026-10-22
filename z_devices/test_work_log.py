@@ -265,3 +265,55 @@ class ConsentHeartbeatTests(DeviceTestCase):
         self.as_owner()
         member = self.client.get("/api/devices/members/").json()[0]
         self.assertEqual(member["device"]["consent_version"], "2026-10-14")
+
+
+class LiveWorkTimeTests(DeviceTestCase):
+    """FR-03: the widget reports settled seconds only; the dashboard adds the stretch still running."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.token = self.enroll().json()["device_token"]
+
+    def beat(self, state: str, **extra):  # type: ignore[no-untyped-def]
+        self.as_device(self.token)
+        return self.client.post(HEARTBEAT_URL, {"work_state": state, **extra}, format="json")
+
+    def _member_device(self):  # type: ignore[no-untyped-def]
+        self.as_owner()
+        return self.client.get("/api/devices/members/").json()[0]["device"]
+
+    def test_working_since_morning_with_no_break_counts_the_running_stretch(self) -> None:
+        since = (timezone.now() - timedelta(hours=2)).isoformat()
+        self.beat("working", worked_seconds=0, break_seconds=0, work_changed_at=since)
+        device = self._member_device()
+        self.assertGreaterEqual(device["worked_seconds"], 2 * 3600 - 5)
+        self.assertLessEqual(device["worked_seconds"], 2 * 3600 + 60)
+        self.assertEqual(device["break_seconds"], 0)
+
+    def test_after_a_break_the_day_total_keeps_growing(self) -> None:
+        self.beat("on_break", worked_seconds=3 * 3600, break_seconds=0,
+                  work_changed_at=(timezone.now() - timedelta(minutes=10)).isoformat())
+        device = self._member_device()
+        self.assertEqual(device["worked_seconds"], 3 * 3600)  # paused during the break
+        self.assertGreaterEqual(device["break_seconds"], 600 - 5)
+        self.beat("working", worked_seconds=3 * 3600, break_seconds=900,
+                  work_changed_at=(timezone.now() - timedelta(minutes=30)).isoformat())
+        device = self._member_device()
+        self.assertGreaterEqual(device["worked_seconds"], 3 * 3600 + 1800 - 5)
+        self.assertEqual(device["break_seconds"], 900)
+
+    def test_a_pc_switched_off_stops_counting_at_its_last_heartbeat(self) -> None:
+        from .models import Device
+
+        self.beat("working", worked_seconds=0, break_seconds=0,
+                  work_changed_at=(timezone.now() - timedelta(hours=3)).isoformat())
+        Device.objects.update(last_seen_at=timezone.now() - timedelta(hours=1))
+        device = self._member_device()
+        self.assertGreaterEqual(device["worked_seconds"], 2 * 3600 - 5)
+        self.assertLessEqual(device["worked_seconds"], 2 * 3600 + 5)
+
+    def test_ended_day_reports_the_settled_totals(self) -> None:
+        self.beat("ended", worked_seconds=7 * 3600, break_seconds=1800,
+                  work_changed_at=(timezone.now() - timedelta(hours=1)).isoformat())
+        device = self._member_device()
+        self.assertEqual((device["worked_seconds"], device["break_seconds"]), (7 * 3600, 1800))

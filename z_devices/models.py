@@ -137,6 +137,9 @@ class Device(models.Model):
     worked_seconds = models.PositiveIntegerField(default=0)
     break_seconds = models.PositiveIntegerField(default=0)
     work_updated_at = models.DateTimeField(null=True, blank=True)
+    # When the current work state began (the widget's last change). The widget reports *settled*
+    # seconds only, so the running stretch is added at read time (FR-03): see live_work_seconds().
+    work_since = models.DateTimeField(null=True, blank=True)
 
     # The member's own consent to monitoring on this PC (DPDP: free, specific, informed,
     # affirmative), given on the Zinwe widget's consent screen and reported on the heartbeat.
@@ -178,6 +181,25 @@ class Device(models.Model):
         if self.consent_at is not None:
             return self.CONSENT_GIVEN
         return self.CONSENT_PENDING
+
+    def live_work_seconds(self, now=None) -> tuple[int, int]:
+        """
+        (worked, break) seconds for today including the stretch still running (FR-03). The widget
+        settles time only when the member changes state, so "Working since 09:00, no break yet"
+        arrives as 0 worked seconds. Counted up to now while the PC is online, else only up to its
+        last heartbeat (a PC switched off mid-day doesn't keep earning hours).
+        """
+        worked, on_break = int(self.worked_seconds or 0), int(self.break_seconds or 0)
+        if self.work_since is None or self.work_state not in (self.WorkState.WORKING, self.WorkState.ON_BREAK):
+            return worked, on_break
+        now = now or timezone.now()
+        end = now if self.is_online else (self.last_seen_at or self.work_since)
+        running = max(0, int((min(end, now) - self.work_since).total_seconds()))
+        if self.work_state == self.WorkState.WORKING:
+            worked += running
+        else:
+            on_break += running
+        return worked, on_break
 
     @property
     def is_online(self) -> bool:

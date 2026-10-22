@@ -88,8 +88,9 @@ class MemberSerializer(serializers.Serializer):
             "is_online": device.is_online,
             "agent_version": device.agent_version,
             "work_state": device.work_state,
-            "worked_seconds": device.worked_seconds,
-            "break_seconds": device.break_seconds,
+            # Today's totals including the stretch still running (FR-03).
+            "worked_seconds": device.live_work_seconds()[0],
+            "break_seconds": device.live_work_seconds()[1],
             "consent_version": device.consent_version,
             "consent_at": device.consent_at,
             "consent_state": device.consent_state,
@@ -276,6 +277,9 @@ class DeviceSerializer(serializers.ModelSerializer):
     member_id = serializers.IntegerField(read_only=True, allow_null=True)
     member_name = serializers.SerializerMethodField()
     consent_state = serializers.CharField(read_only=True)
+    # Today's totals including the stretch still running (FR-03).
+    worked_seconds = serializers.SerializerMethodField()
+    break_seconds = serializers.SerializerMethodField()
 
     class Meta:
         model = Device
@@ -289,6 +293,12 @@ class DeviceSerializer(serializers.ModelSerializer):
 
     def get_member_name(self, obj: Device) -> str | None:
         return obj.member.name if obj.member_id else None
+
+    def get_worked_seconds(self, obj: Device) -> int:
+        return obj.live_work_seconds()[0]
+
+    def get_break_seconds(self, obj: Device) -> int:
+        return obj.live_work_seconds()[1]
 
 
 # --- Policy -----------------------------------------------------------------
