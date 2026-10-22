@@ -1,7 +1,7 @@
 """Thin HTTP layer for z_devices. Validation in serializers, logic in services."""
 from __future__ import annotations
 
-from django.http import FileResponse, Http404
+from django.http import FileResponse, Http404, HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status
@@ -522,6 +522,46 @@ class WorkLogView(APIView):
         day = query.validated_data.get("date") or timezone.localdate()
         logs = services.work_log_for_owner(request.user, day, query.validated_data.get("member"))
         return Response({"date": day, "entries": WorkLogSerializer(logs, many=True).data})
+
+
+class ReportView(APIView):
+    """
+    GET /api/devices/reports/?from=YYYY-MM-DD&to=YYYY-MM-DD -- the team's report for that period (FR-17): per
+    person days worked, time worked / on breaks, breaks, log-outs, waiting for OK, alerts; top apps and sites.
+    GET /api/devices/reports/download/?from=&to= -- the same as a CSV file.
+    """
+
+    permission_classes = [IsOwner]
+    download = False
+
+    def get(self, request: Request) -> Response | HttpResponse:
+        from django.utils.dateparse import parse_date
+
+        from .reports import BadPeriod, build_report, clamp_period, report_csv
+
+        raw_from, raw_to = request.query_params.get("from", ""), request.query_params.get("to", "")
+        try:
+            start, end = parse_date(raw_from), parse_date(raw_to)
+        except ValueError:
+            start = end = None
+        if start is None or end is None:
+            return Response({"detail": "Choose the period's first and last day (YYYY-MM-DD)."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        try:
+            start, end = clamp_period(request.user, start, end)
+        except BadPeriod as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        report = build_report(request.user, start, end)
+        if not self.download:
+            return Response(report)
+        company = getattr(getattr(request.user, "owned_company", None), "name", "") or request.user.email
+        response = HttpResponse(report_csv(report, company), content_type="text/csv; charset=utf-8")
+        response["Content-Disposition"] = f'attachment; filename="Zinwe-report-{start}-to-{end}.csv"'
+        return response
+
+
+class ReportDownloadView(ReportView):
+    download = True
 
 
 class BreakDecisionView(APIView):
