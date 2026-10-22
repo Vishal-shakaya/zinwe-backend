@@ -225,7 +225,7 @@ class UpgradePreviewTests(OwnerBase):
         self.assertEqual(response.status_code, status.HTTP_200_OK, response.content)
         body = response.json()
         self.assertEqual(
-            set(body), {"quote", "covers_from", "covers_until", "carried_days", "upi_qr_svg", "upi_uri"}
+            set(body), {"quote", "covers_from", "covers_until", "carried_days", "upi_uri"}
         )
         self.assertEqual(body["quote"]["plan_code"], "teams")
         self.assertEqual(body["quote"]["amount"], "1799.00")
@@ -235,7 +235,6 @@ class UpgradePreviewTests(OwnerBase):
         self.assertEqual(body["covers_until"], timezone.localdate(until).isoformat())
         self.assertTrue(body["upi_uri"].startswith("upi://pay?pa=zinwe%40okbank"))
         self.assertIn(f"am={body['quote']['total']}", body["upi_uri"])
-        self.assertIn("<svg", body["upi_qr_svg"])
 
     def test_preview_from_free_carries_nothing(self) -> None:
         self.post(SUB_URL, {"plan": "free"})

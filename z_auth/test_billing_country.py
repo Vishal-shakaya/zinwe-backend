@@ -125,8 +125,9 @@ class FlowTests(_UpgradeBase):
     )
     def test_upi_qr_has_the_amount_due(self) -> None:
         self.post(SUB_URL, {"plan": "startups"})
-        svg = self.get(SUB_URL).json()["instructions"]["upi_qr_svg"]
-        self.assertTrue(svg.startswith("<svg"))
+        qr = self.get("/api/auth/subscription/upi-qr/").json()
+        self.assertTrue(qr["svg"].startswith("<svg"))
+        self.assertIn(f"am={qr['amount']}", qr["upi_uri"])
 
 
 class HelperTests(_UpgradeBase):

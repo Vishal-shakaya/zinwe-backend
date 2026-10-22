@@ -71,7 +71,8 @@ class ReceiptPaymentTests(MediaMixin, _UpgradeBase):
         ins = self.get(SUB_URL).json()["instructions"]
         self.assertEqual(ins["region"], "IN")
         self.assertEqual((ins["upi_id"], ins["ifsc"]), ("zinwe@okbank", "HDFC0001234"))
-        self.assertTrue(ins["upi_qr_svg"].startswith("<svg"))
+        self.assertNotIn("upi_qr_svg", ins)  # FR-06: the QR comes only on request
+        self.assertTrue(ins["upi_uri"].startswith("upi://pay?pa=zinwe%40okbank"))
         self.assertEqual(ins["skydo"]["routing_number"], "026073150")
         self.assertEqual(ins["payment_link"], SKYDO_PAGE)
 
@@ -83,7 +84,7 @@ class ReceiptPaymentTests(MediaMixin, _UpgradeBase):
         ins = self.get(SUB_URL).json()["instructions"]
         self.assertEqual(ins["region"], "INTL")
         self.assertEqual((ins["upi_id"], ins["account_number"]), ("zinwe@okbank", "50200012345678"))
-        self.assertEqual(ins["upi_qr_svg"], "")  # a USD amount can't go in a UPI QR
+        self.assertEqual(ins["upi_uri"], "")  # a USD amount can't go in a UPI payment
         self.assertEqual(ins["payment_link"], SKYDO_PAGE)
 
     def test_customer_payment_link_wins(self) -> None:
@@ -205,3 +206,88 @@ class QuoteTests(MediaMixin, _UpgradeBase):
         for _ in range(10):
             self.post(EMAIL_URL, {})
         self.assertEqual(self.post(EMAIL_URL, {}).status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+
+
+UPI_QR_URL = "/api/auth/subscription/upi-qr/"
+
+
+@override_settings(ZINWE_PAYMENT_INSTRUCTIONS=PAYMENT, ZINWE_SKYDO_ACCOUNT=SKYDO, ZINWE_SKYDO_PAYMENT_URL=SKYDO_PAGE)
+class UpiQrOnRequestTests(MediaMixin, _UpgradeBase):
+    """FR-06: the UPI QR is never in a page's data; it's made on request from the server's own UPI ID."""
+
+    def test_qr_for_what_is_due(self) -> None:
+        self.post(SUB_URL, {"plan": "startups"})
+        total = self.get(SUB_URL).json()["subscription"]["amount_due"]["total"]
+        response = self.get(UPI_QR_URL)
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.content)
+        self.assertEqual(response["Cache-Control"], "no-store")
+        qr = response.json()
+        self.assertEqual(set(qr), {"svg", "upi_id", "payee_name", "amount", "note", "upi_uri"})
+        self.assertTrue(qr["svg"].startswith("<svg"))
+        self.assertEqual((qr["upi_id"], qr["payee_name"], qr["amount"]), ("zinwe@okbank", "SKYTECHNO", total))
+        self.assertEqual(qr["note"], self.owner.owned_company.name[:40])
+
+    def test_the_request_cannot_change_who_or_how_much(self) -> None:
+        self.post(SUB_URL, {"plan": "startups"})
+        honest = self.get(UPI_QR_URL).json()
+        forged = self.get(UPI_QR_URL + "?upi_id=thief@ybl&pa=thief@ybl&amount=1&am=1").json()
+        self.assertEqual(forged, honest)
+
+    def test_follows_the_server_upi_id(self) -> None:
+        self.post(SUB_URL, {"plan": "startups"})
+        with self.settings(ZINWE_PAYMENT_INSTRUCTIONS={**PAYMENT, "upi_id": "new@kotak"}):
+            self.assertEqual(self.get(UPI_QR_URL).json()["upi_id"], "new@kotak")
+
+    def test_upgrade_qr_has_the_upgrade_amount(self) -> None:
+        self.start_startups()
+        preview = self.get("/api/auth/subscription/upgrade/teams/").json()
+        qr = self.get(UPI_QR_URL + "?upgrade=teams").json()
+        self.assertEqual(qr["amount"], preview["quote"]["total"])
+        self.assertEqual(qr["upi_uri"], preview["upi_uri"])
+        self.assertEqual(self.get(UPI_QR_URL + "?upgrade=free").status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(self.get(UPI_QR_URL + "?upgrade=nope").status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_no_qr_when_nothing_to_pay_by_upi(self) -> None:
+        self.assertEqual(self.get(UPI_QR_URL).status_code, status.HTTP_404_NOT_FOUND)  # no plan yet
+        self.post(SUB_URL, {"plan": "free"})
+        self.assertEqual(self.get(UPI_QR_URL).status_code, status.HTTP_404_NOT_FOUND)
+        with self.settings(ZINWE_PAYMENT_INSTRUCTIONS={**PAYMENT, "upi_id": ""}):
+            self.post(SUB_URL, {"plan": "startups"})
+            self.assertEqual(self.get(UPI_QR_URL).status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_usd_has_no_upi_qr(self) -> None:
+        company = self.owner.owned_company
+        company.country = "United States"
+        company.save()
+        self.post(SUB_URL, {"plan": "startups"})
+        self.assertEqual(self.get(UPI_QR_URL).status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_needs_login(self) -> None:
+        self.use_token(None)
+        self.assertEqual(self.get(UPI_QR_URL).status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_shared_quote_qr_only_while_open(self) -> None:
+        self.post(SUB_URL, {"plan": "startups"})
+        doc = self.get(QUOTE_URL).json()
+        token = doc["public_url"].rsplit("/", 1)[1]
+        self.use_token(None)
+        response = self.get(f"/api/auth/quotes/{token}/upi-qr/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.content)
+        self.assertEqual(response.json()["amount"], doc["quote"]["total"])
+        self.assertNotIn("upi_qr_svg", self.get(f"/api/auth/quotes/{token}/").json()["instructions"])
+        self.assertEqual(self.get("/api/auth/quotes/not-a-real-token/upi-qr/").status_code, status.HTTP_404_NOT_FOUND)
+        from rest_framework.authtoken.models import Token
+
+        self.use_token(Token.objects.get(user=self.owner).key)
+        self.post(PAY_URL, {"proof": receipt(), "accept_terms": "true"}, fmt="multipart")
+        self.use_token(None)
+        self.assertEqual(self.get(f"/api/auth/quotes/{token}/upi-qr/").status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_shared_quote_shows_todays_payment_details(self) -> None:
+        """A UPI ID changed after the link was sent: the link shows the new one, never the stored copy."""
+        self.post(SUB_URL, {"plan": "startups"})
+        token = self.get(QUOTE_URL).json()["public_url"].rsplit("/", 1)[1]
+        self.use_token(None)
+        with self.settings(ZINWE_PAYMENT_INSTRUCTIONS={**PAYMENT, "upi_id": "new@kotak"}):
+            self.assertEqual(self.get(f"/api/auth/quotes/{token}/").json()["instructions"]["upi_id"], "new@kotak")
+            self.assertEqual(self.get(f"/api/auth/quotes/{token}/upi-qr/").json()["upi_id"], "new@kotak")

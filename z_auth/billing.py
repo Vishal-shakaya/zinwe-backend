@@ -17,6 +17,7 @@ plan from that day. Every approved payment records the period it paid for (cover
 from __future__ import annotations
 
 import calendar
+import io
 import logging
 import math
 import os
@@ -204,11 +205,15 @@ def upi_uri(upi_id: str, payee: str, amount: str, note: str) -> str:
 
 
 def _upi_qr_svg(upi_id: str, payee: str, amount: str, note: str) -> str:
-    """A UPI QR (any UPI app) with the exact amount filled in, as an inline SVG."""
+    """A UPI QR (any UPI app) with the exact amount filled in, as a standalone SVG (with its namespace, so the
+    page can show it as an image)."""
     import segno
 
     uri = upi_uri(upi_id, payee, amount, note)
-    return segno.make(uri, error="m").svg_inline(scale=4, border=2, dark="#0d0d0e")
+    buf = io.BytesIO()
+    segno.make(uri, error="m").save(buf, kind="svg", xmldecl=False, svgns=True, nl=False, scale=4, border=2,
+                                    dark="#0d0d0e")
+    return buf.getvalue().decode("utf-8")
 
 
 def upi_note(company: Company | None, plan_name: str) -> str:
@@ -216,21 +221,37 @@ def upi_note(company: Company | None, plan_name: str) -> str:
     return (company.name if company and company.name else f"Zinwe {plan_name}")[:40]
 
 
-def _upi_for(quote: pricing.Quote, company: Company | None = None) -> tuple[str, str]:
-    """(QR svg, upi:// link) for an INR quote when a UPI ID is configured; ("", "") otherwise."""
+def upi_payment(quote: pricing.Quote, company: Company | None = None) -> dict[str, str] | None:
+    """
+    The UPI payment for an INR quote: the server's own UPI ID and payee (env, never the request or a stored copy),
+    the exact amount and the note, and the `upi://` link. None when UPI isn't set up, it's not INR or nothing is due.
+    """
     upi_id = settings.ZINWE_PAYMENT_INSTRUCTIONS.get("upi_id", "")
     if not upi_id or quote.currency != pricing.INR or quote.total <= 0:
-        return "", ""
+        return None
     payee = settings.ZINWE_PAYMENT_INSTRUCTIONS.get("payee_name", "")
     amount, note = f"{quote.total:.2f}", upi_note(company, quote.plan_name)
-    return _upi_qr_svg(upi_id, payee, amount, note), upi_uri(upi_id, payee, amount, note)
+    return {"upi_id": upi_id, "payee_name": payee, "amount": amount, "note": note,
+            "upi_uri": upi_uri(upi_id, payee, amount, note)}
+
+
+def upi_qr(quote: pricing.Quote, company: Company | None = None) -> dict[str, str] | None:
+    """
+    `upi_payment` plus its QR as an SVG (FR-06): made only when the owner asks for it ("Show QR code"), so the page
+    never carries a QR that could be swapped, and the screen shows the UPI ID and payee to check against the app.
+    """
+    pay = upi_payment(quote, company)
+    if pay is None:
+        return None
+    return {**pay, "svg": _upi_qr_svg(pay["upi_id"], pay["payee_name"], pay["amount"], pay["note"])}
 
 
 def payment_instructions(subscription: Subscription | None = None, company: Company | None = None) -> dict[str, Any]:
     """
     How to pay (portal-v1 §3.7, extended 2026-10-15; every way shown since 2026-10-16):
 
-    - UPI (with a QR code holding the exact amount due, for INR quotes) and bank transfer (NEFT / IMPS / RTGS).
+    - UPI (the `upi://` link with the exact amount due, for INR quotes; the QR itself only on request, see
+      `upi_qr`) and bank transfer (NEFT / IMPS / RTGS).
     - International: the customer's own Skydo payment link (card or US bank, set in the admin app), else the
       general Skydo page (`ZINWE_SKYDO_PAYMENT_URL`), and the Skydo US account for ACH / wire.
     - PayPal only as a fallback for customers outside India while no Skydo account is set up.
@@ -246,7 +267,6 @@ def payment_instructions(subscription: Subscription | None = None, company: Comp
     skydo = {k: v for k, v in settings.ZINWE_SKYDO_ACCOUNT.items() if v}
     data["skydo"] = skydo if skydo.get("account_number") else None
     data["payment_link"] = (subscription.payment_link if subscription else "") or settings.ZINWE_SKYDO_PAYMENT_URL
-    data["upi_qr_svg"] = ""
     data["upi_uri"] = ""
     if data["region"] == "INTL":
         if data["skydo"] or data["payment_link"]:
@@ -254,13 +274,17 @@ def payment_instructions(subscription: Subscription | None = None, company: Comp
         data["note"] = "Use your company name and quote number as the payment reference."
     else:
         data["paypal_url"] = ""
-        if subscription is not None and data.get("upi_id") and subscription.status != Status.CANCELLED:
-            due = amount_due(subscription)
-            if due.total > 0:
-                note = upi_note(company, due.plan_name)
-                data["upi_qr_svg"] = _upi_qr_svg(data["upi_id"], data.get("payee_name", ""), f"{due.total:.2f}", note)
-                data["upi_uri"] = upi_uri(data["upi_id"], data.get("payee_name", ""), f"{due.total:.2f}", note)
+        due = subscription_due(subscription)
+        pay = upi_payment(due, company) if due else None
+        data["upi_uri"] = pay["upi_uri"] if pay else ""
     return data
+
+
+def subscription_due(subscription: Subscription | None) -> pricing.Quote | None:
+    """What's due on the subscription now (None when there's no plan or it was cancelled)."""
+    if subscription is None or subscription.status == Status.CANCELLED:
+        return None
+    return amount_due(subscription)
 
 
 def check_upgrade(subscription: Subscription | None, plan: Plan) -> Subscription:
@@ -285,21 +309,20 @@ def carried_days(subscription: Subscription, now: datetime | None = None) -> int
 def upgrade_preview(user: User, plan: Plan, now: datetime | None = None) -> dict[str, Any]:
     """
     What moving up to `plan` costs and covers, before paying (J3-08): the quote, the period it buys
-    (today until one cycle later plus the paid days carried over) and the UPI QR / link for the exact amount.
-    Raises `UpgradeNotAllowed` / `PaymentUnderReview`.
+    (today until one cycle later plus the paid days carried over) and the UPI link for the exact amount (the QR
+    on request: `upi_qr`). Raises `UpgradeNotAllowed` / `PaymentUnderReview`.
     """
     now = now or timezone.now()
     subscription = check_upgrade(current_subscription(user), plan)
     due = amount_due(subscription, plan)
     start, until = upgrade_period(subscription, now)
-    qr, uri = _upi_for(due, subscription.company)
+    pay = upi_payment(due, subscription.company)
     return {
         "quote": due.as_dict(),
         "covers_from": timezone.localdate(start).isoformat(),
         "covers_until": timezone.localdate(until).isoformat(),
         "carried_days": carried_days(subscription, now),
-        "upi_qr_svg": qr,
-        "upi_uri": uri,
+        "upi_uri": pay["upi_uri"] if pay else "",
     }
 
 

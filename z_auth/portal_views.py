@@ -249,7 +249,7 @@ def _quote_pdf_response(doc: dict) -> HttpResponse:
 class UpgradePreviewView(APIView):
     """
     GET /api/auth/subscription/upgrade/<plan_code>/ -- before paying for an upgrade from an active plan:
-    {quote, covers_from, covers_until, carried_days, upi_qr_svg, upi_uri}. 404 unknown plan; 409 when the
+    {quote, covers_from, covers_until, carried_days, upi_uri}. 404 unknown plan; 409 when the
     upgrade isn't possible (no active plan, a payment under review, or not a higher plan).
     """
 
@@ -265,6 +265,47 @@ class UpgradePreviewView(APIView):
             return Response(billing.upgrade_preview(request.user, plan))
         except (billing.UpgradeNotAllowed, billing.PaymentUnderReview) as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
+
+
+NO_UPI_QR = {"detail": "There's no UPI payment to make here. Use another way to pay, or email hello@zinwe.io."}
+
+
+def _upi_qr_response(qr: dict | None) -> Response:
+    """The QR (or 404), never cached: it's made from the server's UPI ID each time it's asked for."""
+    response = Response(qr) if qr else Response(NO_UPI_QR, status=status.HTTP_404_NOT_FOUND)
+    response["Cache-Control"] = "no-store"
+    return response
+
+
+class UpiQrView(APIView):
+    """
+    GET /api/auth/subscription/upi-qr/[?upgrade=<plan_code>] -- the UPI QR for what's due (or for that upgrade),
+    made on request when the owner chooses "Show QR code" (FR-06): {svg, upi_id, payee_name, amount, note, upi_uri}.
+    Built only from the server's own UPI ID and the server's quote; nothing in the request changes who is paid or
+    how much. 404 when there's no UPI payment (not INR, nothing due, UPI not set up); 409 for an upgrade that
+    isn't possible.
+    """
+
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "upi_qr"
+
+    def get(self, request: Request) -> Response:
+        from .models import Plan
+
+        subscription = billing.current_subscription(request.user)
+        code = request.query_params.get("upgrade", "")
+        if not code:
+            due = billing.subscription_due(subscription)
+            return _upi_qr_response(billing.upi_qr(due, subscription.company) if due else None)
+        plan = Plan.objects.filter(code=code[:50], is_active=True).first()
+        if plan is None:
+            return Response({"detail": "That plan doesn't exist or isn't available."}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            subscription = billing.check_upgrade(subscription, plan)
+        except (billing.UpgradeNotAllowed, billing.PaymentUnderReview) as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
+        return _upi_qr_response(billing.upi_qr(billing.amount_due(subscription, plan), subscription.company))
 
 
 class QuoteView(APIView):
@@ -348,3 +389,12 @@ class PublicQuotePdfView(PublicQuoteView):
         if doc is None or doc["status"] != "open":
             return Response(NO_QUOTE, status=status.HTTP_404_NOT_FOUND)
         return _quote_pdf_response(doc)
+
+
+class PublicQuoteUpiQrView(PublicQuoteView):
+    """GET /api/auth/quotes/<token>/upi-qr/ -- the shared quote's UPI QR, on request and only while it's open (FR-06)."""
+
+    def get(self, request: Request, token: str) -> Response:
+        from .quotes import public_upi_qr
+
+        return _upi_qr_response(public_upi_qr(token))

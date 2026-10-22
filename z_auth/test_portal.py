@@ -291,7 +291,7 @@ class SubscriptionTests(PortalTestCase):
             set(body["instructions"]),
             {
                 "upi_id", "payee_name", "bank_name", "account_type", "account_number", "ifsc", "paypal_url", "note",
-                "region", "currency", "skydo", "payment_link", "upi_qr_svg", "upi_uri",
+                "region", "currency", "skydo", "payment_link", "upi_uri",
             },
         )
         self.assertEqual(body["instructions"]["upi_uri"], "")  # nothing due

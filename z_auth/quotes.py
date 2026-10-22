@@ -145,13 +145,22 @@ def quote_document(subscription: Subscription) -> dict[str, Any]:
         and not _expired(snapshot)
         and _same_quote(snapshot, live)
     ):
-        return {**snapshot, "status": "open"}
+        return {**snapshot, "instructions": live["instructions"], "status": "open"}
     token = _new_token(subscription)
     doc = {**live, "public_url": f"{settings.ZINWE_APP_URL}/quote/{token}"}
     subscription.quote_snapshot = doc
     subscription.quote_issued_at = timezone.now()
     subscription.save(update_fields=["quote_snapshot", "quote_issued_at", "updated_at"])
     return {**doc, "status": "open"}
+
+
+def public_upi_qr(token: str) -> dict[str, str] | None:
+    """The UPI QR for a shared quote, only while it's open (FR-06; `billing.upi_qr`). None otherwise."""
+    doc = public_quote(token)
+    if doc is None or doc["status"] != "open":
+        return None
+    subscription = Subscription.objects.select_related("plan", "company").get(quote_token=token)
+    return billing.upi_qr(billing.amount_due(subscription), subscription.company)
 
 
 def public_url(subscription: Subscription) -> str:
@@ -177,7 +186,10 @@ def public_quote(token: str) -> dict[str, Any] | None:
         status = "replaced"
     else:
         status = "open"
-    return {**snapshot, "status": status}
+    # The payment details are always today's (the server's env), never the copy stored with the quote: a changed
+    # UPI ID or bank account must not live on in old links or PDFs (FR-06).
+    instructions = billing.payment_instructions(subscription, company=subscription.company)
+    return {**snapshot, "instructions": instructions, "status": status}
 
 
 # --- PDF ------------------------------------------------------------------------------------
