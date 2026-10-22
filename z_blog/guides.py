@@ -91,7 +91,7 @@ def card(g: Guide) -> dict[str, Any]:
 
 EDITABLE = (
     "title", "subtitle", "summary", "description", "audience", "cover_image", "cover_alt", "sample_pages", "contents",
-    "highlights", "feature_line", "tags", "campaign", "status", "position", "filename",
+    "highlights", "feature_line", "tags", "campaign", "status", "position", "filename", "followups_enabled",
 )
 
 
@@ -127,6 +127,14 @@ def save(guide: Guide | None, data: dict[str, Any]) -> Guide:
     guide.highlights = _clean_list(guide.highlights, ("value", "label"), 6)
     guide.sample_pages = [int(i) for i in (guide.sample_pages or []) if str(i).isdigit()][:8]
     guide.campaign = re.sub(r"[^a-z0-9-]", "", (guide.campaign or "").lower())[:24]
+    if data.get("followups_enabled") and not (guide.pk and Guide.objects.filter(pk=guide.pk, followups_enabled=True).exists()):
+        from django.utils import timezone as tz
+
+        guide.followups_enabled_at = tz.now()
+    if "followups" in data:
+        from .guide_followups import clean_steps
+
+        guide.followups = clean_steps(data["followups"])
     if guide.status == Guide.Status.PUBLISHED and not guide.file:
         raise BlogError("Upload the guide's PDF before publishing it.")
     wanted = data.get("slug") or (guide.slug if guide.pk else "") or guide.title

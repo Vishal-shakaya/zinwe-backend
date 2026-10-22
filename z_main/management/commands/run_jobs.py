@@ -19,6 +19,7 @@ from django.utils import timezone
 from z_auth.feedback_requests import send_feedback_requests
 from z_auth.renewals import send_due_reminders
 from z_blog.drip import send_due as send_series_emails
+from z_blog.guide_followups import send_due as send_guide_followups
 from z_blog.newsletter import send_pending as send_newsletters
 from z_devices.retention import prune_history
 
@@ -28,6 +29,7 @@ JOBS = (
     ("feedback requests", send_feedback_requests),
     ("newsletters", send_newsletters),
     ("series emails", send_series_emails),
+    ("guide follow-ups", send_guide_followups),  # after the series: one Zinwe email a day per member
     ("history clean-up", prune_history),
 )
 

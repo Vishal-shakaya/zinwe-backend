@@ -359,6 +359,12 @@ class Guide(models.Model):
     page_count = models.PositiveSmallIntegerField(default=0)
     status = models.CharField(max_length=12, choices=Status.choices, default=Status.DRAFT, db_index=True)
     position = models.PositiveSmallIntegerField(default=0, help_text="Order in the library (lowest first).")
+    # Follow-up emails after a member's first download (z_blog.guide_followups):
+    # [{"day": 3, "subject": "...", "preview": "...", "body_html": "<p>...</p>", "cta_label": "...", "cta_url": "/..."}]
+    followups = models.JSONField(default=list, blank=True)
+    followups_enabled = models.BooleanField(default=False, help_text="Email the follow-ups (owner-approved).")
+    # When they were last switched on: only downloads from then on get them (no burst for older downloads).
+    followups_enabled_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -383,3 +389,27 @@ class GuideDownload(models.Model):
 
     def __str__(self) -> str:
         return f"{self.guide_id} by {self.subscriber_id}"
+
+
+class GuideFollowupSend(models.Model):
+    """One follow-up email of a guide to one member. (guide, subscriber, step) is unique: nobody gets it twice."""
+
+    class Status(models.TextChoices):
+        SENDING = "sending", "Sending"
+        SENT = "sent", "Sent"
+        FAILED = "failed", "Failed"
+
+    guide = models.ForeignKey(Guide, on_delete=models.CASCADE, related_name="followup_sends")
+    subscriber = models.ForeignKey(NewsletterSubscriber, on_delete=models.CASCADE, related_name="guide_followups")
+    step = models.PositiveSmallIntegerField()
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.SENDING)
+    local_date = models.DateField()
+    error = models.CharField(max_length=300, blank=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["guide", "subscriber", "step"], name="z_blog_one_followup_each")]
+
+    def __str__(self) -> str:
+        return f"{self.guide_id} step {self.step} -> {self.subscriber_id} ({self.status})"

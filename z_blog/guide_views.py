@@ -110,6 +110,8 @@ class GuideInput(serializers.Serializer):
     contents = serializers.JSONField(required=False)
     highlights = serializers.JSONField(required=False)
     feature_line = serializers.CharField(max_length=300, required=False, allow_blank=True)
+    followups = serializers.JSONField(required=False)
+    followups_enabled = serializers.BooleanField(required=False)
     tags = serializers.CharField(max_length=200, required=False, allow_blank=True)
     campaign = serializers.CharField(max_length=24, required=False, allow_blank=True)
     filename = serializers.CharField(max_length=120, required=False, allow_blank=True)
@@ -133,7 +135,31 @@ def staff_payload(g: Guide) -> dict[str, Any]:
             "signups": User.objects.filter(signup_source__startswith=f"{svc.campaign(g)}:").count(),
         },
         "updated_at": g.updated_at,
+        "followups": g.followups or [],
+        "followups_enabled": g.followups_enabled,
+        "followup_stats": followup_stats(g),
     }
+
+
+def followup_stats(g: Guide) -> list[dict[str, Any]]:
+    from .guide_followups import stats
+
+    return stats(g)
+
+
+class StaffGuideFollowupTestView(APIView):
+    """POST /api/admin/blog/guides/<id>/followups/test/ -> every follow-up, marked [Test], to the signed-in staff member."""
+
+    permission_classes = [IsAdminUser]
+
+    def post(self, request: Request, pk: int) -> Response:
+        from .guide_followups import send_tests, steps
+
+        g = get_object_or_404(Guide, pk=pk)
+        if not steps(g):
+            return _refused(BlogError("This guide has no follow-up emails yet."))
+        sent = send_tests(g, request.user.email)
+        return Response({"sent": sent, "of": len(steps(g)), "to": request.user.email})
 
 
 class StaffGuidesView(APIView):

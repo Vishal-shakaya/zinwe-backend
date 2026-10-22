@@ -1,0 +1,10 @@
+{% autoescape off %}{{ body_text }}
+{% if cta_url %}
+{{ cta_label }}: {{ cta_url }}
+{% endif %}
+Your guide, "{{ guide.title }}": {{ guide_url }}
+
+--
+The Zinwe team · IT Is OK. · {{ postal_address }}
+You get this because you downloaded a free Zinwe guide (a free membership). Unsubscribe: {{ unsubscribe_url }}
+{% endautoescape %}

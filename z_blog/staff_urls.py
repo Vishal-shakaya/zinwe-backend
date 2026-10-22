@@ -24,6 +24,7 @@ urlpatterns = [
     path("guides/", guide_views.StaffGuidesView.as_view(), name="guides"),
     path("guides/<int:pk>/", guide_views.StaffGuideView.as_view(), name="guide"),
     path("guides/<int:pk>/file/", guide_views.StaffGuideFileView.as_view(), name="guide-file"),
+    path("guides/<int:pk>/followups/test/", guide_views.StaffGuideFollowupTestView.as_view(), name="guide-followups-test"),
     path("subscribers/", newsletter_views.StaffSubscribersView.as_view(), name="subscribers"),
     path("subscribers/<int:pk>/", newsletter_views.StaffSubscriberView.as_view(), name="subscriber"),
 ]
