@@ -66,7 +66,7 @@ def reading_minutes(html: str) -> int:
 
 
 # /blog/<slug> URLs the site itself uses.
-RESERVED_SLUGS = {"series"}
+RESERVED_SLUGS = {"series", "guides"}
 
 
 def unique_slug(text: str, exclude_id: int | None = None) -> str:

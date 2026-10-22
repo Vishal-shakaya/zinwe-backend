@@ -1,1 +1,1 @@
-{% if series_title %}Confirm your free Zinwe membership{% else %}Confirm your Zinwe blog subscription{% endif %}
+{% if guide_title %}Confirm your email to download your free Zinwe guide{% else %}{% if series_title %}Confirm your free Zinwe membership{% else %}Confirm your Zinwe blog subscription{% endif %}{% endif %}

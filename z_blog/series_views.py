@@ -170,6 +170,7 @@ class PublicEpisodeView(APIView):
             "previous": episode_card(prev) if prev else None,
             "next": episode_card(nxt) if nxt else None,
             "next_upcoming": upcoming_card(upcoming[0]) if (nxt is None and upcoming) else None,
+            "guide_pick": _guide_pick(a),
             "reader": reader_payload(sub, a.series),
         })
 
@@ -337,3 +338,11 @@ class StaffSeriesStatsView(APIView):
             "signups_by_referral": sum(1 for src in sources if src.endswith(":ref")),
             "top_sharers": [{"email": svc.masked(t.email), "referrals": t.n} for t in top],
         })
+
+
+def _guide_pick(a: Article) -> dict[str, Any] | None:
+    """The free e-guide that goes deeper on an episode's topic."""
+    from . import guides
+
+    g = guides.best_for(a.tags, f"{a.title} {a.summary}")
+    return guides.card(g) if g else None

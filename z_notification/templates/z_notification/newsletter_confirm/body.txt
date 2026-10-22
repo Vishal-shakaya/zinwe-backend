@@ -1,5 +1,10 @@
 {% autoescape off %}Hi,
+{% if guide_title %}
+Someone (hopefully you) asked for our free guide "{{ guide_title }}". Confirm your email and it downloads straight away:
+{{ confirm_url }}
 
+The same free membership opens every Zinwe guide and our members-only series, by email. Unsubscribe any time.
+{% else %}
 {% if series_title %}Someone (hopefully you) asked to join the Zinwe members' list. Membership is free. It
 opens our members-only series, {{ series_title }}:
 {{ series_blurb }}
@@ -11,6 +16,7 @@ and news about keeping a small business's data safe. Usually one or two emails a
 Confirm here:{% endif %}
 {{ confirm_url }}
 
+{% endif %}
 If it wasn't you, ignore this email. Nothing happens until the link is opened.
 
 --

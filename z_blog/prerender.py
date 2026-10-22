@@ -379,3 +379,82 @@ def episode_page(request: HttpRequest, slug: str, episode: str) -> HttpResponse:
         f'<div class="ep-members">{members}</div></article>'
     )
     return page.render(body)
+
+
+# --- Free guides (/blog/guides...) ---------------------------------------------------------
+# The guide's page is public (cover, contents, sample pages); the PDF itself is a members' download.
+
+GUIDES_TITLE = "Free guides for small businesses — Zinwe"
+GUIDES_DESCRIPTION = (
+    "Plain-English e-guides with workbooks and 30-day plans: protect your business online, keep data safe, stop scams "
+    "and communicate better at work. Free for members."
+)
+
+
+def _guides_nav() -> str:
+    return '<nav><a href="/">Zinwe</a> / <a href="/blog">Blog</a> / <a href="/blog/guides">Guides</a></nav>'
+
+
+def guides_index(request: HttpRequest) -> HttpResponse:
+    """GET /blog/guides -- every live guide."""
+    from . import guides
+
+    page = _Page()
+    page.title(GUIDES_TITLE)
+    _describe(page, GUIDES_TITLE, GUIDES_DESCRIPTION, f"{_site()}/blog/guides")
+    books = list(guides.live())
+    items = "".join(
+        f'<li><a href="{_attr(guides.path(g))}">{escape(g.title)}</a>'
+        f"{f'<p>{escape(g.summary)}</p>' if g.summary else ''}</li>"
+        for g in books
+    )
+    return page.render(f"{_guides_nav()}<h1>Free guides for small businesses</h1><p>{escape(GUIDES_DESCRIPTION)}</p><ul>{items}</ul>")
+
+
+def guide_page(request: HttpRequest, slug: str) -> HttpResponse:
+    """GET /blog/guides/<slug> -- a guide's page: what's inside, who it's for."""
+    from . import guides
+
+    g = guides.live().filter(slug=slug).first()
+    if g is None:
+        page = _Page()
+        page.title("Guide not found — Zinwe")
+        page.meta("name", "robots", "noindex")
+        return page.render(f'{_guides_nav()}<h1>This guide isn\'t here</h1><p><a href="/blog/guides">All guides</a></p>', status=404)
+    url = f"{_site()}{guides.path(g)}"
+    image = f"{_site()}{g.cover_image.url}" if g.cover_image else ""
+    description = g.summary or g.subtitle
+    page = _Page()
+    page.title(f"{g.title} (free guide) — Zinwe")
+    _describe(page, g.title, description, url, image)
+    page.json_ld({
+        "@context": "https://schema.org",
+        "@type": "Book",
+        "name": g.title,
+        "description": description,
+        "bookFormat": "https://schema.org/EBook",
+        "numberOfPages": g.page_count or None,
+        "inLanguage": "en",
+        "isAccessibleForFree": True,
+        "url": url,
+        **({"image": image} if image else {}),
+        "author": {"@type": "Organization", "name": "Zinwe"},
+        "publisher": {"@type": "Organization", "name": "Zinwe"},
+    })
+    chapters = "".join(_chapter(c) for c in g.contents or [])
+    paras = "".join(f"<p>{escape(p.strip())}</p>" for p in (g.description or "").splitlines() if p.strip())
+    cover = ""
+    if g.cover_image:
+        cover = f'<img src="{_attr(g.cover_image.url)}" alt="{_attr(g.cover_alt or g.title)}" />'
+    subtitle = f"<p>{escape(g.subtitle)}</p>" if g.subtitle else ""
+    inside = f"<h2>What is inside</h2><ol>{chapters}</ol>" if chapters else ""
+    body = (
+        f"{_guides_nav()}<article><p>Free guide</p><h1>{escape(g.title)}</h1>{subtitle}{cover}{paras}{inside}"
+        "<p>Free for members: enter your email on this page to download the PDF.</p></article>"
+    )
+    return page.render(body)
+
+
+def _chapter(c: dict) -> str:
+    note = c.get("note") or ""
+    return f"<li>{escape(c.get('title') or '')}{' — ' + escape(note) if note else ''}</li>"

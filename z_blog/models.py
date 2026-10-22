@@ -316,3 +316,70 @@ class SeriesRead(models.Model):
 
     def __str__(self) -> str:
         return f"{self.article_id} read by {self.subscriber_id}"
+
+
+# --- Guides (e-books) -----------------------------------------------------------------
+
+
+def guide_upload_to(instance: "Guide", filename: str) -> str:
+    """blog/guides/<uuid>.pdf (served only through the members' download, never by its file path)."""
+    return f"blog/guides/{uuid.uuid4().hex}.pdf"
+
+
+class Guide(models.Model):
+    """A free e-guide (PDF) at /blog/guides/<slug>: a public page (cover, contents, sample pages) and a download
+    for members of the free membership (the newsletter list), the same membership that opens the series."""
+
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+        PUBLISHED = "published", "Published"
+
+    title = models.CharField(max_length=160)
+    slug = models.SlugField(max_length=160, unique=True, help_text="The URL: /blog/guides/<slug>.")
+    subtitle = models.CharField(max_length=300, blank=True, help_text="The promise under the title.")
+    summary = models.TextField(max_length=300, blank=True, help_text="One or two sentences for cards and search.")
+    description = models.TextField(max_length=2000, blank=True, help_text="What the reader gets (plain text, paragraphs).")
+    audience = models.CharField(max_length=200, blank=True, help_text='Who it is for, e.g. "Owners and finance staff".')
+    cover_image = models.ForeignKey(BlogImage, null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
+    cover_alt = models.CharField(max_length=200, blank=True)
+    # Ordered BlogImage ids: a few pages shown on the public page.
+    sample_pages = models.JSONField(default=list, blank=True)
+    # [{"title": "...", "note": "..."}]: the chapters.
+    contents = models.JSONField(default=list, blank=True)
+    # [{"value": "30", "label": "Day action plan"}]: the numbers on the cover.
+    highlights = models.JSONField(default=list, blank=True)
+    feature_line = models.CharField(max_length=300, blank=True, help_text="How Zinwe helps with this (shipped features only).")
+    tags = models.CharField(max_length=200, blank=True, help_text="Comma-separated; matches the guide to articles and episodes.")
+    campaign = models.CharField(
+        max_length=24, blank=True, help_text='Tracking code, e.g. "guide-scams" (UTM campaign and sign-up source).'
+    )
+    file = models.FileField(upload_to=guide_upload_to, blank=True)
+    filename = models.CharField(max_length=120, blank=True, help_text="Name the download is saved as.")
+    size = models.PositiveIntegerField(default=0)
+    page_count = models.PositiveSmallIntegerField(default=0)
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.DRAFT, db_index=True)
+    position = models.PositiveSmallIntegerField(default=0, help_text="Order in the library (lowest first).")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["position", "-created_at", "-id"]
+
+    def __str__(self) -> str:
+        return self.title
+
+
+class GuideDownload(models.Model):
+    """A member downloaded a guide (first and last time, how many times)."""
+
+    guide = models.ForeignKey(Guide, on_delete=models.CASCADE, related_name="downloads")
+    subscriber = models.ForeignKey(NewsletterSubscriber, on_delete=models.CASCADE, related_name="guide_downloads")
+    downloads = models.PositiveIntegerField(default=1)
+    first_at = models.DateTimeField(auto_now_add=True)
+    last_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["guide", "subscriber"], name="z_blog_one_guide_download_row")]
+
+    def __str__(self) -> str:
+        return f"{self.guide_id} by {self.subscriber_id}"

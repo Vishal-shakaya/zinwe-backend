@@ -51,9 +51,11 @@ def _site() -> str:
 
 
 def reading_page(source: str) -> str:
-    """The series page a member's reading link opens: where they asked from, if it's a series page."""
+    """The page a member's reading link opens: where they asked from, if it's a series or guide page."""
+    from .guides import GUIDE_PAGE
+
     source = (source or "").split("?", 1)[0].rstrip("/")
-    return source if _SERIES_PAGE.match(source) else "/blog/series"
+    return source if (_SERIES_PAGE.match(source) or GUIDE_PAGE.match(source)) else "/blog/series"
 
 
 def _live_series(source: str = "") -> tuple[str, str]:
@@ -65,6 +67,14 @@ def _live_series(source: str = "") -> tuple[str, str]:
     shows = list(Series.objects.filter(status=Series.Status.PUBLISHED).order_by("position", "-created_at"))
     show = next((s for s in shows if (source or "").startswith(f"/blog/series/{s.slug}")), shows[0] if shows else None)
     return (show.title, brand(show).blurb) if show else ("", "")
+
+
+def _guide_context(source: str) -> dict[str, str]:
+    """Signed up on a guide's page: the confirmation email delivers that guide."""
+    from .guides import from_source
+
+    g = from_source(source)
+    return {"guide_title": g.title, "guide_pages": str(g.page_count or "")} if g else {}
 
 
 def subscribe(email: str, source: str = "", tz: str = "", ref: str = "") -> None:
@@ -101,7 +111,11 @@ def subscribe(email: str, source: str = "", tz: str = "", ref: str = "") -> None
     else:
         notify(
             "email", email, "newsletter_confirm",
-            {"confirm_url": f"{_site()}/newsletter?confirm={sub.token}", **dict(zip(("series_title", "series_blurb"), _live_series(source)))},
+            {
+                "confirm_url": f"{_site()}/newsletter?confirm={sub.token}",
+                **dict(zip(("series_title", "series_blurb"), _live_series(source))),
+                **_guide_context(source),
+            },
             ref=sub, fallback=False,
         )
 

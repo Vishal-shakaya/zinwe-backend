@@ -1,7 +1,7 @@
 from django.contrib import admin
 
 from .models import (
-    Article, Attachment, BlogImage, NewsletterDelivery, NewsletterIssue, NewsletterSubscriber, Series, SeriesSend,
+    Article, Attachment, BlogImage, NewsletterDelivery, NewsletterIssue, NewsletterSubscriber, Series, SeriesSend, Guide, GuideDownload,
 )
 
 
@@ -66,3 +66,16 @@ class SeriesSendAdmin(admin.ModelAdmin):
     list_display = ("article", "subscriber", "status", "local_date", "sent_at")
     list_filter = ("status", "series")
     readonly_fields = ("series", "subscriber", "article", "status", "local_date", "error", "sent_at", "created_at")
+
+
+@admin.register(Guide)
+class GuideAdmin(admin.ModelAdmin):
+    """Guides are managed in the admin app (Blog -> Guides); this is a read-mostly view."""
+
+    list_display = ("title", "status", "page_count", "size", "position", "updated_at")
+
+
+@admin.register(GuideDownload)
+class GuideDownloadAdmin(admin.ModelAdmin):
+    list_display = ("guide", "subscriber", "downloads", "first_at", "last_at")
+    readonly_fields = ("guide", "subscriber", "downloads", "first_at", "last_at")

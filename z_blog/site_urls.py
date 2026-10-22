@@ -11,5 +11,7 @@ urlpatterns = [
     re_path(r"^blog/series/?$", prerender.series_index, name="series-index"),
     re_path(r"^blog/series/(?P<slug>[-a-zA-Z0-9_]+)/?$", prerender.series_page, name="series"),
     re_path(r"^blog/series/(?P<slug>[-a-zA-Z0-9_]+)/(?P<episode>[-a-zA-Z0-9_]+)/?$", prerender.episode_page, name="episode"),
+    re_path(r"^blog/guides/?$", prerender.guides_index, name="guides"),
+    re_path(r"^blog/guides/(?P<slug>[-a-zA-Z0-9_]+)/?$", prerender.guide_page, name="guide"),
     re_path(r"^blog/(?P<slug>[-a-zA-Z0-9_]+)/?$", prerender.blog_article, name="article"),
 ]

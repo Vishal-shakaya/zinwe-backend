@@ -79,6 +79,9 @@ class PublicArticleView(APIView):
         if article is None:
             raise Http404("No such article.")
         pick = series.related_episode(article)
+        from . import guides
+
+        gpick = guides.for_article(article)
         return Response({
             **ArticleDetailSerializer(article).data,
             "related": ArticleCardSerializer(services.related(article), many=True).data,
@@ -88,6 +91,8 @@ class PublicArticleView(APIView):
                 "title": pick.title, "label": series.label(pick), "summary": pick.summary, "free_preview": pick.free_preview,
                 "cover": image_payload(pick.cover_image or pick.series.cover_image),
             },
+            # "Free guide": the e-guide closest to this article's topic.
+            "guide_pick": None if gpick is None else guides.card(gpick),
         })
 
 
@@ -121,6 +126,13 @@ def sitemap(request: Request) -> HttpResponse:
         episodes = series.lineup(show).released
         urls.append((f"{base}/blog/series/{show.slug}", max([show.updated_at, *(a.updated_at for a in episodes)])))
         urls += [(f"{base}{series.path(a)}", a.updated_at) for a in episodes]
+    # Free guides: the library and each guide's page.
+    from . import guides
+
+    books = list(guides.live())
+    if books:
+        urls.append((f"{base}/blog/guides", max(g.updated_at for g in books)))
+        urls += [(f"{base}{guides.path(g)}", g.updated_at) for g in books]
     body = "".join(
         f"<url><loc>{escape(loc)}</loc><lastmod>{when:%Y-%m-%d}</lastmod></url>" for loc, when in urls
     )
