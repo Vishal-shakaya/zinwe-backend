@@ -465,3 +465,43 @@ class InvoicePdfView(StaffView):
         if payment.status != ManualPayment.Status.VERIFIED:
             return Response({"detail": "Only a confirmed payment has an invoice."}, status=status.HTTP_409_CONFLICT)
         return invoice_pdf_response(payment)
+
+
+class ReleaseNoteListView(StaffView):
+    """GET /api/admin/release-notes/ -- every note (drafts too), newest first. POST -- write one (FR-21)."""
+
+    def get(self, request: Request) -> Response:
+        from z_auth.models import ReleaseNote
+
+        from .serializers import ReleaseNoteSerializer
+
+        rows = ReleaseNote.objects.order_by("-created_at", "-id")
+        return Response(ReleaseNoteSerializer(rows, many=True).data)
+
+    def post(self, request: Request) -> Response:
+        from .serializers import ReleaseNoteSerializer
+
+        data = ReleaseNoteSerializer(data=request.data)
+        data.is_valid(raise_exception=True)
+        note = data.save(created_by=request.user)
+        return Response(ReleaseNoteSerializer(note).data, status=status.HTTP_201_CREATED)
+
+
+class ReleaseNoteDetailView(StaffView):
+    """PATCH /api/admin/release-notes/<id>/ -- edit, publish (published_at) or unpublish (null); DELETE -- remove."""
+
+    def patch(self, request: Request, pk: int) -> Response:
+        from z_auth.models import ReleaseNote
+
+        from .serializers import ReleaseNoteSerializer
+
+        note = get_object_or_404(ReleaseNote, pk=pk)
+        data = ReleaseNoteSerializer(note, data=request.data, partial=True)
+        data.is_valid(raise_exception=True)
+        return Response(ReleaseNoteSerializer(data.save()).data)
+
+    def delete(self, request: Request, pk: int) -> Response:
+        from z_auth.models import ReleaseNote
+
+        get_object_or_404(ReleaseNote, pk=pk).delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)

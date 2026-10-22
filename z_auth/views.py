@@ -483,3 +483,25 @@ class PlanActivateView(APIView):
             PlanActivationSerializer(activation, context={"user": request.user}).data,
             status=status.HTTP_201_CREATED,
         )
+
+
+class ReleaseNotesView(APIView):
+    """
+    GET /api/auth/whats-new/ -- published release notes, newest first (FR-21): the website's /whats-new page and the
+    dashboard's "What's new". Public, no sign-in needed.
+    """
+
+    authentication_classes: list = []
+    permission_classes = [AllowAny]
+
+    def get(self, request: Request) -> Response:
+        from django.utils import timezone as tz
+
+        from .models import ReleaseNote
+
+        notes = ReleaseNote.objects.filter(published_at__isnull=False, published_at__lte=tz.now())[:50]
+        return Response([
+            {"id": n.pk, "version": n.version, "title": n.title, "summary": n.summary, "body": n.body,
+             "published_at": n.published_at.isoformat()}
+            for n in notes
+        ])

@@ -8,7 +8,7 @@ from django.utils import timezone
 from rest_framework import serializers
 
 from z_auth import billing
-from z_auth.models import Announcement, Feedback, Invoice, ManualPayment, Plan, Subscription
+from z_auth.models import Announcement, Feedback, Invoice, ManualPayment, Plan, ReleaseNote, Subscription
 from z_devices.models import AgentRelease
 from z_devices.services import release_adoption
 from z_notification.models import Notification
@@ -512,3 +512,29 @@ class AdminSubscriptionSerializer(serializers.ModelSerializer):
         if value and not value.startswith("https://"):
             raise serializers.ValidationError("Paste the full https:// payment link.")
         return value
+
+
+class ReleaseNoteSerializer(serializers.ModelSerializer):
+    """GET/POST /api/admin/release-notes/ and PATCH /<id>/ (FR-21). `status`: draft, scheduled or live."""
+
+    status = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ReleaseNote
+        fields = ("id", "version", "title", "summary", "body", "published_at", "status", "created_at", "updated_at")
+        read_only_fields = ("id", "status", "created_at", "updated_at")
+
+    def get_status(self, obj) -> str:  # type: ignore[no-untyped-def]
+        if obj.published_at is None:
+            return "draft"
+        return "live" if obj.is_live else "scheduled"
+
+    def validate_title(self, value: str) -> str:
+        if not value.strip():
+            raise serializers.ValidationError("Give it a title.")
+        return value.strip()
+
+    def validate_version(self, value: str) -> str:
+        if not value.strip():
+            raise serializers.ValidationError('Which version is it, e.g. "1.1"?')
+        return value.strip()

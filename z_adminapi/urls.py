@@ -36,4 +36,6 @@ urlpatterns = [
     path("announcements/", views.AnnouncementListView.as_view(), name="announcements"),
     path("announcements/reach/", views.AnnouncementReachView.as_view(), name="announcement-reach"),
     path("announcements/<int:pk>/", views.AnnouncementDetailView.as_view(), name="announcement-detail"),
+    path("release-notes/", views.ReleaseNoteListView.as_view(), name="release-notes"),
+    path("release-notes/<int:pk>/", views.ReleaseNoteDetailView.as_view(), name="release-note-detail"),
 ]

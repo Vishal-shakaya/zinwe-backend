@@ -711,3 +711,34 @@ class Invoice(models.Model):
 
     def __str__(self) -> str:
         return self.number
+
+
+class ReleaseNote(models.Model):
+    """
+    "What's new" (FR-21): what changed in a Zinwe release, in plain words for owners, written and published by the
+    team in the admin app. Shown on the website (/whats-new) and in the dashboard once `published_at` has passed.
+
+    `body` is plain text: a line starting "## " is a heading, "- " a bullet, a blank line ends a paragraph.
+    Nothing is rendered as HTML.
+    """
+
+    version = models.CharField(max_length=20, help_text='e.g. "1.1"')
+    title = models.CharField(max_length=120)
+    summary = models.CharField(max_length=280, blank=True, help_text="One or two sentences for the list.")
+    body = models.TextField(blank=True, max_length=20000)
+    published_at = models.DateTimeField(null=True, blank=True, db_index=True, help_text="Empty = draft.")
+    created_by = models.ForeignKey(
+        "z_auth.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-published_at", "-id"]
+
+    def __str__(self) -> str:
+        return f"Zinwe {self.version}: {self.title}"
+
+    @property
+    def is_live(self) -> bool:
+        return self.published_at is not None and self.published_at <= timezone.now()
