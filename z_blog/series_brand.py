@@ -22,6 +22,9 @@ class SeriesBrand:
     reply_prompt: str = ""
     finale: str = ""
     disclaimer: str = ""
+    # SAFE BY DESIGN: every episode has a kid-facing Family Card, a public no-tracking page at /family/NN that the
+    # parent can send on (WhatsApp, email, link). The email builds those share links (newsletter._family_card).
+    family_cards: bool = False
 
 
 BRANDS = {
@@ -49,6 +52,25 @@ BRANDS = {
             "Characters and incidents are fictional composites written for teaching. We will never ask you for a "
             "password, a one-time code or a recovery code."
         ),
+    ),
+    "safe-by-design": SeriesBrand(
+        code="sbd",
+        template="newsletter_episode_family",
+        blurb=(
+            "30 family stories about growing up online, each with one thing to try together and a Family Card to "
+            "share with your child."
+        ),
+        pace="One episode every Saturday morning, in order.",
+        reply_prompt=(
+            "Tried this week's family action? Reply and tell us how it went. We read every reply. Please never send "
+            "us your child's name, school, photos, usernames, passwords or location."
+        ),
+        finale="That's the final episode. Your printable Family Shield, all 30 badges in one place, is on the finale page.",
+        disclaimer=(
+            "The family and situations are fictional composites written for teaching. If a child is in immediate "
+            "danger, contact local emergency services (112 in India, 911 in the US)."
+        ),
+        family_cards=True,
     ),
 }
 

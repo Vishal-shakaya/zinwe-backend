@@ -1,0 +1,29 @@
+{% autoescape off %}SAFE BY DESIGN · EPISODE {{ article.episode|stringformat:"02d" }}{% if series.planned_episodes %} OF {{ series.planned_episodes }}{% endif %}
+{{ article.title }}
+{% if article.summary %}{{ article.summary }}
+{% endif %}{% if age_line %}{{ age_line }}
+{% endif %}
+{{ teaser_text }}
+
+Read the rest of the episode (your personal link):
+{{ episode_url }}
+{% if action_title %}
+Try this together this week: {{ action_title }} (about 10 minutes, in the full episode){% endif %}
+{% if family %}
+For your child: {{ family.rule }}
+Family Card {{ article.episode|stringformat:"02d" }}, to send on or print (no sign-up, no cookies, no tracking): {{ family.page }}
+Send it on WhatsApp: {{ family.whatsapp }}
+{% endif %}
+{% if next_episode %}Next{% if next_day %}, {{ next_day|date:"l" }} morning{% endif %}: Episode {{ next_episode.episode|stringformat:"02d" }} · {{ next_episode.title }}.{% if is_first and look.pace %} {{ look.pace }}{% endif %}{% elif article.episode == series.planned_episodes %}{{ look.finale }}{% endif %}
+
+{{ look.reply_prompt }}
+
+Know a parent who'd want this? Send them the series (free for them too): {{ share_url }}
+
+--
+Zinwe · Security, simplified. IT Is OK.
+{{ series.title }}: {{ series.tagline }} {{ look.disclaimer }}
+We will never ask you to send us a child's name, school, photo, username, password or location.
+Data protection and activity monitoring for small businesses. {{ postal_address }}
+You are reading this because you subscribed at zinwe.io. Unsubscribe: {{ unsubscribe_url }}
+{% endautoescape %}

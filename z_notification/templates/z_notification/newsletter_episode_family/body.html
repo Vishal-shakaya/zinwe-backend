@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+{% comment %}A series episode email in the Family Digital Shield look (SAFE BY DESIGN, the owner's demo mail): a white page,
+the official logo, the bright episode plate, coloured chips, the public opening, a peach "Try this together" block and a
+"share with your child" block whose links open the public, no-tracking Family Card page (/family/NN). Email runs no
+scripts, so sharing is plain links. Picked per series in z_blog/series_brand.py; context from
+z_blog.newsletter._episode_context.{% endcomment %}
+<body style="margin:0;padding:24px 12px;background:#F3F6FA;font-family:'Segoe UI',Arial,sans-serif;color:#22303F;">
+  {% if article.summary %}<div style="display:none;max-height:0;overflow:hidden;">{{ article.summary }}</div>{% endif %}
+  <div style="max-width:600px;margin:0 auto;background:#ffffff;border-radius:14px;overflow:hidden;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+      <tr>
+        <td style="padding:26px 32px 0;vertical-align:top;">{% include "z_notification/_brand.html" %}</td>
+        <td align="right" style="padding:28px 32px 0;vertical-align:top;font-size:13px;line-height:1.6;color:#5B6475;">
+          {{ series.title }}<br>
+          <span style="color:#E8650A;font-weight:600;">Episode {{ article.episode|stringformat:"02d" }}{% if series.planned_episodes %} of {{ series.planned_episodes }}{% endif %}</span>{% if published_on %} · {{ published_on|date:"j M Y" }}{% endif %}
+        </td>
+      </tr>
+    </table>
+    {% if cover_url %}<div style="padding:6px 32px 0;"><a href="{{ episode_url }}"><img src="{{ cover_url }}" alt="{{ cover_alt }}" width="536" style="display:block;width:100%;max-width:536px;height:auto;border:0;border-radius:16px;"></a></div>{% endif %}
+    <div style="padding:20px 32px 4px;font-size:16px;line-height:1.65;">
+      <p style="margin:0 0 14px;font-size:13px;font-weight:700;">
+        <span style="color:#C2410C;">Episode {{ article.episode|stringformat:"02d" }} / {{ series.planned_episodes|default:"30" }}</span>
+        &nbsp;&nbsp; <span style="color:#0B7F77;">Season {{ article.season }}{% if season_title %} · {{ season_title }}{% endif %}</span>
+        &nbsp;&nbsp; <span style="color:#5B4BB0;">{{ article.reading_minutes }} min read</span>
+      </p>
+      <h1 style="margin:0 0 10px;font-family:'Nunito','Trebuchet MS','Segoe UI',Arial,sans-serif;font-size:34px;line-height:1.12;font-weight:900;color:#1E2A38;">{{ article.title }}</h1>
+      {% if article.summary %}<p style="margin:0 0 14px;font-size:17px;line-height:1.55;color:#5B6475;">{{ article.summary }}</p>{% endif %}
+      {% if age_line %}<p style="margin:0 0 18px;font-size:13px;font-weight:700;color:#B07400;">{{ age_line }}</p>{% endif %}
+      {% comment %}teaser_html is the episode's public opening: allow-list cleaned (z_blog.services.clean_body), then inline-styled.{% endcomment %}
+      <div style="color:#22303F;">{{ teaser_html|safe }}</div>
+    </div>
+    <div style="padding:4px 32px 24px;">
+      <a href="{{ episode_url }}" style="display:inline-block;padding:15px 28px;background:#0E8F87;color:#ffffff;border-radius:999px;font-weight:700;font-size:15px;text-decoration:none;">Read the rest of the episode</a>
+      <p style="margin:10px 0 0;font-size:13px;color:#6B7280;">{{ article.reading_minutes }} min read · your personal link</p>
+    </div>
+    {% if action_title %}
+    <div style="margin:0 32px 18px;padding:18px 20px;background:#FFF1E6;border-radius:14px;">
+      <p style="margin:0 0 4px;font-size:13px;font-weight:700;color:#E8650A;">Try this together</p>
+      <p style="margin:0 0 6px;font-family:'Nunito','Trebuchet MS','Segoe UI',Arial,sans-serif;font-size:21px;line-height:1.25;font-weight:900;color:#8A3A06;">{{ action_title }}</p>
+      <p style="margin:0;font-size:14px;color:#7A4A26;">About 10 minutes. The three steps, the line to say first and a printable action card are in the full episode.</p>
+    </div>
+    {% endif %}
+    {% if family %}
+    <div style="margin:0 32px 22px;padding:18px 20px;background:#E6F5F1;border-radius:14px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+        <tr>
+          {% if family.image %}<td width="112" style="vertical-align:top;padding-right:16px;"><a href="{{ family.page }}"><img src="{{ family.image }}" alt="Family Card {{ article.episode|stringformat:'02d' }}: {{ family.rule }}" width="112" style="display:block;width:112px;height:auto;border:0;border-radius:10px;"></a></td>{% endif %}
+          <td style="vertical-align:top;">
+            <p style="margin:0 0 4px;font-size:13px;font-weight:700;color:#0B7F77;">For your child · Family Card {{ article.episode|stringformat:"02d" }}</p>
+            <p style="margin:0 0 8px;font-family:'Nunito','Trebuchet MS','Segoe UI',Arial,sans-serif;font-size:20px;line-height:1.25;font-weight:900;color:#0F3D3A;">{{ family.rule }}</p>
+            <p style="margin:0 0 12px;font-size:13.5px;line-height:1.5;color:#2F5450;">Send it to your child, print it for the fridge, or open it together. The card page has no sign-up, no cookies and no tracking.</p>
+            <a href="{{ family.whatsapp }}" style="display:inline-block;margin:0 6px 6px 0;padding:10px 16px;background:#0E8F87;color:#ffffff;border-radius:999px;font-weight:700;font-size:13.5px;text-decoration:none;">Send on WhatsApp</a>
+            <a href="{{ family.email }}" style="display:inline-block;margin:0 6px 6px 0;padding:10px 16px;background:#ffffff;color:#0B6B65;border:2px solid #0E8F87;border-radius:999px;font-weight:700;font-size:13.5px;text-decoration:none;">Send by email</a>
+            <a href="{{ family.page }}" style="display:inline-block;margin:0 0 6px 0;padding:10px 16px;background:#ffffff;color:#0B6B65;border:2px solid #0E8F87;border-radius:999px;font-weight:700;font-size:13.5px;text-decoration:none;">Open or print the card</a>
+          </td>
+        </tr>
+      </table>
+    </div>
+    {% endif %}
+    <div style="padding:0 32px 22px;font-size:14px;line-height:1.6;color:#374151;">
+      {% if next_episode %}
+      <p style="margin:0 0 4px;font-size:13px;font-weight:700;color:#3F3A8C;">Next{% if next_day %} · {{ next_day|date:"l" }} morning{% endif %} · Episode {{ next_episode.episode|stringformat:"02d" }}</p>
+      <p style="margin:0 0 12px;font-size:16px;color:#3F3A8C;">{{ next_episode.title }}.{% if is_first and look.pace %} {{ look.pace }}{% endif %}</p>
+      {% elif article.episode == series.planned_episodes %}<p style="margin:0 0 12px;"><b style="color:#1E2A38;">{{ look.finale }}</b></p>{% endif %}
+      <p style="margin:0;">{{ look.reply_prompt }}</p>
+    </div>
+    <div style="margin:0 32px 24px;padding:16px 18px;background:#F5F7FA;border-radius:12px;font-size:13.5px;line-height:1.6;color:#374151;">
+      <p style="margin:0 0 8px;"><b style="color:#1E2A38;">Know a parent who'd want this?</b> <a href="{{ share_url }}" style="color:#0B6B65;">Send them the series</a>. Membership is free for them too.</p>
+      <p style="margin:0;"><b style="color:#1E2A38;">P.S.</b> At work, Zinwe tells you in plain English when company files leave your team's Windows PCs by USB drive, shared folder or email. There's a Free forever plan. <a href="{{ signup_url }}" style="color:#0B6B65;">Start free</a></p>
+    </div>
+    <div style="padding:18px 32px 26px;border-top:1px solid #E3E8EF;font-size:12.5px;line-height:1.6;color:#4b5563;">
+      <p style="margin:0 0 10px;font-size:13px;font-weight:700;color:#1E2A38;">Zinwe · <span style="color:#E8650A;">Security, simplified. IT Is OK.</span></p>
+      <p style="margin:0 0 10px;"><b style="color:#1E2A38;">{{ series.title }}</b>: {{ series.tagline }} {{ look.disclaimer }} We will never ask you to send us a child's name, school, photo, username, password or location. <a href="{{ series_url }}" style="color:#0B6B65;">All episodes</a></p>
+      <p style="margin:0;color:#6b7280;">Data protection and activity monitoring for small businesses · {{ postal_address }}<br>
+      Your reading link is personal: to share the series, use the "Send them the series" link above.<br>
+      You are reading this because you subscribed at zinwe.io. <a href="{{ unsubscribe_url }}" style="color:#6b7280;">Unsubscribe</a></p>
+    </div>
+  </div>
+</body>
+</html>

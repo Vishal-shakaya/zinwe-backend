@@ -197,8 +197,8 @@ def _episode_context(article: Article, subject: str, unsubscribe_url: str, sub: 
     look = brand(article.series)
     n = f"ep{article.episode or 0:02d}"
     tags = f"utm_source=newsletter&utm_medium=email&utm_campaign={look.code}&utm_content={n}"
-    # The episode's one protective step ("Do this once: ..."), shown under the opening in the email.
-    action = re.search(r"<h2>\s*Do this once:\s*(.*?)</h2>", article.body_html or "", re.S)
+    # The episode's one protective step ("Do this once: ..." / "Try this together: ..."), shown under the opening.
+    action = re.search(r"<h2>\s*(?:Do this once|Try this together):\s*(.*?)</h2>", article.body_html or "", re.S)
     key = f"?k={sub.access_key}&{tags}" if sub is not None else f"?{tags}"
     cover = article.cover_image or article.series.cover_image
     nxt, nxt_day = drip.next_for(sub, article) if sub is not None else (None, None)
@@ -228,6 +228,42 @@ def _episode_context(article: Article, subject: str, unsubscribe_url: str, sub: 
         "look": look,
         "action_title": html_lib.unescape(re.sub(r"<[^>]+>", "", action[1])).strip() if action else "",
         "published_on": timezone.localtime(article.published_at) if article.published_at else None,
+        "season_title": next((s.get("title", "") for s in article.series.seasons or []
+                              if isinstance(s, dict) and str(s.get("number")) == str(article.season)), ""),
+        "age_line": _age_line(article),
+        "family": _family_card(article) if look.family_cards else None,
+    }
+
+
+def _age_line(article: Article) -> str:
+    """'For parents · activity suits ages 7-10' from the episode's 'ages 7-10' tag (SAFE BY DESIGN)."""
+    found = re.search(r"\bages (\d+)\s*-\s*(\d+)\b", article.tags or "")
+    return f"For parents · activity suits ages {found[1]}–{found[2]}" if found else ""
+
+
+def _family_card(article: Article) -> dict[str, str] | None:
+    """The episode's Family Card for the 'share with your child' block: its rule and picture (from the body's
+    'For your child: ...' heading and card image) and ready-made share links to the public, no-tracking card page.
+    Email can't run scripts, so sharing is plain links: WhatsApp (wa.me works in India and the US), email, open."""
+    from urllib.parse import quote
+
+    body = article.body_html or ""
+    rule = re.search(r"<h2>\s*For your child:\s*(.*?)</h2>", body, re.S)
+    img = re.search(r'<img[^>]*src="([^"]+)"[^>]*alt="Family Card[^"]*"', body)
+    if not rule or not article.episode:
+        return None
+    rule_text = html_lib.unescape(re.sub(r"<[^>]+>", "", rule[1])).strip()
+    page = f"{_site()}/family/{article.episode:02d}"
+    text = f"A little card for you from me: {rule_text} Let's look at it together. {page}"
+    image = img[1] if img else ""
+    if image.startswith("/"):
+        image = f"{_site()}{image}"
+    return {
+        "rule": rule_text,
+        "page": page,
+        "image": image,
+        "whatsapp": f"https://wa.me/?text={quote(text)}",
+        "email": f"mailto:?subject={quote('A little card for you')}&body={quote(text)}",
     }
 
 
