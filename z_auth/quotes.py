@@ -24,6 +24,7 @@ from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
+from z_main.branding import draw_pdf_logo
 from z_notification.services import notify
 
 from . import billing
@@ -230,10 +231,8 @@ def quote_pdf(doc: dict[str, Any]) -> bytes:
         pdf.multi_cell(width - 42, 5.5, _latin(value), new_x="LMARGIN", new_y="NEXT", link=link)
         pdf.set_text_color(20, 20, 20)
 
-    # Header
-    pdf.set_font("Helvetica", "B", 20)
-    pdf.set_text_color(253, 109, 2)
-    pdf.cell(w / 2, 10, "Zinwe", new_x="RIGHT", new_y="TOP")
+    # Header: the official logo (z_main.branding), title on the right
+    draw_pdf_logo(pdf, w / 2)
     pdf.set_text_color(20, 20, 20)
     pdf.set_font("Helvetica", "B", 13)
     pdf.cell(w / 2, 10, "QUOTATION", align="R", new_x="LMARGIN", new_y="NEXT")

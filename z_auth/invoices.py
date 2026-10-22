@@ -22,6 +22,8 @@ from django.db import IntegrityError, transaction
 from django.db.models import Max
 from django.utils import timezone
 
+from z_main.branding import draw_pdf_logo
+
 from . import pricing
 from .models import Invoice, ManualPayment
 
@@ -248,10 +250,8 @@ def invoice_pdf(invoice: Invoice) -> bytes:
         pdf.set_font("Helvetica", "B" if bold else "", size)
         pdf.multi_cell(width or w, h, _latin(value), align=align, new_x="LMARGIN", new_y="NEXT")
 
-    # Header
-    pdf.set_font("Helvetica", "B", 20)
-    pdf.set_text_color(253, 109, 2)
-    pdf.cell(w / 2, 10, "Zinwe", new_x="RIGHT", new_y="TOP")
+    # Header: the official logo (z_main.branding), title on the right
+    draw_pdf_logo(pdf, w / 2)
     pdf.set_text_color(20, 20, 20)
     pdf.set_font("Helvetica", "B", 13)
     pdf.cell(w / 2, 10, _latin(d.get("title", "Invoice")).upper(), align="R", new_x="LMARGIN", new_y="NEXT")

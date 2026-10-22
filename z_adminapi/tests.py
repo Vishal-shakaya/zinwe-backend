@@ -398,7 +398,9 @@ class CustomerEmailTests(SubscriberFixture):
         html_part = mail.outbox[0].alternatives[0][0]
         for bad in ("<script", "onclick", 'src="x"', "javascript:", "<iframe", "onerror"):
             self.assertNotIn(bad, html_part)
-        self.assertNotIn("<img", html_part)  # the customer's image is gone; the logo is text
+        # The injected image is gone; the only image left is the official logo in the header.
+        self.assertEqual(html_part.count("<img"), 1)
+        self.assertIn('<img src="https://zinwe.io/brand/zinwe-logo-96.png"', html_part)
 
     def test_needs_subject_and_message(self) -> None:
         self.assertEqual(self.client.post(self.url(), {"subject": " ", "html": "<p>Hi</p>"}, format="json").status_code,

@@ -379,10 +379,13 @@ ZINWE_PAYMENT_INSTRUCTIONS = {
     "paypal_url": env_str("ZINWE_PAYMENT_PAYPAL_URL", ""),
     "note": env_str("ZINWE_PAYMENT_NOTE", "Use your company name as the payment reference."),
 }
-# Logo at the top of every HTML email: a public https URL once deployed (e.g.
-# https://zinwe.io/brand/zinwe-logo-96.png). Empty (default) = the wordmark in text, same colours.
+# Logo at the top of every HTML email. Owner rule (2026-10-22): always the official logo, so the default is the
+# hosted file on the live site (a transparent PNG, 4x the display size). Mail apps that block images show the
+# styled alt text instead (orange "Zinwe"); set ZINWE_EMAIL_LOGO_URL=text to send the text wordmark only.
 # Never attach it inline: Gmail accepted and then silently dropped those emails (2026-10-11).
-ZINWE_EMAIL_LOGO_URL = env_str("ZINWE_EMAIL_LOGO_URL", "")
+ZINWE_EMAIL_LOGO_URL = env_str("ZINWE_EMAIL_LOGO_URL", "https://zinwe.io/brand/zinwe-logo-96.png")
+if ZINWE_EMAIL_LOGO_URL.strip().lower() in {"text", "none", "off"}:
+    ZINWE_EMAIL_LOGO_URL = ""
 # The sender's postal address in the footer of marketing emails (the series newsletter).
 ZINWE_POSTAL_ADDRESS = env_str("ZINWE_POSTAL_ADDRESS", "SKYTECHNO, New Delhi, India")
 ZINWE_PAYMENT_PROOF_MAX_BYTES = 5 * 1024 * 1024

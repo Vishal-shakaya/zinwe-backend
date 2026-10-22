@@ -133,8 +133,9 @@ class RedactTests(TestCase):
 
 
 class EmailLogoTests(TestCase):
-    """Every HTML email shows the Zinwe wordmark: in text by default, the hosted image when configured.
-    Nothing is ever attached (an inline cid logo made Gmail drop the emails)."""
+    """Every HTML email shows the official Zinwe logo (owner rule, 2026-10-22): the hosted image by default,
+    with alt text styled as the wordmark for mail apps that block images; the text wordmark only when turned
+    off. Nothing is ever attached (an inline cid logo made Gmail drop the emails)."""
 
     def send(self):  # type: ignore[no-untyped-def]
         from django.core import mail as django_mail
@@ -144,18 +145,24 @@ class EmailLogoTests(TestCase):
         notify("email", "asha@acme.in", "welcome", {"first_name": "Asha"})
         return django_mail.outbox[0]
 
-    def test_text_wordmark_and_no_attachment_by_default(self) -> None:
+    def test_official_logo_by_default_with_styled_alt_text(self) -> None:
+        from django.conf import settings
+
+        self.assertEqual(settings.ZINWE_EMAIL_LOGO_URL, "https://zinwe.io/brand/zinwe-logo-96.png")
         message = self.send()
         html = message.alternatives[0][0]
-        self.assertIn('<span style="color:#FD6D02;">Z</span>inwe', html)
-        self.assertNotIn("<img", html)
+        self.assertIn('src="https://zinwe.io/brand/zinwe-logo-96.png" alt="Zinwe"', html)
+        self.assertIn("color:#FD6D02", html)  # blocked images: the alt text reads as the orange wordmark
+        self.assertIn('href="https://zinwe.io/"', html)
         self.assertNotIn("cid:", html)
         self.assertEqual(message.attachments, [])
 
-    @override_settings(ZINWE_EMAIL_LOGO_URL="https://zinwe.io/brand/zinwe-logo-96.png")
-    def test_hosted_logo_url_is_linked(self) -> None:
+    @override_settings(ZINWE_EMAIL_LOGO_URL="")
+    def test_text_wordmark_when_turned_off(self) -> None:
         message = self.send()
-        self.assertIn('src="https://zinwe.io/brand/zinwe-logo-96.png"', message.alternatives[0][0])
+        html = message.alternatives[0][0]
+        self.assertIn('<span style="color:#FD6D02;">Z</span>inwe', html)
+        self.assertNotIn("zinwe-logo", html)
         self.assertEqual(message.attachments, [])
 
     def test_every_html_template_shows_the_logo(self) -> None:
