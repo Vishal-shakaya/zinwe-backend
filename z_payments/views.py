@@ -92,9 +92,12 @@ class OfferView(APIView):
             offer = services.usable_offer(request.user, pk, plan)
         except services.OfferNotAvailable as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_404_NOT_FOUND)
-        if subscription is None:
-            return Response({"detail": str(services.OfferNotAvailable())}, status=status.HTTP_404_NOT_FOUND)
-        due = services.offer_quote(subscription, offer)
+        try:
+            if subscription is None:
+                raise services.OfferNotAvailable()
+            due = services.offer_quote(subscription, offer)
+        except services.OfferNotAvailable as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_404_NOT_FOUND)
         return Response({
             "id": offer.pk,
             "title": offer.title,
@@ -102,7 +105,7 @@ class OfferView(APIView):
             "plan_name": offer.offer_plan.name,
             "ends_at": offer.ends_at,
             "online_only": True,
-            "online_enabled": services.online_enabled() and due.currency == "INR",
+            "online_enabled": services.online_enabled(),
             "due": due.as_dict(),
         })
 

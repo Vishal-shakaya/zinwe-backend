@@ -109,13 +109,23 @@ class RazorpayTests(PortalTestCase):
         self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
         self.assertTrue(response.json()["fallback"])
 
-    def test_usd_customers_use_skydo(self) -> None:
+    def test_usd_customers_pay_by_card(self) -> None:
         company = self.owner.owned_company
         company.country = "United States"
         company.save()
         response = self.start()
-        self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
-        self.assertIsNone(self.get(SUB_URL).json()["instructions"]["online"])
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.content)
+        body = response.json()
+        due = self.get(SUB_URL).json()["subscription"]["amount_due"]
+        self.assertEqual((body["currency"], due["currency"]), ("USD", "USD"))
+        self.assertEqual(body["amount"], int(Decimal(due["total"]) * 100))  # cents
+        self.assertEqual(self.get(SUB_URL).json()["instructions"]["online"]["key_id"], "rzp_test_key")
+        order = RazorpayOrder.objects.get()
+        with mock.patch.object(api, "fetch_payment", return_value={**self.paid(order), "currency": "USD"}):
+            self.assertEqual(self.verify(order).json()["status"], "paid")
+        payment = ManualPayment.objects.get()
+        self.assertEqual((payment.method, payment.currency, payment.status), ("razorpay", "USD", "verified"))
+        self.assertFalse(payment.due["taxes"])  # an export: no GST
 
     def test_not_while_a_receipt_is_being_checked(self) -> None:
         self.post(SUB_URL, {"plan": "startups"})
@@ -287,6 +297,14 @@ class RazorpayTests(PortalTestCase):
         # Used up.
         again = self.get(f"/api/payments/offer/{offer.pk}/?plan=businesses")
         self.assertEqual(again.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_offer_is_for_rupee_customers(self) -> None:
+        self.on_teams()
+        Subscription.objects.filter(pk=self.sub().pk).update(currency="USD")
+        offer = self.offer()
+        self.assertEqual(self.get(f"/api/payments/offer/{offer.pk}/?plan=businesses").status_code, status.HTTP_404_NOT_FOUND)
+        response = self.post(ORDER_URL, {"accept_terms": True, "upgrade_plan": "businesses", "offer": offer.pk})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, response.content)
 
     def test_offer_only_for_its_owners_plan_and_window(self) -> None:
         self.on_teams()

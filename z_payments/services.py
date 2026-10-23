@@ -13,7 +13,7 @@ The flow:
 Safety nets: the webhook (`handle_webhook`) and the hourly `reconcile` job confirm payments whose browser closed
 before step 2; and money that can't be applied automatically is left as a submitted payment for staff to approve
 (`NEEDS_REVIEW`), with the usual team email. If Razorpay is off or down, the checkout falls back to UPI / bank
-transfer + receipt, which never depend on it.
+transfer (rupees) or Skydo (US dollars) + receipt, which never depend on it. Rupees and US dollars are taken online.
 """
 from __future__ import annotations
 
@@ -39,7 +39,10 @@ from .models import RazorpayOrder
 log = logging.getLogger(__name__)
 
 LIVE_HOSTS = {"zinwe.io", "www.zinwe.io"}
+# The smallest order, in the currency's smallest unit: ₹1.00 or $1.00.
 MIN_PAISE = 100
+# Razorpay takes rupees, and US dollars from cards abroad (international payments are on, 2026-10-23).
+ONLINE_CURRENCIES = (pricing.INR, pricing.USD)
 
 
 class OnlinePaymentUnavailable(Exception):
@@ -92,7 +95,10 @@ def usable_offer(user: User, offer_id: int, plan: Plan | None) -> Announcement:
 
 def offer_quote(subscription: Subscription, offer: Announcement) -> pricing.Quote:
     """What the owner pays with the offer: the offer plan at the offer price, for one cycle of their own
-    subscription (its currency and billing cycle), with tax."""
+    subscription (its currency and billing cycle), with tax. The price is in rupees: customers billed in US dollars
+    can't use it."""
+    if subscription.currency != pricing.INR:
+        raise OfferNotAvailable("This offer is for payments in rupees.")
     return pricing.quote(
         offer.offer_plan, subscription.company, subscription.currency, subscription.billing_cycle,
         cycle_amount=offer.offer_price_inr,
@@ -114,8 +120,9 @@ def online_enabled() -> bool:
 
 
 def checkout_config(currency: str) -> dict[str, str] | None:
-    """For the payment page: the public key id, or None when online payment isn't offered (USD, or off)."""
-    if currency != pricing.INR or not online_enabled():
+    """For the payment page: the public key id, or None when online payment isn't offered (off, or a currency
+    Razorpay doesn't take for us)."""
+    if currency not in ONLINE_CURRENCIES or not online_enabled():
         return None
     return {"provider": "razorpay", "key_id": settings.RAZORPAY_KEY_ID}
 
@@ -137,8 +144,8 @@ def start_order(
         # Same subscription, plan change and period rules as a normal payment; only the price is the offer's.
         # After it's paid, renewals use the plan's normal price (billing.verify_payment re-prices the plan).
         due = offer_quote(subscription, offer)
-    if due.currency != pricing.INR:
-        raise OnlinePaymentUnavailable("Online payment is for payments in rupees. Use Skydo for US dollars.")
+    if due.currency not in ONLINE_CURRENCIES:
+        raise OnlinePaymentUnavailable()
     amount_paise = int((due.total * 100).quantize(Decimal("1")))
     if amount_paise < MIN_PAISE:
         raise billing.NothingToPay()
