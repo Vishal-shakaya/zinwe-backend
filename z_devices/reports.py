@@ -93,12 +93,22 @@ class _Collector:
         self.daily = {start + timedelta(days=i): _day(start + timedelta(days=i)) for i in range((end - start).days + 1)}
         # One person's own days (only used for a person's report).
         self.person_days: dict[date, dict[str, Any]] = {}
+        # The team report's chart: each person's numbers on each day (the day's "by_person").
+        self.day_people: dict[date, dict[Any, dict[str, Any]]] = defaultdict(dict)
 
     def person(self, key: Any, member_id: int | None, name: str) -> dict[str, Any]:
         return self.people.setdefault(key, _person(member_id, name))
 
     def person_day(self, day: date) -> dict[str, Any]:
         return self.person_days.setdefault(day, _day(day))
+
+    def day_person(self, day: date, key: Any, member_id: int | None, name: str) -> dict[str, Any]:
+        """One person on one day of the team report (`key` is "m12" for a member, "d5" for an unlinked PC)."""
+        return self.day_people[day].setdefault(key, {
+            "key": f"{key[0]}{key[1]}", "member_id": member_id, "name": name, "worked_seconds": 0,
+            "break_seconds": 0, "breaks": 0, "active_seconds": 0, "data_bytes": 0, "alerts": 0,
+            "first_in": None, "last_out": None,
+        })
 
 
 def _work(c: _Collector, owner: User, lo: datetime, hi: datetime, now: datetime, member: Member | None) -> None:
@@ -154,6 +164,9 @@ def _work(c: _Collector, owner: User, lo: datetime, hi: datetime, now: datetime,
         if mine is not None:
             mine.update(worked_seconds=worked, break_seconds=on_break, breaks=breaks, first_in=first_in,
                         last_out=last_out, people=1)
+        elif trend is not None:
+            c.day_person(day, key, names[key][1], names[key][0]).update(
+                worked_seconds=worked, break_seconds=on_break, breaks=breaks, first_in=first_in, last_out=last_out)
 
 
 def _alerts(c: _Collector, owner: User, lo: datetime, hi: datetime, ent: Any, member: Member | None):  # type: ignore[no-untyped-def]
@@ -174,9 +187,12 @@ def _alerts(c: _Collector, owner: User, lo: datetime, hi: datetime, ent: Any, me
     )
     for row in rows:
         key = ("m", row["device__member_id"]) if row["device__member_id"] else ("d", row["device_id"])
-        c.person(key, row["device__member_id"], row["device__member__name"] or row["device__hostname"])["alerts"] += row["n"]
+        name = row["device__member__name"] or row["device__hostname"]
+        c.person(key, row["device__member_id"], name)["alerts"] += row["n"]
         if row["day"] in c.daily:
             c.daily[row["day"]]["alerts"] += row["n"]
+            if member is None:
+                c.day_person(row["day"], key, row["device__member_id"], name)["alerts"] += row["n"]
         if member is not None:
             c.person_day(row["day"])["alerts"] += row["n"]
     return alerts
@@ -203,9 +219,12 @@ def _usage(c: _Collector, owner: User, lo: datetime, hi: datetime, ent: Any, mem
         if not value:
             continue
         key = ("m", row["device__member_id"]) if row["device__member_id"] else ("d", row["device_id"])
-        c.person(key, row["device__member_id"], row["device__member__name"] or row["device__hostname"])[field] += value
+        name = row["device__member__name"] or row["device__hostname"]
+        c.person(key, row["device__member_id"], name)[field] += value
         if row["day"] in c.daily:
             c.daily[row["day"]][field] += value
+            if member is None:
+                c.day_person(row["day"], key, row["device__member_id"], name)[field] += value
         if member is not None:
             c.person_day(row["day"])[field] += value
 
@@ -273,6 +292,10 @@ def build_report(
         "top_data": _top(owner, lo, hi, ent, member, DATA_SITE, "bytes"),
     }
     if member is None:
+        # Each day's people, most worked first, for the chart's per-person bars and hover detail.
+        for day, entry in c.daily.items():
+            entry["by_person"] = sorted(c.day_people.get(day, {}).values(),
+                                        key=lambda p: (-p["worked_seconds"], -p["active_seconds"], p["name"].lower()))
         seen = {r["member_id"] for r in rows if r["member_id"]}
         report["no_activity"] = sorted(m.name for m in Member.objects.filter(owner=owner, is_active=True) if m.pk not in seen)
     else:

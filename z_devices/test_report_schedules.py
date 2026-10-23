@@ -87,6 +87,27 @@ class PersonReportTests(ReportTestBase):
         self.assertEqual(body["daily"][0]["people"], 2)
         self.assertNotIn("person_days", body)
 
+    def test_each_day_of_the_team_report_breaks_down_by_person(self) -> None:
+        ravi, pc = self.second_person()
+        two_days_ago = self.yesterday - timedelta(days=1)
+        self.a_day(self.yesterday, start=9)
+        self.a_day(self.yesterday, member=ravi, device=pc, start=11)
+        self.a_day(two_days_ago)
+        UsageMetric.objects.create(device=pc, bucket_start=self.at(self.yesterday, 12),
+                                   category="app.foreground", key="excel", count=2, seconds=1800)
+        body = self.client.get(URL, {"from": two_days_ago.isoformat(), "to": self.yesterday.isoformat()}).json()
+        first, last = body["daily"]
+        self.assertEqual([p["name"] for p in first["by_person"]], ["Asha Rao"])
+        asha, ravi_day = last["by_person"]  # most worked first
+        self.assertEqual((asha["name"], asha["worked_seconds"], asha["first_in"], asha["last_out"]),
+                         ("Asha Rao", 30600, 9 * 60, 18 * 60))
+        self.assertEqual((ravi_day["key"], ravi_day["member_id"], ravi_day["worked_seconds"], ravi_day["active_seconds"]),
+                         (f"m{ravi.pk}", ravi.pk, 23400, 1800))
+        self.assertEqual(sum(p["worked_seconds"] for p in last["by_person"]), last["worked_seconds"])
+        person = self.client.get(URL, {"from": self.yesterday.isoformat(), "to": self.yesterday.isoformat(),
+                                       "member": ravi.pk}).json()
+        self.assertNotIn("by_person", person["daily"][0])
+
     def test_someone_elses_member_is_not_found(self) -> None:
         other = User.objects.create_user("other@x.in", "pw-12345678")
         stranger = Member.objects.create(owner=other, name="Stranger", email="s@x.in")
