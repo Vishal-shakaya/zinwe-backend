@@ -38,6 +38,8 @@ class OrderRequest(serializers.Serializer):
     )
     # An admin offer (Announcement id) from a dashboard bar: checked again here, priced on the server.
     offer = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+    # Monthly or yearly, as chosen at checkout (default: the subscription's own). Ignored with an offer.
+    billing_cycle = serializers.ChoiceField(choices=("monthly", "yearly"), required=False, allow_null=True)
 
     def validate_accept_terms(self, value: bool) -> bool:
         if value is not True:
@@ -68,6 +70,7 @@ class RazorpayOrderView(APIView):
             order = services.start_order(
                 request.user, data.validated_data.get("upgrade_plan"), accept_terms=True,
                 offer_id=data.validated_data.get("offer"),
+                cycle=data.validated_data.get("billing_cycle"),
             )
         except services.OnlinePaymentUnavailable as exc:
             return _unavailable(exc)

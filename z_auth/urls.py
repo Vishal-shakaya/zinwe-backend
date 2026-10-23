@@ -42,6 +42,7 @@ urlpatterns = [
         name="subscription-upgrade",
     ),
     path("subscription/upi-qr/", portal_views.UpiQrView.as_view(), name="subscription-upi-qr"),
+    path("subscription/checkout/", portal_views.CheckoutPreviewView.as_view(), name="subscription-checkout"),
     path("subscription/quote/", portal_views.QuoteView.as_view(), name="subscription-quote"),
     path("subscription/quote/pdf/", portal_views.QuotePdfView.as_view(), name="subscription-quote-pdf"),
     path("subscription/quote/email/", portal_views.QuoteEmailView.as_view(), name="subscription-quote-email"),

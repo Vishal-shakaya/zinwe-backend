@@ -202,6 +202,18 @@ class PlanListTests(PortalTestCase):
                 "code": "businesses", "name": "Businesses", "tagline": plans["businesses"]["tagline"],
                 "price_inr_monthly": "2834.00", "list_price_inr_monthly": "4049.00", "discount_percent": 30,
                 "price_usd_monthly": "34.00", "list_price_usd_monthly": "48.00", "quote": plans["businesses"]["quote"],
+                "prices": {
+                    "INR": {
+                        "monthly": {"list": "4049.00", "price": "2834.00"},
+                        "yearly": {"list": "48588.00", "price": "28340.00"},
+                        "yearly_saving_percent": 17,
+                    },
+                    "USD": {
+                        "monthly": {"list": "48.00", "price": "34.00"},
+                        "yearly": {"list": "576.00", "price": "340.00"},
+                        "yearly_saving_percent": 17,
+                    },
+                },
                 "trial_days": 0, "max_devices": 50, "history_days": 365,
                 "features": plans["businesses"]["features"], "modules": plans["businesses"]["modules"],
                 "is_recommended": True,

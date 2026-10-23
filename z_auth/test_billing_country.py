@@ -42,7 +42,8 @@ class QuoteTests(_UpgradeBase):
         company.country = "United States"
         q = pricing.quote(self.plan("businesses"), company)
         self.assertEqual((q.currency, q.billing_cycle, q.months), ("USD", "yearly", 12))
-        self.assertEqual((q.amount, q.list_amount, q.total), (Decimal("408.00"), Decimal("576.00"), Decimal("408.00")))
+        # A year at the yearly price (two months free: 10 x $34), against 12 x the $48 list price.
+        self.assertEqual((q.amount, q.list_amount, q.total), (Decimal("340.00"), Decimal("576.00"), Decimal("340.00")))
         self.assertEqual(q.taxes, [])
         self.assertTrue(q.export)
         self.assertIn("LUT ARN AD0710260012345", q.note)
@@ -90,17 +91,17 @@ class FlowTests(_UpgradeBase):
         company.save()
         self.post(SUB_URL, {"plan": "startups"})
         sub = Subscription.objects.get()
-        self.assertEqual((sub.currency, sub.billing_cycle, sub.amount_inr), ("USD", "yearly", Decimal("144.00")))
+        self.assertEqual((sub.currency, sub.billing_cycle, sub.amount_inr), ("USD", "yearly", Decimal("120.00")))
         instructions = self.get(SUB_URL).json()["instructions"]
         self.assertEqual(instructions["region"], "INTL")
 
-        self.post(PAY_URL, payment_form(method="skydo", amount_inr="144"), fmt="multipart")
+        self.post(PAY_URL, payment_form(method="skydo", amount_inr="120"), fmt="multipart")
         payment = ManualPayment.objects.get()
         verify_payment(payment.pk, self.staff)
         payment.refresh_from_db()
         self.assertEqual(payment.covers_until, add_months(payment.covers_from, 12))
         invoice = Invoice.objects.get()
-        self.assertEqual((invoice.currency, invoice.data["total"], invoice.data["export"]), ("USD", "144.00", True))
+        self.assertEqual((invoice.currency, invoice.data["total"], invoice.data["export"]), ("USD", "120.00", True))
         self.assertEqual(invoice.data["title"], "Tax invoice (export of services)")
         self.assertIn("without payment of integrated tax", " ".join(invoice.data["notes"]))
 

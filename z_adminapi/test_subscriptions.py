@@ -31,7 +31,7 @@ class SubscriptionAdminTests(AdminApiTestCase):
         india, us = rows["asha@acme.in"], rows["joe@acme.com"]
         self.assertEqual((india["region"], india["currency"], india["amount_due"]["total"]), ("IN", "INR", "1145.78"))
         self.assertEqual((us["region"], us["currency"], us["billing_cycle"]), ("INTL", "USD", "yearly"))
-        self.assertEqual(us["amount_due"]["total"], "144.00")
+        self.assertEqual(us["amount_due"]["total"], "120.00")  # a year: two months free (migration 0031)
 
     def test_payment_link_shows_on_the_customer_page(self) -> None:
         sub = self.customer("joe@acme.com", country="United States", state="Texas")

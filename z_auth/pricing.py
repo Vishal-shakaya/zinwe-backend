@@ -4,8 +4,11 @@ What a customer pays, and why: one place that turns (plan, company) into a quote
 - **India** (company country India): INR, billed monthly, 18% GST on top — CGST 9% + SGST 9% when the
   customer's state is the seller's (settings.ZINWE_GST["seller_state"]), IGST 18% otherwise. GST is only
   charged when the seller GSTIN is set (settings.ZINWE_INVOICE_SELLER["gstin"]).
-- **Everywhere else**: USD, billed yearly (12 x the plan's USD monthly price), no GST — an export of
-  services under a Letter of Undertaking (LUT). A plan with no USD price falls back to the INR quote.
+- **Everywhere else** (international): USD, no GST — an export of services under a Letter of Undertaking (LUT).
+  A plan with no USD price falls back to the INR quote.
+- **Monthly or yearly** (2026-10-23): every owner chooses at checkout. A year costs the plan's yearly price
+  (`price_inr_yearly` / `price_usd_yearly`, set on the admin app's Pricing page), or 12 x the monthly price when
+  none is set. Without a choice, India starts monthly and international yearly (`cycle_for`).
 
 The quote is shown on every payment screen, prefilled as the amount to pay, and frozen on the invoice.
 Amounts are Decimals rounded to 0.01 (half up), each tax line separately, as on a GST invoice.
@@ -97,6 +100,11 @@ def months_in(cycle: str) -> int:
     return 12 if cycle == YEARLY else 1
 
 
+def valid_cycle(cycle: Any) -> str | None:
+    """"monthly" / "yearly", or None for anything else (the caller's default then applies)."""
+    return cycle if cycle in (MONTHLY, YEARLY) else None
+
+
 def _monthly_prices(plan: Plan, currency: str) -> tuple[Decimal, Decimal]:
     """(list price, price) per month in `currency`; list = price when there's no discount."""
     if currency == USD:
@@ -108,6 +116,28 @@ def _monthly_prices(plan: Plan, currency: str) -> tuple[Decimal, Decimal]:
     if list_price <= price:
         list_price = price
     return money(list_price), money(price)
+
+
+def cycle_prices(plan: Plan, currency: str, cycle: str) -> tuple[Decimal, Decimal]:
+    """
+    (list price, price) for one whole billing cycle in `currency`. A year is the plan's yearly price when set,
+    else 12 months; its list price is 12 x the monthly list price (what the discount is shown against).
+    """
+    list_month, price_month = _monthly_prices(plan, currency)
+    if cycle != YEARLY:
+        return list_month, price_month
+    yearly = plan.price_usd_yearly if currency == USD else plan.price_inr_yearly
+    price = money(yearly) if yearly is not None and yearly > 0 else money(price_month * 12)
+    return max(money(list_month * 12), price), price
+
+
+def yearly_saving_percent(plan: Plan, currency: str) -> int:
+    """How much less a year costs than 12 monthly payments, in whole percent (0 when it doesn't)."""
+    _, month = _monthly_prices(plan, currency)
+    _, year = cycle_prices(plan, currency, YEARLY)
+    if month <= 0 or year >= month * 12:
+        return 0
+    return int(((1 - year / (month * 12)) * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
 def quote(
@@ -122,11 +152,9 @@ def quote(
     `cycle_amount` replaces the catalogue price (a subscriber's locked-in price), before tax.
     """
     currency = currency or currency_for(company, plan)
-    cycle = cycle or cycle_for(currency)
+    cycle = valid_cycle(cycle) or cycle_for(currency)
     months = months_in(cycle)
-    list_month, price_month = _monthly_prices(plan, currency)
-    list_amount = money(list_month * months)
-    amount = money(price_month * months)
+    list_amount, amount = cycle_prices(plan, currency, cycle)
     if cycle_amount is not None:
         amount = money(cycle_amount)
         list_amount = max(list_amount, amount)
@@ -160,17 +188,24 @@ def quote(
     return q
 
 
-def quote_for_subscription(subscription: Subscription, plan: Plan | None = None) -> Quote:
+def quote_for_subscription(subscription: Subscription, plan: Plan | None = None, cycle: str | None = None) -> Quote:
     """
-    The next payment on `subscription` (or an upgrade to `plan`), in the subscription's own currency/cycle.
-    Renewing the same plan keeps the price the owner signed up at (Terms: "you keep the price you signed up
-    at until we tell you otherwise"); an upgrade is priced from today's catalogue.
+    The next payment on `subscription` (or an upgrade to `plan`), in the subscription's own currency, for one
+    billing cycle: `cycle` when the owner chooses one at checkout, else the subscription's own.
+    Renewing the same plan on the same cycle keeps the price the owner signed up at (Terms: "you keep the price you
+    signed up at until we tell you otherwise"); an upgrade or a change of cycle is priced from today's catalogue.
     """
     target = plan or subscription.plan
+    cycle = valid_cycle(cycle) or subscription.billing_cycle
     locked = None
-    if target.pk == subscription.plan_id and not subscription.is_trial and (subscription.amount_inr or 0) > 0:
+    if (
+        target.pk == subscription.plan_id
+        and cycle == subscription.billing_cycle
+        and not subscription.is_trial
+        and (subscription.amount_inr or 0) > 0
+    ):
         locked = subscription.amount_inr
-    return quote(target, subscription.company, subscription.currency, subscription.billing_cycle, cycle_amount=locked)
+    return quote(target, subscription.company, subscription.currency, cycle, cycle_amount=locked)
 
 
 def money_text(amount: Decimal | str, currency: str) -> str:

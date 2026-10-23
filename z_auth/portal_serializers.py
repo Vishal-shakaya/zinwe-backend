@@ -284,6 +284,10 @@ class PaymentSubmitSerializer(serializers.Serializer):
         slug_field="code", queryset=Plan.objects.filter(is_active=True), required=False, allow_null=True,
         error_messages={"does_not_exist": "That plan isn't available.", "invalid": "That plan isn't available."},
     )
+    # Monthly or yearly, as chosen at checkout (default: the subscription's own cycle).
+    billing_cycle = StrippedChoiceField(
+        choices=Subscription.BillingCycle.choices, error_messages=CHOICE_MESSAGES, required=False,
+    )
     proof = serializers.FileField(
         required=False, allow_null=True, allow_empty_file=False,
         error_messages={

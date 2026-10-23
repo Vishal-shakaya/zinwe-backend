@@ -306,17 +306,35 @@ class PlanSerializer(serializers.ModelSerializer):
     trial_available = serializers.SerializerMethodField()
     quote = serializers.SerializerMethodField()
     gst_charged = serializers.SerializerMethodField()
+    prices = serializers.SerializerMethodField()
 
     class Meta:
         model = Plan
         fields = (
             "code", "name", "tagline", "price_inr_monthly", "list_price_inr_monthly", "discount_percent",
-            "price_usd_monthly", "list_price_usd_monthly", "quote",
+            "price_usd_monthly", "list_price_usd_monthly", "prices", "quote",
             "trial_days", "max_devices", "history_days",
             "features", "modules", "is_recommended", "requires_payment", "sort_order", "trial_available",
             "gst_charged",
         )
         read_only_fields = fields
+
+    def get_prices(self, obj: Plan) -> dict[str, Any]:
+        """
+        Every price, before tax, for the plan cards' currency and monthly / yearly switches:
+        {"INR": {"monthly": {"list", "price"}, "yearly": {"list", "price"}, "yearly_saving_percent"}, "USD": ...}.
+        Each cycle's amounts are for the whole cycle (a year = the yearly price, or 12 months).
+        """
+        from . import pricing
+
+        out: dict[str, Any] = {}
+        for currency in (pricing.INR, pricing.USD):
+            cycles = {}
+            for cycle in (pricing.MONTHLY, pricing.YEARLY):
+                list_amount, price = pricing.cycle_prices(obj, currency, cycle)
+                cycles[cycle] = {"list": str(list_amount), "price": str(price)}
+            out[currency] = {**cycles, "yearly_saving_percent": pricing.yearly_saving_percent(obj, currency)}
+        return out
 
     def get_trial_available(self, obj: Plan) -> bool:
         return trial_available(obj, self.context.get("user"))

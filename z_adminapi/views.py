@@ -73,6 +73,29 @@ class PlanListView(StaffView):
         return Response(PlanSummarySerializer(plans, many=True).data)
 
 
+class PricingView(StaffView):
+    """GET /api/admin/pricing/ -- every plan's prices by region (India / International) and cycle."""
+
+    def get(self, request: Request) -> Response:
+        from .pricing import pricing_overview
+
+        return Response(pricing_overview())
+
+
+class PricingDetailView(StaffView):
+    """PATCH /api/admin/pricing/<code>/ -- change a plan's prices (and which plan is recommended)."""
+
+    def patch(self, request: Request, code: str) -> Response:
+        from .pricing import PricingUpdateSerializer, plan_pricing
+
+        plan = get_object_or_404(Plan, code=code, is_active=True)
+        data = PricingUpdateSerializer(data=request.data, context={"plan": plan})
+        data.is_valid(raise_exception=True)
+        plan = data.save()
+        track("admin.pricing_changed", {"plan": plan.code, "fields": sorted(request.data.keys())}, actor_email=request.user.email)
+        return Response(plan_pricing(plan, plan.subscriptions.filter(status=Subscription.Status.ACTIVE, is_trial=False).count()))
+
+
 # --- Subscribers ---------------------------------------------------------------
 
 

@@ -247,11 +247,37 @@ def _quote_pdf_response(doc: dict) -> HttpResponse:
     return response
 
 
+class CheckoutPreviewView(APIView):
+    """
+    GET /api/auth/subscription/checkout/[?plan=<code>][&cycle=monthly|yearly] -- what the checkout shows for one
+    billing cycle: {quote, covers_from, covers_until, carried_days, upi_uri, yearly_saving_percent}. `plan` = an
+    upgrade from an active plan, or another plan to pay for instead of the one waiting for payment; none = what's
+    due (first payment or renewal). Read only. 404 unknown plan; 409 when there's nothing to pay / an upgrade
+    isn't possible / a payment is being checked.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request: Request) -> Response:
+        from . import pricing
+        from .models import Plan
+
+        code = request.query_params.get("plan", "")
+        plan = Plan.objects.filter(code=code[:50], is_active=True).first() if code else None
+        if code and plan is None:
+            return Response({"detail": "That plan doesn't exist or isn't available."}, status=status.HTTP_404_NOT_FOUND)
+        cycle = pricing.valid_cycle(request.query_params.get("cycle"))
+        try:
+            return Response(billing.checkout_preview(request.user, plan, cycle))
+        except (billing.NothingToPay, billing.UpgradeNotAllowed, billing.PaymentUnderReview) as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
+
+
 class UpgradePreviewView(APIView):
     """
-    GET /api/auth/subscription/upgrade/<plan_code>/ -- before paying for an upgrade from an active plan:
-    {quote, covers_from, covers_until, carried_days, upi_uri}. 404 unknown plan; 409 when the
-    upgrade isn't possible (no active plan, a payment under review, or not a higher plan).
+    GET /api/auth/subscription/upgrade/<plan_code>/[?cycle=] -- before paying for an upgrade from an active plan:
+    {quote, covers_from, covers_until, carried_days, upi_uri, yearly_saving_percent}. 404 unknown plan; 409 when
+    the upgrade isn't possible (no active plan, a payment under review, or not a higher plan).
     """
 
     permission_classes = [IsAuthenticated]
@@ -262,8 +288,11 @@ class UpgradePreviewView(APIView):
         plan = Plan.objects.filter(code=plan_code, is_active=True).first()
         if plan is None:
             return Response({"detail": "That plan doesn't exist or isn't available."}, status=status.HTTP_404_NOT_FOUND)
+        from . import pricing
+
+        cycle = pricing.valid_cycle(request.query_params.get("cycle"))
         try:
-            return Response(billing.upgrade_preview(request.user, plan))
+            return Response(billing.upgrade_preview(request.user, plan, cycle=cycle))
         except (billing.UpgradeNotAllowed, billing.PaymentUnderReview) as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
 
@@ -292,12 +321,16 @@ class UpiQrView(APIView):
     throttle_scope = "upi_qr"
 
     def get(self, request: Request) -> Response:
+        from . import pricing
         from .models import Plan
 
         subscription = billing.current_subscription(request.user)
         code = request.query_params.get("upgrade", "")
+        cycle = pricing.valid_cycle(request.query_params.get("cycle"))
         if not code:
             due = billing.subscription_due(subscription)
+            if due is not None and cycle:
+                due = billing.amount_due(subscription, None, cycle)
             return _upi_qr_response(billing.upi_qr(due, subscription.company) if due else None)
         plan = Plan.objects.filter(code=code[:50], is_active=True).first()
         if plan is None:
@@ -306,7 +339,7 @@ class UpiQrView(APIView):
             subscription = billing.check_upgrade(subscription, plan)
         except (billing.UpgradeNotAllowed, billing.PaymentUnderReview) as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
-        return _upi_qr_response(billing.upi_qr(billing.amount_due(subscription, plan), subscription.company))
+        return _upi_qr_response(billing.upi_qr(billing.amount_due(subscription, plan, cycle), subscription.company))
 
 
 class QuoteView(APIView):

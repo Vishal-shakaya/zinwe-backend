@@ -225,7 +225,7 @@ class UpgradePreviewTests(OwnerBase):
         self.assertEqual(response.status_code, status.HTTP_200_OK, response.content)
         body = response.json()
         self.assertEqual(
-            set(body), {"quote", "covers_from", "covers_until", "carried_days", "upi_uri"}
+            set(body), {"quote", "covers_from", "covers_until", "carried_days", "upi_uri", "yearly_saving_percent"}
         )
         self.assertEqual(body["quote"]["plan_code"], "teams")
         self.assertEqual(body["quote"]["amount"], "1799.00")

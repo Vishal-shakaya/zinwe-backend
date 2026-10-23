@@ -147,18 +147,26 @@ def days_left(subscription: Subscription, now: datetime | None = None) -> int | 
 
 
 def cycle_months(subscription: Subscription) -> int:
-    """1 for a monthly subscription, 12 for a yearly one (customers outside India)."""
+    """1 for a monthly subscription, 12 for a yearly one."""
     return pricing.months_in(subscription.billing_cycle)
 
 
-def renewal_period(subscription: Subscription, now: datetime | None = None) -> tuple[datetime, datetime]:
+def payment_cycle(payment: ManualPayment) -> str:
+    """The billing cycle a payment pays for: the one on its frozen quote (chosen at checkout), else the
+    subscription's own (older payments, staff-recorded ones)."""
+    return pricing.valid_cycle((payment.due or {}).get("billing_cycle")) or payment.subscription.billing_cycle
+
+
+def renewal_period(
+    subscription: Subscription, now: datetime | None = None, months: int | None = None
+) -> tuple[datetime, datetime]:
     """
     The period a renewal payment would buy: from the plan's current end (or now, if that's
-    already past) to one billing cycle later. Paying early never loses days.
+    already past) to one billing cycle later (`months`, default the subscription's). Paying early never loses days.
     """
     now = now or timezone.now()
     start = subscription.ends_at if subscription.ends_at and subscription.ends_at > now else now
-    return start, add_months(start, cycle_months(subscription))
+    return start, add_months(start, months or cycle_months(subscription))
 
 
 def _carry_over(subscription: Subscription, now: datetime) -> timedelta:
@@ -168,21 +176,24 @@ def _carry_over(subscription: Subscription, now: datetime) -> timedelta:
     return timedelta(0)
 
 
-def upgrade_period(subscription: Subscription, now: datetime | None = None) -> tuple[datetime, datetime]:
-    """An upgrade starts now and runs one billing cycle, plus any paid days left on the old plan."""
+def upgrade_period(
+    subscription: Subscription, now: datetime | None = None, months: int | None = None
+) -> tuple[datetime, datetime]:
+    """An upgrade starts now and runs one billing cycle (`months`), plus any paid days left on the old plan."""
     now = now or timezone.now()
-    return now, add_months(now, cycle_months(subscription)) + _carry_over(subscription, now)
+    return now, add_months(now, months or cycle_months(subscription)) + _carry_over(subscription, now)
 
 
 def next_period(payment: ManualPayment, now: datetime | None = None) -> tuple[datetime, datetime]:
     """The period approving `payment` would cover (shown to staff before they approve)."""
     now = now or timezone.now()
     subscription = payment.subscription
+    months = pricing.months_in(payment_cycle(payment))
     if payment.upgrade_plan_id and subscription.status == Status.ACTIVE:
-        return upgrade_period(subscription, now)
+        return upgrade_period(subscription, now, months)
     if payment.is_renewal and subscription.status == Status.ACTIVE:
-        return renewal_period(subscription, now)
-    return now, add_months(now, cycle_months(subscription))
+        return renewal_period(subscription, now, months)
+    return now, add_months(now, months)
 
 
 def invoice_for(payment: ManualPayment) -> dict[str, Any]:
@@ -192,9 +203,12 @@ def invoice_for(payment: ManualPayment) -> dict[str, Any]:
     return invoice_for_payment(payment).data
 
 
-def amount_due(subscription: Subscription, upgrade_plan: Plan | None = None) -> pricing.Quote:
-    """What the owner pays next: the subscription's plan (or `upgrade_plan`) for one billing cycle, with tax."""
-    return pricing.quote_for_subscription(subscription, upgrade_plan)
+def amount_due(
+    subscription: Subscription, upgrade_plan: Plan | None = None, cycle: str | None = None
+) -> pricing.Quote:
+    """What the owner pays next: the subscription's plan (or `upgrade_plan`) for one billing cycle (`cycle` when
+    chosen at checkout, else the subscription's), with tax."""
+    return pricing.quote_for_subscription(subscription, upgrade_plan, cycle)
 
 
 def upi_uri(upi_id: str, payee: str, amount: str, note: str) -> str:
@@ -310,24 +324,68 @@ def carried_days(subscription: Subscription, now: datetime | None = None) -> int
     return _carry_over(subscription, now or timezone.now()).days
 
 
-def upgrade_preview(user: User, plan: Plan, now: datetime | None = None) -> dict[str, Any]:
-    """
-    What moving up to `plan` costs and covers, before paying (J3-08): the quote, the period it buys
-    (today until one cycle later plus the paid days carried over) and the UPI link for the exact amount (the QR
-    on request: `upi_qr`). Raises `UpgradeNotAllowed` / `PaymentUnderReview`.
-    """
-    now = now or timezone.now()
-    subscription = check_upgrade(current_subscription(user), plan)
-    due = amount_due(subscription, plan)
-    start, until = upgrade_period(subscription, now)
+def _preview(
+    subscription: Subscription, due: pricing.Quote, start: datetime, until: datetime, carried: int, plan: Plan
+) -> dict[str, Any]:
     pay = upi_payment(due, subscription.company)
     return {
         "quote": due.as_dict(),
         "covers_from": timezone.localdate(start).isoformat(),
         "covers_until": timezone.localdate(until).isoformat(),
-        "carried_days": carried_days(subscription, now),
+        "carried_days": carried,
         "upi_uri": pay["upi_uri"] if pay else "",
+        # For the checkout's monthly / yearly switch: how much a year saves on this plan, in this currency.
+        "yearly_saving_percent": pricing.yearly_saving_percent(plan, subscription.currency),
     }
+
+
+def upgrade_preview(
+    user: User, plan: Plan, now: datetime | None = None, cycle: str | None = None
+) -> dict[str, Any]:
+    """
+    What moving up to `plan` costs and covers, before paying (J3-08): the quote for one billing cycle (`cycle`
+    when chosen, else the subscription's), the period it buys (today until one cycle later plus the paid days
+    carried over) and the UPI link for the exact amount (the QR on request: `upi_qr`).
+    Raises `UpgradeNotAllowed` / `PaymentUnderReview`.
+    """
+    now = now or timezone.now()
+    subscription = check_upgrade(current_subscription(user), plan)
+    due = amount_due(subscription, plan, cycle)
+    start, until = upgrade_period(subscription, now, due.months)
+    return _preview(subscription, due, start, until, carried_days(subscription, now), plan)
+
+
+def checkout_preview(
+    user: User, upgrade_plan: Plan | None = None, cycle: str | None = None, now: datetime | None = None
+) -> dict[str, Any]:
+    """
+    What the checkout shows before paying, for one billing cycle (`cycle`, else the subscription's): an upgrade
+    from an active plan (`upgrade_preview`), the first payment on a plan waiting for it (`upgrade_plan` = another
+    plan to pay for instead), or a renewal of an active paid plan. Read only: choosing never changes the
+    subscription. Raises `NothingToPay` / `UpgradeNotAllowed` / `PaymentUnderReview`.
+    """
+    now = now or timezone.now()
+    subscription = current_subscription(user)
+    if subscription is None:
+        raise NothingToPay()
+    if upgrade_plan is not None and subscription.status == Status.ACTIVE:
+        return upgrade_preview(user, upgrade_plan, now, cycle)
+    if has_payment_under_review(subscription):
+        raise PaymentUnderReview()
+    if subscription.status == Status.PENDING_PAYMENT:
+        plan = upgrade_plan or subscription.plan
+        if plan.pk == subscription.plan_id:
+            due = amount_due(subscription, None, cycle)
+        else:
+            if not plan.requires_payment:
+                raise UpgradeNotAllowed()
+            due = pricing.quote(plan, subscription.company, subscription.currency, cycle)
+        return _preview(subscription, due, now, add_months(now, due.months), 0, plan)
+    if is_paid_active(subscription):
+        due = amount_due(subscription, None, cycle)
+        start, until = renewal_period(subscription, now, due.months)
+        return _preview(subscription, due, start, until, 0, subscription.plan)
+    raise NothingToPay()
 
 
 def duplicate_of(payment: ManualPayment) -> ManualPayment | None:
@@ -428,7 +486,8 @@ def submit_payment(
     """
     upgrade_plan: Plan | None = data.pop("upgrade_plan", None)
     accepted_terms = bool(data.pop("accept_terms", False))
-    subscription, upgrade_plan, renewal, due = payment_target(user, upgrade_plan)
+    cycle = pricing.valid_cycle(data.pop("billing_cycle", None))
+    subscription, upgrade_plan, renewal, due = payment_target(user, upgrade_plan, cycle)
     _fill_receipt_defaults(data, user, subscription, due)
     payment = ManualPayment(subscription=subscription, is_renewal=renewal, upgrade_plan=upgrade_plan, **data)
     payment.currency = subscription.currency
@@ -444,7 +503,7 @@ def submit_payment(
 
 
 def payment_target(
-    user: User, upgrade_plan: Plan | None = None
+    user: User, upgrade_plan: Plan | None = None, cycle: str | None = None
 ) -> tuple[Subscription, Plan | None, bool, pricing.Quote]:
     """
     What a payment from `user` now is for: (the subscription, locked; the upgrade plan or None; whether it's a
@@ -476,7 +535,7 @@ def payment_target(
     subscription = Subscription.objects.select_for_update().get(pk=subscription.pk)
     if has_payment_under_review(subscription):
         raise PaymentUnderReview()
-    return subscription, upgrade_plan, renewal, amount_due(subscription, upgrade_plan)
+    return subscription, upgrade_plan, renewal, amount_due(subscription, upgrade_plan, cycle)
 
 
 def _fill_receipt_defaults(data: dict[str, Any], user: User, subscription: Subscription, due: pricing.Quote) -> None:
@@ -572,12 +631,17 @@ def verify_payment(
     now = timezone.now()
     extending = payment.is_renewal and subscription.status == Status.ACTIVE
     carried = 0
+    # The cycle the owner chose at checkout (monthly / yearly), from the payment's frozen quote. A change of cycle
+    # switches the subscription to it, at today's price for that cycle; renewals then follow it.
+    cycle = payment_cycle(payment)
+    months = pricing.months_in(cycle)
+    new_cycle = cycle != subscription.billing_cycle
     if payment.upgrade_plan_id and subscription.status in (Status.ACTIVE, Status.EXPIRED):
         new_plan = payment.upgrade_plan
         carried = carried_days(subscription, now) if subscription.status == Status.ACTIVE else 0
         covers_from, ends_at = (
-            upgrade_period(subscription, now) if subscription.status == Status.ACTIVE
-            else (now, add_months(now, cycle_months(subscription)))
+            upgrade_period(subscription, now, months) if subscription.status == Status.ACTIVE
+            else (now, add_months(now, months))
         )
         try:
             activation = activate_plan(
@@ -585,27 +649,36 @@ def verify_payment(
             )
         except PlanNotAllowed as exc:
             raise ReviewNotAllowed(f"Payment #{payment.pk}: {exc}") from exc
-        new_amount = amount_due(subscription, new_plan).amount  # before switching: today's price for the new plan
+        # Before switching: today's price for the new plan, on the chosen cycle (never an offer price).
+        new_amount = amount_due(subscription, new_plan, cycle).amount
         subscription.plan = new_plan
         subscription.amount_inr = new_amount
+        subscription.billing_cycle = cycle
         subscription.is_trial = False
         subscription.status = Status.ACTIVE
         subscription.starts_at = now
         subscription.ends_at = ends_at
         subscription.activation = activation
         subscription.save(update_fields=[
-            "plan", "amount_inr", "is_trial", "status", "starts_at", "ends_at", "activation", "updated_at",
+            "plan", "amount_inr", "billing_cycle", "is_trial", "status", "starts_at", "ends_at", "activation",
+            "updated_at",
         ])
     elif extending:
-        covers_from, ends_at = renewal_period(subscription, now)
+        covers_from, ends_at = renewal_period(subscription, now, months)
         if subscription.activation_id:
             PlanActivation.objects.filter(pk=subscription.activation_id).update(ends_at=ends_at, is_active=True)
         subscription.ends_at = ends_at
-        subscription.save(update_fields=["ends_at", "updated_at"])
+        fields = ["ends_at", "updated_at"]
+        if new_cycle:
+            _switch_cycle(subscription, cycle)
+            fields += ["billing_cycle", "amount_inr"]
+        subscription.save(update_fields=fields)
     elif subscription.status == Status.PENDING_PAYMENT or (
         payment.is_renewal and subscription.status == Status.EXPIRED
     ):
-        covers_from, ends_at = now, add_months(now, cycle_months(subscription))
+        covers_from, ends_at = now, add_months(now, months)
+        if new_cycle:
+            _switch_cycle(subscription, cycle)
         try:
             activation = activate_plan(
                 subscription.owner, subscription.plan, source="manual-payment",
@@ -617,7 +690,9 @@ def verify_payment(
         subscription.starts_at = now
         subscription.ends_at = ends_at
         subscription.activation = activation
-        subscription.save(update_fields=["status", "starts_at", "ends_at", "activation", "updated_at"])
+        subscription.save(update_fields=[
+            "status", "starts_at", "ends_at", "activation", "billing_cycle", "amount_inr", "updated_at",
+        ])
     else:
         raise ReviewNotAllowed(
             f"Payment #{payment.pk}: its subscription is {subscription.get_status_display().lower()}, "
@@ -641,6 +716,14 @@ def verify_payment(
     invoice = issue_invoice(payment)
     transaction.on_commit(lambda: _after_payment_verified(payment, subscription, invoice, carried))
     return payment
+
+
+def _switch_cycle(subscription: Subscription, cycle: str) -> None:
+    """Move a subscription to another billing cycle at today's catalogue price for it (the caller saves)."""
+    subscription.billing_cycle = cycle
+    subscription.amount_inr = pricing.quote(
+        subscription.plan, subscription.company, subscription.currency, cycle
+    ).amount
 
 
 def _after_payment_verified(

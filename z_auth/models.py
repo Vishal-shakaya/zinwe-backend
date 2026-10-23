@@ -151,6 +151,16 @@ class Plan(models.Model):
         "list price (USD / month)", max_digits=10, decimal_places=2, default=0,
         help_text="The USD price before the discount, shown struck through. 0 = no discount shown.",
     )
+    # Billed yearly (2026-10-23): the price for the whole year, per currency. Empty = 12 x the monthly price.
+    # Every owner chooses monthly or yearly at checkout (z_auth.pricing); the admin app's Pricing page sets these.
+    price_inr_yearly = models.DecimalField(
+        "price (INR / year)", max_digits=10, decimal_places=2, null=True, blank=True,
+        help_text="What an owner in India pays for a whole year, before GST. Empty = 12 x the monthly price.",
+    )
+    price_usd_yearly = models.DecimalField(
+        "price (USD / year)", max_digits=10, decimal_places=2, null=True, blank=True,
+        help_text="What an international owner pays for a whole year. Empty = 12 x the USD monthly price.",
+    )
     trial_days = models.PositiveIntegerField(default=0)
     is_active = models.BooleanField(default=True)
     tagline = models.CharField(max_length=160, blank=True)

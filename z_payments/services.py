@@ -133,13 +133,15 @@ def checkout_config(currency: str) -> dict[str, str] | None:
 @transaction.atomic
 def start_order(
     user: User, upgrade_plan: Plan | None = None, accept_terms: bool = False, offer_id: int | None = None,
+    cycle: str | None = None,
 ) -> RazorpayOrder:
     """A Razorpay order for what `user` owes now (or for an admin offer's price). Raises the billing errors,
     `OfferNotAvailable` or `OnlinePaymentUnavailable`."""
     if not online_enabled():
         raise OnlinePaymentUnavailable()
     offer = usable_offer(user, offer_id, upgrade_plan) if offer_id else None
-    subscription, upgrade_plan, renewal, due = billing.payment_target(user, upgrade_plan)
+    # An offer is priced for one cycle of the subscription's own; otherwise the cycle chosen at checkout.
+    subscription, upgrade_plan, renewal, due = billing.payment_target(user, upgrade_plan, None if offer else cycle)
     if offer is not None:
         # Same subscription, plan change and period rules as a normal payment; only the price is the offer's.
         # After it's paid, renewals use the plan's normal price (billing.verify_payment re-prices the plan).
