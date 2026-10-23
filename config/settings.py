@@ -302,7 +302,7 @@ ZINWE_APP_URL = env_str("ZINWE_APP_URL", "http://localhost:5173").rstrip("/")
 # Version (date) of the Terms, Privacy, Refund, Cookie, Disclaimer and Acceptable Use policies that
 # owners accept at sign-up and with each payment. Bump it when the Terms change: every owner on an
 # older version is then asked once, in the dashboard, to accept the new one (POST auth/terms/accept/).
-ZINWE_LEGAL_VERSION = "2026-10-17"
+ZINWE_LEGAL_VERSION = "2026-10-23"
 # Who issues invoices (shown on the printable invoice in Billing). Set the real values in .env.
 ZINWE_INVOICE_SELLER = {
     "name": env_str("ZINWE_INVOICE_SELLER_NAME", "SKYTECHNO"),

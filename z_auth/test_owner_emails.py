@@ -352,7 +352,7 @@ class SettingsTests(PortalTestCase):
             self.assertEqual(settings.ZINWE_AGENT_DOWNLOAD_URL, f"{settings.ZINWE_APP_URL}/download/ZinweAgent.msi")
 
     def test_legal_version(self) -> None:
-        self.assertEqual(settings.ZINWE_LEGAL_VERSION, "2026-10-17")
+        self.assertEqual(settings.ZINWE_LEGAL_VERSION, "2026-10-23")
 
 
 class RenewalReminderCopyTests(OwnerBase):
