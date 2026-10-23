@@ -59,6 +59,31 @@ class AdminCrudTests(AdminApiTestCase):
         )
         self.assertIn("ends_at", backwards.json())
 
+    def test_offer_rules(self) -> None:
+        no_emails = self.client.post(ADMIN_URL, {"title": "x", "audience": "owners"}, format="json")
+        self.assertIn("owner_emails", no_emails.json())
+        half_offer = self.client.post(ADMIN_URL, {"title": "x", "offer_plan": "businesses"}, format="json")
+        self.assertIn("offer_price_inr", half_offer.json())
+        too_cheap = self.client.post(
+            ADMIN_URL, {"title": "x", "offer_plan": "businesses", "offer_price_inr": "0.50"}, format="json",
+        )
+        self.assertIn("offer_price_inr", too_cheap.json())
+        on_website = self.client.post(
+            ADMIN_URL, {"title": "x", "placement": "website", "offer_plan": "businesses", "offer_price_inr": "1"},
+            format="json",
+        )
+        self.assertIn("placement", on_website.json())
+        ok = self.client.post(
+            ADMIN_URL,
+            {"title": "Test upgrade", "audience": "owners", "owner_emails": [" Owner@Acme.in "],
+             "offer_plan": "businesses", "offer_price_inr": "1.00"},
+            format="json",
+        )
+        self.assertEqual(ok.status_code, status.HTTP_201_CREATED, ok.content)
+        row = ok.json()
+        self.assertEqual((row["owner_emails"], row["offer_plan"], row["offer_price_inr"], row["offer_uses"]),
+                         (["owner@acme.in"], "businesses", "1.00", 0))
+
     def test_staff_only(self) -> None:
         self.as_user(self.make_owner())
         self.assertEqual(self.client.get(ADMIN_URL).status_code, status.HTTP_403_FORBIDDEN)
@@ -99,6 +124,19 @@ class WhoSeesWhatTests(AdminApiTestCase):
         self.assertEqual(self.owner_titles(), ["Free"])  # no plan yet = free
         give_plan(self.owner, "startups")
         self.assertEqual(sorted(self.owner_titles()), ["Paid", "Startups"])
+
+    def test_specific_owners_and_offers(self) -> None:
+        push(title="Just you", audience="owners", owner_emails=["owner@acme.in"], placement="both")
+        push(title="Not you", audience="owners", owner_emails=["someone@else.in"])
+        self.assertEqual(self.owner_titles(), ["Just you"])
+        self.assertEqual(self.public_titles(), [])  # never shown to the public
+        from z_auth.models import Plan
+
+        offer = push(title="Offer", offer_plan=Plan.objects.get(code="businesses"), offer_price_inr="1.00")
+        self.as_user(self.owner)
+        bar = next(a for a in self.client.get(OWNER_URL).json()["announcements"] if a["title"] == "Offer")
+        self.assertEqual(bar["cta_href"], f"/app/upgrade?plan=businesses&offer={offer.pk}")
+        self.assertIn("1.00", bar["cta_label"])
 
     def test_an_edit_shows_again(self) -> None:
         a = push()

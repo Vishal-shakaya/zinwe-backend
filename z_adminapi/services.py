@@ -729,7 +729,7 @@ def billing_settings() -> dict[str, Any]:
     return {"gst_charged": bool(gstin), "seller_gstin": gstin}
 
 
-def announcement_reach(audience: str, plan_codes: list[str]) -> dict[str, int]:
+def announcement_reach(audience: str, plan_codes: list[str], owner_emails: list[str] | None = None) -> dict[str, int]:
     """
     How many customers a dashboard announcement with this audience reaches now: active, verified owners
     whose plan matches (the same rule the dashboard uses, z_auth.announcements).
@@ -738,12 +738,12 @@ def announcement_reach(audience: str, plan_codes: list[str]) -> dict[str, int]:
     from z_auth.entitlements import entitlements_for
     from z_auth.models import Announcement
 
-    probe = Announcement(audience=audience, plan_codes=plan_codes)
+    probe = Announcement(audience=audience, plan_codes=plan_codes, owner_emails=owner_emails or [])
     owners = User.objects.filter(is_staff=False, is_active=True, email_verified_at__isnull=False)
     total = reached = 0
     for owner in owners:
         total += 1
-        reached += _reaches(probe, entitlements_for(owner))
+        reached += _reaches(probe, entitlements_for(owner), owner.email)
     return {"customers": reached, "total": total}
 
 

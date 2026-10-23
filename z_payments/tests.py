@@ -240,3 +240,61 @@ class RazorpayTests(PortalTestCase):
         self.assertEqual(ok.status_code, status.HTTP_200_OK, ok.content)
         order.refresh_from_db()
         self.assertEqual((order.status, order.confirmed_via), ("paid", "webhook"))
+
+    # --- admin offers (a notification bar with a special price) -----------------------------------------
+
+    def offer(self, **fields):  # type: ignore[no-untyped-def]
+        from z_auth.models import Announcement, Plan
+
+        return Announcement.objects.create(**{
+            "title": "Try Businesses", "kind": "offer", "audience": "owners", "owner_emails": [self.owner.email],
+            "offer_plan": Plan.objects.get(code="businesses"), "offer_price_inr": Decimal("1.00"), **fields,
+        })
+
+    def pay(self, order: RazorpayOrder, payment_id: str = "pay_2"):  # type: ignore[no-untyped-def]
+        with mock.patch.object(api, "fetch_payment", return_value={**self.paid(order), "id": payment_id}):
+            return self.post(VERIFY_URL, {"razorpay_order_id": order.order_id, "razorpay_payment_id": payment_id,
+                                          "razorpay_signature": sign(f"{order.order_id}|{payment_id}")})
+
+    def on_teams(self) -> None:
+        self.start()
+        self.pay(RazorpayOrder.objects.get(), "pay_1")
+        response = self.post(ORDER_URL, {"accept_terms": True, "upgrade_plan": "teams"})
+        self.pay(RazorpayOrder.objects.get(order_id=response.json()["order_id"]), "pay_t")
+        self.assertEqual(self.sub().plan.code, "teams")
+
+    def sub(self) -> Subscription:
+        from z_auth.billing import current_subscription
+
+        return current_subscription(self.owner)
+
+    def test_offer_upgrades_at_the_offer_price_once(self) -> None:
+        self.on_teams()
+        offer = self.offer()
+        quote = self.get(f"/api/payments/offer/{offer.pk}/?plan=businesses")
+        self.assertEqual(quote.status_code, status.HTTP_200_OK, quote.content)
+        due = quote.json()["due"]
+        self.assertEqual((due["plan_code"], due["amount"]), ("businesses", "1.00"))
+        response = self.post(ORDER_URL, {"accept_terms": True, "upgrade_plan": "businesses", "offer": offer.pk})
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.content)
+        order = RazorpayOrder.objects.get(order_id=response.json()["order_id"])
+        self.assertEqual((order.offer_id, order.amount_paise), (offer.pk, int(Decimal(due["total"]) * 100)))
+        self.assertEqual(self.pay(order).json()["status"], "paid")
+        sub = self.sub()
+        self.assertEqual(sub.plan.code, "businesses")
+        self.assertGreater(sub.amount_inr, Decimal("1.00"))  # renewals go back to the normal price
+        self.assertEqual(ManualPayment.objects.get(reference="pay_2").amount_inr, Decimal(order.amount_paise) / 100)
+        # Used up.
+        again = self.get(f"/api/payments/offer/{offer.pk}/?plan=businesses")
+        self.assertEqual(again.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_offer_only_for_its_owners_plan_and_window(self) -> None:
+        self.on_teams()
+        others = self.offer(owner_emails=["someone@else.in"])
+        ended = self.offer(ends_at=self.sub().starts_at)
+        off = self.offer(is_active=False)
+        mine = self.offer()
+        for offer, plan in ((others, "businesses"), (ended, "businesses"), (off, "businesses"), (mine, "teams")):
+            response = self.post(ORDER_URL, {"accept_terms": True, "upgrade_plan": plan, "offer": offer.pk})
+            self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, (offer.pk, plan, response.content))
+        self.assertEqual(RazorpayOrder.objects.filter(offer__isnull=False).count(), 0)

@@ -31,7 +31,7 @@ from django.utils import timezone
 
 from z_analytics.services import track
 from z_auth import billing, pricing
-from z_auth.models import ManualPayment, Plan, User
+from z_auth.models import Announcement, ManualPayment, Plan, Subscription, User
 
 from . import razorpay_api as api
 from .models import RazorpayOrder
@@ -49,6 +49,54 @@ class OnlinePaymentUnavailable(Exception):
         return (str(self.args[0]) if self.args else "") or (
             "Online payment isn't available right now. Pay by UPI or bank transfer instead, then upload the receipt."
         )
+
+
+class OfferNotAvailable(Exception):
+    """The admin offer can't be used by this owner now (ended, not theirs, wrong plan, already used)."""
+
+    def __str__(self) -> str:
+        return (str(self.args[0]) if self.args else "") or "This offer isn't available any more."
+
+
+def usable_offer(user: User, offer_id: int, plan: Plan | None) -> Announcement:
+    """
+    An admin offer (an Announcement with an offer plan and price) this owner may use now for `plan`: live,
+    on the dashboard, meant for them (the message's audience), for exactly this plan, not used before.
+    Raises `OfferNotAvailable`.
+    """
+    from z_auth.announcements import _reaches
+    from z_auth.entitlements import entitlements_for
+
+    now = timezone.now()
+    offer = (
+        Announcement.objects.select_related("offer_plan")
+        .filter(pk=offer_id, is_active=True, starts_at__lte=now, offer_plan__isnull=False, offer_price_inr__isnull=False)
+        .exclude(placement=Announcement.Placement.WEBSITE)
+        .first()
+    )
+    if offer is None or (offer.ends_at is not None and offer.ends_at <= now):
+        raise OfferNotAvailable()
+    if plan is None or offer.offer_plan_id != plan.pk:
+        raise OfferNotAvailable(f"This offer is for the {offer.offer_plan.name} plan.")
+    if offer.offer_price_inr < Decimal("1.00"):
+        raise OfferNotAvailable()
+    if not _reaches(offer, entitlements_for(user), user.email):
+        raise OfferNotAvailable()
+    used = RazorpayOrder.objects.filter(
+        owner=user, offer=offer, status__in=(RazorpayOrder.Status.PAID, RazorpayOrder.Status.NEEDS_REVIEW)
+    )
+    if used.exists():
+        raise OfferNotAvailable("You've already used this offer.")
+    return offer
+
+
+def offer_quote(subscription: Subscription, offer: Announcement) -> pricing.Quote:
+    """What the owner pays with the offer: the offer plan at the offer price, for one cycle of their own
+    subscription (its currency and billing cycle), with tax."""
+    return pricing.quote(
+        offer.offer_plan, subscription.company, subscription.currency, subscription.billing_cycle,
+        cycle_amount=offer.offer_price_inr,
+    )
 
 
 class PaymentNotConfirmed(Exception):
@@ -76,11 +124,19 @@ def checkout_config(currency: str) -> dict[str, str] | None:
 
 
 @transaction.atomic
-def start_order(user: User, upgrade_plan: Plan | None = None, accept_terms: bool = False) -> RazorpayOrder:
-    """A Razorpay order for what `user` owes now. Raises the billing errors, or `OnlinePaymentUnavailable`."""
+def start_order(
+    user: User, upgrade_plan: Plan | None = None, accept_terms: bool = False, offer_id: int | None = None,
+) -> RazorpayOrder:
+    """A Razorpay order for what `user` owes now (or for an admin offer's price). Raises the billing errors,
+    `OfferNotAvailable` or `OnlinePaymentUnavailable`."""
     if not online_enabled():
         raise OnlinePaymentUnavailable()
+    offer = usable_offer(user, offer_id, upgrade_plan) if offer_id else None
     subscription, upgrade_plan, renewal, due = billing.payment_target(user, upgrade_plan)
+    if offer is not None:
+        # Same subscription, plan change and period rules as a normal payment; only the price is the offer's.
+        # After it's paid, renewals use the plan's normal price (billing.verify_payment re-prices the plan).
+        due = offer_quote(subscription, offer)
     if due.currency != pricing.INR:
         raise OnlinePaymentUnavailable("Online payment is for payments in rupees. Use Skydo for US dollars.")
     amount_paise = int((due.total * 100).quantize(Decimal("1")))
@@ -98,7 +154,7 @@ def start_order(user: User, upgrade_plan: Plan | None = None, accept_terms: bool
     return RazorpayOrder.objects.create(
         owner=user, subscription=subscription, upgrade_plan=upgrade_plan, is_renewal=renewal,
         due=due.as_dict(), amount_paise=amount_paise, currency=due.currency, order_id=order["id"],
-        receipt=receipt, terms_accepted=accept_terms,
+        receipt=receipt, terms_accepted=accept_terms, offer=offer,
     )
 
 

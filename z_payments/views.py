@@ -1,7 +1,8 @@
 """
 Online payment endpoints (Razorpay Standard Checkout). See z_payments.services for the whole flow.
 
-POST /api/payments/razorpay/order/    {upgrade_plan?, accept_terms}  -> the checkout options for a new order
+POST /api/payments/razorpay/order/    {upgrade_plan?, accept_terms, offer?}  -> the checkout options for a new order
+GET  /api/payments/offer/<id>/?plan=  an admin offer this owner can use now, with its price (or 404)
 POST /api/payments/razorpay/verify/   {razorpay_order_id, razorpay_payment_id, razorpay_signature}
 POST /api/payments/razorpay/webhook/  Razorpay's server-to-server notice (signed with the webhook secret)
 """
@@ -35,6 +36,8 @@ class OrderRequest(serializers.Serializer):
         slug_field="code", queryset=Plan.objects.filter(is_active=True), required=False, allow_null=True,
         error_messages={"does_not_exist": "That plan isn't available.", "invalid": "That plan isn't available."},
     )
+    # An admin offer (Announcement id) from a dashboard bar: checked again here, priced on the server.
+    offer = serializers.IntegerField(required=False, allow_null=True, min_value=1)
 
     def validate_accept_terms(self, value: bool) -> bool:
         if value is not True:
@@ -64,14 +67,44 @@ class RazorpayOrderView(APIView):
         try:
             order = services.start_order(
                 request.user, data.validated_data.get("upgrade_plan"), accept_terms=True,
+                offer_id=data.validated_data.get("offer"),
             )
         except services.OnlinePaymentUnavailable as exc:
             return _unavailable(exc)
+        except services.OfferNotAvailable as exc:
+            return Response({"offer": [str(exc)]}, status=status.HTTP_400_BAD_REQUEST)
         except (billing.NothingToPay, billing.PaymentUnderReview) as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
         except billing.UpgradeNotAllowed as exc:
             return Response({"upgrade_plan": [str(exc)]}, status=status.HTTP_400_BAD_REQUEST)
         return Response(services.checkout_options(order), status=status.HTTP_201_CREATED)
+
+
+class OfferView(APIView):
+    """The upgrade page asks this before showing an offer's price; the order checks it all again."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request: Request, pk: int) -> Response:
+        plan = Plan.objects.filter(is_active=True, code=request.query_params.get("plan", "")).first()
+        subscription = billing.current_subscription(request.user)
+        try:
+            offer = services.usable_offer(request.user, pk, plan)
+        except services.OfferNotAvailable as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_404_NOT_FOUND)
+        if subscription is None:
+            return Response({"detail": str(services.OfferNotAvailable())}, status=status.HTTP_404_NOT_FOUND)
+        due = services.offer_quote(subscription, offer)
+        return Response({
+            "id": offer.pk,
+            "title": offer.title,
+            "plan_code": offer.offer_plan.code,
+            "plan_name": offer.offer_plan.name,
+            "ends_at": offer.ends_at,
+            "online_only": True,
+            "online_enabled": services.online_enabled() and due.currency == "INR",
+            "due": due.as_dict(),
+        })
 
 
 class RazorpayVerifyView(APIView):

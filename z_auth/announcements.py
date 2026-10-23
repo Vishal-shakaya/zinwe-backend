@@ -70,9 +70,12 @@ def _live(placements: tuple[str, ...]):  # type: ignore[no-untyped-def]
     )
 
 
-def _reaches(announcement: Announcement, ent: Entitlements) -> bool:
-    """Does this dashboard message's audience include an owner with these entitlements?"""
+def _reaches(announcement: Announcement, ent: Entitlements, email: str = "") -> bool:
+    """Does this dashboard message's audience include an owner with these entitlements (and this email)?"""
     audience = announcement.audience
+    if audience == Announcement.Audience.OWNERS:
+        wanted = {e.strip().lower() for e in announcement.owner_emails or [] if isinstance(e, str)}
+        return bool(email) and email.strip().lower() in wanted
     if audience == Announcement.Audience.EVERYONE:
         return True
     paid = bool(ent.on_active_plan and ent.plan and ent.plan.requires_payment)
@@ -83,27 +86,40 @@ def _reaches(announcement: Announcement, ent: Entitlements) -> bool:
     return bool(ent.on_active_plan and ent.plan and ent.plan.code in (announcement.plan_codes or []))
 
 
+def offer_link(announcement: Announcement) -> str:
+    """Where an offer's button goes: the upgrade page with the offer applied (checked again at payment)."""
+    return f"/app/upgrade?plan={announcement.offer_plan.code}&offer={announcement.pk}" if announcement.offer_plan_id else ""
+
+
 def _as_item(announcement: Announcement) -> dict[str, Any]:
+    label = announcement.cta_label if announcement.cta_href else ""
+    href = announcement.cta_href if announcement.cta_label else ""
+    if announcement.offer_plan_id and announcement.offer_price_inr and not href:
+        # An offer with no button of its own gets one that applies it.
+        label = f"Upgrade for ₹{announcement.offer_price_inr:,.2f} + GST"[:40]
+        href = offer_link(announcement)
     return _item(
         f"a{announcement.pk}-{int(announcement.updated_at.timestamp())}",
         announcement.kind,
         announcement.title,
         announcement.body,
-        announcement.cta_label if announcement.cta_href else "",
-        announcement.cta_href if announcement.cta_label else "",
+        label,
+        href,
         announcement.dismissible,
     )
 
 
-def pushed_for_dashboard(ent: Entitlements) -> list[dict[str, Any]]:
+def pushed_for_dashboard(ent: Entitlements, email: str = "") -> list[dict[str, Any]]:
     placements = (Announcement.Placement.DASHBOARD, Announcement.Placement.BOTH)
-    return [_as_item(a) for a in _live(placements) if _reaches(a, ent)]
+    return [_as_item(a) for a in _live(placements).select_related("offer_plan") if _reaches(a, ent, email)]
 
 
 def website_announcements() -> list[dict[str, Any]]:
-    """The bars for the public website, sign-up and onboarding (every visitor sees the same)."""
+    """The bars for the public website, sign-up and onboarding (every visitor sees the same). Messages for
+    specific owners and offers are dashboard-only: they never show to the public."""
     placements = (Announcement.Placement.WEBSITE, Announcement.Placement.BOTH)
-    return [_as_item(a) for a in _live(placements)]
+    live = _live(placements).exclude(audience=Announcement.Audience.OWNERS).filter(offer_plan__isnull=True)
+    return [_as_item(a) for a in live]
 
 
 # --- Configured per environment ---------------------------------------------------------
@@ -226,7 +242,7 @@ def history_label(days: int) -> str:
 def announcements_for(user: User) -> list[dict[str, Any]]:
     """The owner's dashboard bars: pushed messages, configured banners, then the upgrade bar."""
     ent = entitlements_for(user)
-    items = pushed_for_dashboard(ent) + _config_announcements()
+    items = pushed_for_dashboard(ent, user.email) + _config_announcements()
     upgrade = _upgrade_announcement(user, ent)
     if upgrade is not None:
         items.append(upgrade)

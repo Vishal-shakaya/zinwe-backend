@@ -380,15 +380,26 @@ class AnnouncementSerializer(serializers.ModelSerializer):
 
     status = serializers.SerializerMethodField()
     created_by = serializers.SerializerMethodField()
+    offer_plan = serializers.SlugRelatedField(
+        slug_field="code", queryset=Plan.objects.filter(is_active=True), required=False, allow_null=True,
+        error_messages={"does_not_exist": "That plan isn't available.", "invalid": "That plan isn't available."},
+    )
+    offer_uses = serializers.SerializerMethodField()
 
     class Meta:
         model = Announcement
         fields = (
-            "id", "title", "body", "kind", "placement", "audience", "plan_codes", "cta_label", "cta_href",
-            "starts_at", "ends_at", "is_active", "dismissible", "priority", "status", "created_by",
-            "created_at", "updated_at",
+            "id", "title", "body", "kind", "placement", "audience", "plan_codes", "owner_emails", "cta_label",
+            "cta_href", "offer_plan", "offer_price_inr", "offer_uses", "starts_at", "ends_at", "is_active",
+            "dismissible", "priority", "status", "created_by", "created_at", "updated_at",
         )
-        read_only_fields = ("id", "status", "created_by", "created_at", "updated_at")
+        read_only_fields = ("id", "status", "created_by", "offer_uses", "created_at", "updated_at")
+
+    def get_offer_uses(self, obj: Announcement) -> int:
+        """How many owners have paid with this offer."""
+        if not obj.offer_plan_id:
+            return 0
+        return obj.razorpay_orders.filter(status__in=("paid", "needs_review")).count()
 
     def get_status(self, obj: Announcement) -> str:
         """live · scheduled · ended · off — what owners see right now."""
@@ -419,6 +430,22 @@ class AnnouncementSerializer(serializers.ModelSerializer):
             )
         return value
 
+    def validate_owner_emails(self, value: Any) -> list[str]:
+        if not isinstance(value, list) or not all(isinstance(email, str) for email in value):
+            raise serializers.ValidationError("A list of sign-in emails.")
+        emails = list(dict.fromkeys(e.strip().lower() for e in value if e.strip()))
+        bad = [e for e in emails if "@" not in e or " " in e]
+        if bad:
+            raise serializers.ValidationError(f"Not an email: {', '.join(bad)}.")
+        if len(emails) > 200:
+            raise serializers.ValidationError("At most 200 owners; use plans for a bigger audience.")
+        return emails
+
+    def validate_offer_price_inr(self, value: Any) -> Any:
+        if value is not None and value < 1:
+            raise serializers.ValidationError("At least ₹1.00 (online payments can't be smaller).")
+        return value
+
     def validate_plan_codes(self, value: Any) -> list[str]:
         if not isinstance(value, list) or not all(isinstance(code, str) for code in value):
             raise serializers.ValidationError("A list of plan codes.")
@@ -432,7 +459,10 @@ class AnnouncementSerializer(serializers.ModelSerializer):
         # A PATCH sends only what changed: check the rules against the saved values plus the change.
         saved = {} if self.instance is None else {
             name: getattr(self.instance, name)
-            for name in ("cta_label", "cta_href", "starts_at", "ends_at", "audience", "plan_codes")
+            for name in (
+                "cta_label", "cta_href", "starts_at", "ends_at", "audience", "plan_codes", "owner_emails",
+                "placement", "offer_plan", "offer_price_inr",
+            )
         }
         merged = {**saved, **attrs}
         if bool(merged.get("cta_label", "").strip()) != bool(merged.get("cta_href", "").strip()):
@@ -442,6 +472,18 @@ class AnnouncementSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"ends_at": "The end must be after the start."})
         if merged.get("audience") == Announcement.Audience.PLANS and not merged.get("plan_codes"):
             raise serializers.ValidationError({"plan_codes": "Pick at least one plan."})
+        if merged.get("audience") == Announcement.Audience.OWNERS:
+            if not merged.get("owner_emails"):
+                raise serializers.ValidationError({"owner_emails": "Add at least one owner's sign-in email."})
+            if merged.get("placement") == Announcement.Placement.WEBSITE:
+                raise serializers.ValidationError({"placement": "A message for specific owners shows on the dashboard."})
+        if bool(merged.get("offer_plan")) != (merged.get("offer_price_inr") is not None):
+            raise serializers.ValidationError({"offer_price_inr": "Give the offer both a plan and a price, or neither."})
+        if merged.get("offer_plan") is not None:
+            if not merged["offer_plan"].requires_payment:
+                raise serializers.ValidationError({"offer_plan": "Pick a paid plan."})
+            if merged.get("placement") == Announcement.Placement.WEBSITE:
+                raise serializers.ValidationError({"placement": "Offers show on the dashboard (owners pay there)."})
         return attrs
 
 

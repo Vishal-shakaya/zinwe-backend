@@ -413,7 +413,8 @@ class AnnouncementReachView(StaffView):
         if audience not in Announcement.Audience.values:
             return Response({"detail": f"Unknown audience '{audience}'."}, status=status.HTTP_400_BAD_REQUEST)
         plans = [code for code in (request.query_params.get("plans") or "").split(",") if code]
-        return Response(services.announcement_reach(audience, plans))
+        emails = [e.strip() for e in (request.query_params.get("emails") or "").split(",") if e.strip()]
+        return Response(services.announcement_reach(audience, plans, emails))
 
 
 class AnnouncementDetailView(StaffView):

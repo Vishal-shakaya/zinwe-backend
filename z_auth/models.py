@@ -652,6 +652,7 @@ class Announcement(models.Model):
         FREE = "free", "Owners without a paid plan"
         PAID = "paid", "Owners on a paid plan"
         PLANS = "plans", "Owners on the plans chosen"
+        OWNERS = "owners", "Specific owners (by email)"
 
     title = models.CharField(max_length=120)
     body = models.CharField(max_length=280, blank=True)
@@ -662,6 +663,19 @@ class Announcement(models.Model):
         help_text="Dashboard only: the website shows every website/both message to all visitors.",
     )
     plan_codes = models.JSONField(default=list, blank=True, help_text="Plan codes, when audience is 'plans'.")
+    owner_emails = models.JSONField(
+        default=list, blank=True, help_text="Owners' sign-in emails, when audience is 'owners' (dashboard only)."
+    )
+    # An offer: the bar's button upgrades to `offer_plan` at `offer_price_inr` (before GST, for one billing cycle),
+    # paid online. Each owner can use it once, while the message is live; renewals go back to the normal price.
+    offer_plan = models.ForeignKey(
+        "z_auth.Plan", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Optional: the plan this message offers at a special price.",
+    )
+    offer_price_inr = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True,
+        help_text="The special price in rupees, before GST, for one billing cycle (at least 1.00).",
+    )
     cta_label = models.CharField("button text", max_length=40, blank=True)
     cta_href = models.CharField(
         "button link", max_length=300, blank=True,

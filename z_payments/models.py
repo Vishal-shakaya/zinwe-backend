@@ -23,6 +23,10 @@ class RazorpayOrder(models.Model):
         "z_auth.Plan", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
     )
     is_renewal = models.BooleanField(default=False)
+    # The admin offer (an Announcement with an offer price) this order was priced from; a paid order uses it up.
+    offer = models.ForeignKey(
+        "z_auth.Announcement", null=True, blank=True, on_delete=models.SET_NULL, related_name="razorpay_orders",
+    )
     # What the order asked for, frozen (the quote) -- the amount Razorpay was told is amount_paise.
     due = models.JSONField(default=dict)
     amount_paise = models.PositiveIntegerField()
