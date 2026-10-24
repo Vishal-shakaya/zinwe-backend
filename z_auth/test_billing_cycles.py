@@ -4,6 +4,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from django.test import override_settings
+from django.utils import timezone
 from rest_framework import status
 
 from . import pricing
@@ -38,7 +39,9 @@ class YearlyPricingTests(_UpgradeBase):
         self.assertEqual((monthly["quote"]["billing_cycle"], monthly["quote"]["amount"]), ("monthly", "971.00"))
         self.assertEqual((yearly["quote"]["billing_cycle"], yearly["quote"]["amount"]), ("yearly", "9710.00"))
         self.assertEqual(yearly["yearly_saving_percent"], 17)
-        self.assertEqual(yearly["covers_until"], add_months(Subscription.objects.get().created_at, 12).date().isoformat())
+        # India date, like the API (timezone.localdate): a UTC .date() is a day behind from 00:00 to 05:30 IST.
+        until = add_months(Subscription.objects.get().created_at, 12)
+        self.assertEqual(yearly["covers_until"], timezone.localdate(until).isoformat())
         self.assertEqual(Subscription.objects.get().billing_cycle, "monthly")  # looking never changes anything
         # Another plan instead of the one waiting for payment.
         teams = self.get(f"{CHECKOUT_URL}?plan=teams&cycle=yearly").json()
