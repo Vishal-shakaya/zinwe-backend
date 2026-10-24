@@ -25,6 +25,11 @@ class Notification(models.Model):
     ref_id = models.CharField(max_length=64, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     sent_at = models.DateTimeField(null=True, blank=True)
+    # Retries (FIX-008, z_notification/retry.py). A retryable email keeps what it needs to be sent again
+    # (`retry_payload`: HTML, headers, reply-to, attachments) only until it is delivered or given up.
+    attempts = models.PositiveSmallIntegerField(default=1, db_default=1, help_text="Send attempts so far.")
+    next_retry_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    retry_payload = models.JSONField(null=True, blank=True, editable=False)
 
     class Meta:
         ordering = ["-created_at"]

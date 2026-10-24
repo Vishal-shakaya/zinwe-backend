@@ -16,14 +16,13 @@ from z_main.client import get_client_ip
 
 from . import services
 from .models import AgentRelease, DeviceEvent, WorkLog
-from .authentication import DeviceTokenAuthentication, IsDevice, IsOwner
+from .authentication import DeviceScopedThrottle, DeviceTokenAuthentication, IsDevice, IsOwner
 from .serializers import (
     MemberFeedbackSerializer,
     MemberUpdateSerializer,
     NotificationPrefsSerializer,
     DevicePolicySerializer,
     DeviceSerializer,
-    EnrollmentKeySerializer,
     EnrollSerializer,
     EventEmailSerializer,
     EventFeedQuerySerializer,
@@ -51,7 +50,7 @@ from .serializers import (
 
 
 class EnrollView(APIView):
-    """POST /api/devices/enroll/ -- exchange an enrollment key for a device token."""
+    """POST /api/devices/enroll/ -- exchange the member id + email for a device token (no org key since v1)."""
 
     permission_classes = [AllowAny]
     authentication_classes: list = []
@@ -80,10 +79,12 @@ class EnrollView(APIView):
 
 
 class HeartbeatView(APIView):
-    """POST /api/devices/heartbeat/ -- `Authorization: Device <token>`."""
+    """POST /api/devices/heartbeat/ -- `Authorization: Device <token>`. Throttled per PC (FIX-006)."""
 
     authentication_classes = [DeviceTokenAuthentication]
     permission_classes = [IsDevice]
+    throttle_classes = [DeviceScopedThrottle]
+    throttle_scope = "device_heartbeat"
 
     def post(self, request: Request) -> Response:
         serializer = HeartbeatSerializer(data=request.data)
@@ -237,10 +238,12 @@ class DeviceReleaseDownloadView(APIView):
 
 
 class EventUploadView(APIView):
-    """POST /api/devices/events/upload/ -- 1..100 queued events, idempotent on `id`."""
+    """POST /api/devices/events/upload/ -- 1..100 queued events, idempotent on `id`. Throttled per PC."""
 
     authentication_classes = [DeviceTokenAuthentication]
     permission_classes = [IsDevice]
+    throttle_classes = [DeviceScopedThrottle]
+    throttle_scope = "device_events"
 
     def post(self, request: Request) -> Response:
         serializer = EventUploadSerializer(data=request.data)
@@ -252,10 +255,12 @@ class EventUploadView(APIView):
 
 
 class MetricUploadView(APIView):
-    """POST /api/devices/metrics/upload/ -- 1..1000 hour-bucketed usage rows (REPLACE)."""
+    """POST /api/devices/metrics/upload/ -- 1..1000 hour-bucketed usage rows (REPLACE). Throttled per PC."""
 
     authentication_classes = [DeviceTokenAuthentication]
     permission_classes = [IsDevice]
+    throttle_classes = [DeviceScopedThrottle]
+    throttle_scope = "device_metrics"
 
     def post(self, request: Request) -> Response:
         serializer = MetricUploadSerializer(data=request.data)
@@ -267,32 +272,43 @@ class MetricUploadView(APIView):
 # --- Owner endpoints (called by the dashboard) ------------------------------
 
 
+ENROLLMENT_KEY_GONE = (
+    "Enrolment keys are retired. A PC joins with its member's id and email: add the person on the "
+    "Team page and send them their member id."
+)
+
+
 class EnrollmentKeyView(APIView):
-    """GET /api/devices/enrollment-key/ -- the owner's active key (created on first call)."""
+    """GET /api/devices/enrollment-key/ -- RETIRED (FIX-005): 410 Gone. Enrolment uses the member id + email."""
 
     permission_classes = [IsOwner]
 
     def get(self, request: Request) -> Response:
-        return Response(EnrollmentKeySerializer(services.get_active_key(request.user)).data)
+        return Response({"detail": ENROLLMENT_KEY_GONE}, status=status.HTTP_410_GONE)
 
 
 class EnrollmentKeyRotateView(APIView):
-    """POST /api/devices/enrollment-key/rotate/ -- revoke the key and issue a new one."""
+    """POST /api/devices/enrollment-key/rotate/ -- RETIRED (FIX-005): 410 Gone, nothing is changed."""
 
     permission_classes = [IsOwner]
 
     def post(self, request: Request) -> Response:
-        key = services.rotate_key(request.user)
-        return Response(EnrollmentKeySerializer(key).data, status=status.HTTP_201_CREATED)
+        return Response({"detail": ENROLLMENT_KEY_GONE}, status=status.HTTP_410_GONE)
 
 
 class DeviceListView(APIView):
-    """GET /api/devices/ -- the owner's enrolled PCs with online status."""
+    """
+    GET /api/devices/ -- the owner's PCs in use, with online status (FIX-005: removed PCs left out).
+    `?include_revoked=1` adds the removed ones (`is_revoked: true`), for history views that name old alerts' PCs.
+    """
 
     permission_classes = [IsOwner]
 
     def get(self, request: Request) -> Response:
-        return Response(DeviceSerializer(request.user.devices.all(), many=True).data)
+        devices = request.user.devices.all()
+        if request.query_params.get("include_revoked") not in ("1", "true", "yes"):
+            devices = devices.filter(is_revoked=False)
+        return Response(DeviceSerializer(devices, many=True).data)
 
 
 class MemberListCreateView(APIView):
@@ -540,17 +556,28 @@ class WorkLogView(APIView):
     """
     GET /api/devices/work-log/?date=YYYY-MM-DD&member=<pk> -- when each member started,
     took breaks (with reasons) and ended their day. Own team only; date defaults to today.
+    FIX-011: also `carried_in` (yesterday's changes still running at midnight) and per-person `totals`
+    for the day, split at midnight the same way reports are.
     """
 
     permission_classes = [IsOwner]
 
     def get(self, request: Request) -> Response:
+        from .work_time import work_zone
+
         plan.require(request.user, plan.WORK_TIME)
         query = WorkLogQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
-        day = query.validated_data.get("date") or timezone.localdate()
-        logs = services.work_log_for_owner(request.user, day, query.validated_data.get("member"))
-        return Response({"date": day, "entries": WorkLogSerializer(logs, many=True).data})
+        day = query.validated_data.get("date") or timezone.localdate(timezone=work_zone(request.user))
+        member_id = query.validated_data.get("member")
+        logs = services.work_log_for_owner(request.user, day, member_id)
+        day_totals = services.work_day_totals(request.user, day, member_id)
+        return Response({
+            "date": day,
+            "entries": WorkLogSerializer(logs, many=True).data,
+            "carried_in": WorkLogSerializer(day_totals["carried_in"], many=True).data,
+            "totals": day_totals["totals"],
+        })
 
 
 def _report_member(request: Request):  # type: ignore[no-untyped-def]
@@ -751,7 +778,8 @@ class ReportDeliveryListView(APIView):
 
 
 class BreakDecisionView(APIView):
-    """POST /api/devices/work-log/<id>/decision/ {decision: approved|denied, note?} -- owner's call on a break."""
+    """POST /api/devices/work-log/<id>/decision/ {decision: approved|denied, note?} -- owner's call on a break or
+    log-out. `note` is at most 280 characters (FIX-012); longer is a 400 that says so."""
 
     permission_classes = [IsOwner]
 

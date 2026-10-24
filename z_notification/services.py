@@ -19,6 +19,7 @@ from django.utils import timezone
 from z_main.demo import is_demo_email
 from z_main.refs import Ref, resolve_ref
 
+from . import retry as retry_mod
 from .channels import get_channel
 from .channels.base import Attachment
 from .models import Notification
@@ -87,6 +88,7 @@ def notify(
     attachments: list[Attachment] | None = None,
     reply_to: list[str] | None = None,
     fallback: bool = True,
+    retry: bool | None = None,
 ) -> Notification | None:
     """
     Render, log and send one notification. Never raises.
@@ -98,6 +100,8 @@ def notify(
     `reply_to`: addresses a reply goes to (email only), e.g. the visitor who wrote to the team.
     `fallback=False`: primary SMTP only, never the backup Gmail account (email only; bulk mail like the
     newsletter must not go out through it).
+    `retry`: whether `run_jobs` sends a failed email again later (z_notification/retry.py). None (the default)
+    follows the template's policy there; never for one-time codes, anything redacted or `fallback=False` mail.
 
     Returns the `Notification` row (status sent/failed), or None if even the
     log row could not be written.
@@ -106,6 +110,7 @@ def notify(
     context = context or {}
     ref_type, ref_id = resolve_ref(ref)
     notification: Notification | None = None
+    can_retry = False
     try:
         notification = Notification.objects.create(
             channel=channel,
@@ -132,17 +137,46 @@ def notify(
             notification.sent_at = timezone.now()
             notification.save(update_fields=["subject", "body", "status", "sent_at", "error"])
             return notification
+        can_retry = _keep_for_retry(
+            notification, channel, template, ref_type, redact, fallback, retry,
+            html, headers, attachments, extra.get("reply_to"),
+        )
         get_channel(channel).send(recipient, subject, body, html=html, **extra)
         notification.status = Notification.Status.SENT
         notification.sent_at = timezone.now()
-        notification.save(update_fields=["subject", "body", "status", "sent_at"])
+        notification.retry_payload = None  # delivered: the copy kept for a retry isn't needed
+        notification.save(update_fields=["subject", "body", "status", "sent_at", "retry_payload"])
     except Exception as exc:  # noqa: BLE001 -- notify must never break the caller
         logger.exception("Notification %r to %s via %s failed", template, recipient, channel)
         if notification is not None:
             try:
                 notification.status = Notification.Status.FAILED
                 notification.error = redact_text(f"{type(exc).__name__}: {exc}", redact)
-                notification.save(update_fields=["subject", "body", "status", "error"])
+                notification.next_retry_at = retry_mod.first_retry_at(timezone.now()) if can_retry else None
+                notification.save(update_fields=["subject", "body", "status", "error", "next_retry_at"])
             except Exception:  # noqa: BLE001
                 logger.exception("Could not record notification failure")
     return notification
+
+
+def _keep_for_retry(
+    notification: Notification, channel: str, template: str, ref_type: str, redact: list[str], fallback: bool,
+    retry: bool | None, html: str | None, headers: dict[str, str] | None, attachments: list[Attachment] | None,
+    reply_to: list[str] | None,
+) -> bool:
+    """Before sending a retryable email, keep what a retry needs on its row, so a send that fails -- or a process
+    that dies mid-send -- can be finished by `run_jobs` (z_notification/retry.py). Returns whether it was kept.
+    Never raises: if it can't be kept, the email still goes, it just won't be retried."""
+    try:
+        if not retry_mod.retryable(channel, template, ref_type, redact, fallback, retry):
+            return False
+        data = retry_mod.payload(html, headers, attachments, reply_to)
+        if data is None:
+            return False
+        notification.retry_payload = data
+        notification.save(update_fields=["subject", "body", "retry_payload"])
+        return True
+    except Exception:  # noqa: BLE001
+        logger.exception("Could not keep notification %s for a retry", notification.pk)
+        notification.retry_payload = None
+        return False

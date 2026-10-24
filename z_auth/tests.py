@@ -245,32 +245,33 @@ class EarlyAccessTests(APITestCase):
         self.assertEqual(self.post(valid_payload()).status_code, status.HTTP_429_TOO_MANY_REQUESTS)
 
 
-class AccountTests(APITestCase):
+class RetiredRegisterTests(APITestCase):
+    """FIX-002: the deprecated `register/` (AUTH-API-012) is gone -- it created verified accounts with no code."""
+
     def register(self, **overrides: Any):
         payload = {"email": "Dev@Zinwe.io", "password": "s3cure-Passphrase!", "full_name": "Dev One"}
         payload.update(overrides)
         return self.client.post("/api/auth/register/", payload, format="json")
 
-    def test_register_returns_token(self) -> None:
+    def test_register_is_gone_and_creates_nothing(self) -> None:
         response = self.register()
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        body = response.json()
-        self.assertTrue(body["token"])
-        self.assertEqual(body["user"]["email"], "dev@zinwe.io")
-        self.assertEqual(body["user"]["full_name"], "Dev One")
-        self.assertTrue(User.objects.get().check_password("s3cure-Passphrase!"))
-
-    def test_register_rejects_weak_password(self) -> None:
-        response = self.register(password="123")
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("password", response.json())
+        self.assertEqual(response.status_code, status.HTTP_410_GONE)
+        self.assertIn("/api/auth/signup/", response.json()["detail"])
+        self.assertNotIn("token", response.json())
         self.assertFalse(User.objects.exists())
 
-    def test_register_rejects_duplicate_email(self) -> None:
-        self.register()
-        response = self.register(email="dev@ZINWE.io")
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertEqual(response.json()["email"], ["An account with this email already exists."])
+    def test_register_is_gone_even_with_bad_input(self) -> None:
+        self.assertEqual(self.client.post("/api/auth/register/", {}, format="json").status_code, 410)
+        self.assertEqual(self.client.get("/api/auth/register/").status_code, 410)
+        self.assertFalse(User.objects.exists())
+
+
+class AccountTests(APITestCase):
+    def register(self) -> User:
+        return User.objects.create_user(
+            email="dev@zinwe.io", password="s3cure-Passphrase!", full_name="Dev One",
+            email_verified_at=timezone.now(),
+        )
 
     def test_login_and_me(self) -> None:
         self.register()

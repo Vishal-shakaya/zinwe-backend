@@ -43,6 +43,11 @@ LIVE_HOSTS = {"zinwe.io", "www.zinwe.io"}
 MIN_PAISE = 100
 # Razorpay takes rupees, and US dollars from cards abroad (international payments are on, 2026-10-23).
 ONLINE_CURRENCIES = (pricing.INR, pricing.USD)
+# An order still waiting for payment this long after it was made was abandoned (checkout closed): the hourly
+# check marks it failed once Razorpay confirms nothing was paid on it (FIX-004a).
+ORDER_EXPIRY = timedelta(hours=24)
+ABANDONED_ERROR = "No payment within 24 hours: checkout abandoned."
+DONE = (RazorpayOrder.Status.PAID, RazorpayOrder.Status.NEEDS_REVIEW)
 
 
 class OnlinePaymentUnavailable(Exception):
@@ -213,18 +218,37 @@ def confirm(order_pk: int, payment_id: str, via: str) -> ConfirmResult:
     """
     Make a Razorpay payment count, once: check it with Razorpay, capture it if needed, then record it as an
     approved payment. Idempotent (a second call for a paid order returns it unchanged).
+
+    The Razorpay calls happen outside any transaction (FIX-004b: no row lock is held during a 20 s network call);
+    the order is then locked and re-checked, so when the checkout, the webhook and the hourly check race, only the
+    first one records the payment and the others return it.
     """
+    order = RazorpayOrder.objects.get(pk=order_pk)
+    if order.status in DONE:
+        return ConfirmResult(order, order.payment)
+    _confirm_with_razorpay(order, payment_id)  # network; the order's id / amount / currency never change
     with transaction.atomic():
         order = RazorpayOrder.objects.select_for_update().select_related("subscription__owner").get(pk=order_pk)
-        if order.status in (RazorpayOrder.Status.PAID, RazorpayOrder.Status.NEEDS_REVIEW):
+        if order.status in DONE:
             return ConfirmResult(order, order.payment)
+        return _record(order, payment_id, via)
+
+
+def _confirm_with_razorpay(order: RazorpayOrder, payment_id: str) -> None:
+    """Razorpay agrees the payment is this order's, for the full amount, and captured (captures it if only
+    authorised). Raises `PaymentNotConfirmed` or `api.RazorpayError`."""
+    payment_info = api.fetch_payment(payment_id)
+    _check_payment(order, payment_info)
+    if payment_info.get("status") != "authorized":
+        return
+    try:
+        payment_info = api.capture(payment_id, order.amount_paise, order.currency)
+    except api.RazorpayError:
+        # Another caller may have captured it a moment ago: what does Razorpay say now?
         payment_info = api.fetch_payment(payment_id)
-        _check_payment(order, payment_info)
-        if payment_info.get("status") == "authorized":
-            payment_info = api.capture(payment_id, order.amount_paise, order.currency)
-            _check_payment(order, payment_info)
-        result = _record(order, payment_id, via)
-    return result
+        if payment_info.get("status") != "captured":
+            raise
+    _check_payment(order, payment_info)
 
 
 def _check_payment(order: RazorpayOrder, info: dict[str, Any]) -> None:
@@ -259,6 +283,7 @@ def _record(order: RazorpayOrder, payment_id: str, via: str) -> ConfirmResult:
     )
     order.razorpay_payment_id = payment_id
     order.payment = payment
+    order.error = ""  # a late payment on an order marked abandoned still counts
     order.paid_at = now
     order.confirmed_via = via
     try:
@@ -304,17 +329,20 @@ def handle_webhook(body: bytes, signature: str) -> str:
 class ReconcileResult:
     checked: int = 0
     confirmed: int = 0
+    expired: int = 0
     errors: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
-        text = f"{self.checked} open order(s) checked, {self.confirmed} confirmed"
+        text = f"{self.checked} open order(s) checked, {self.confirmed} confirmed, {self.expired} expired"
         return text + (f", {len(self.errors)} error(s)" if self.errors else "")
 
 
 def reconcile(now: Any = None) -> ReconcileResult:
     """
-    The hourly check (run_jobs): open orders from the last 3 days whose payment Razorpay has taken but we never
-    heard about (browser closed, webhook missed) are confirmed now.
+    The hourly check (run_jobs): open orders whose payment Razorpay has taken but we never heard about (browser
+    closed, webhook missed) are confirmed now. Orders older than `ORDER_EXPIRY` with nothing paid on them are marked
+    failed (abandoned checkouts; FIX-004a) -- only when Razorpay answered, never because it couldn't be reached.
+    A payment that still arrives later (webhook / checkout) is confirmed as usual.
     """
     result = ReconcileResult()
     if not online_enabled():
@@ -322,7 +350,6 @@ def reconcile(now: Any = None) -> ReconcileResult:
     now = now or timezone.now()
     open_orders = RazorpayOrder.objects.filter(
         status=RazorpayOrder.Status.CREATED,
-        created_at__gte=now - timedelta(days=3),
         created_at__lte=now - timedelta(minutes=5),
     )
     for order in open_orders:
@@ -332,6 +359,10 @@ def reconcile(now: Any = None) -> ReconcileResult:
             if paid:
                 confirm(order.pk, paid[0]["id"], via="reconcile")
                 result.confirmed += 1
+            elif order.created_at <= now - ORDER_EXPIRY:
+                result.expired += RazorpayOrder.objects.filter(
+                    pk=order.pk, status=RazorpayOrder.Status.CREATED,
+                ).update(status=RazorpayOrder.Status.FAILED, error=ABANDONED_ERROR)
         except (api.RazorpayError, PaymentNotConfirmed) as exc:
             result.errors.append(f"{order.order_id}: {exc}")
     return result

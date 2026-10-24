@@ -6,7 +6,8 @@ follow-ups go out only when `followups_enabled` is on.
 Kind to the inbox: from 09:00 in the member's own time zone, at most one Zinwe email a day — a follow-up waits a
 day if the member got a series episode or another follow-up that day. Each (guide, member, step) is one
 `GuideFollowupSend` row, claimed before sending, so concurrent runs never send twice. `run_jobs` calls `send_due()`
-every hour.
+every hour. A claim a crash left in "sending" is taken back after `claims.STALE_AFTER`: recorded as sent if the email
+went, else failed, so it goes out again (once) on the member's next free day -- FIX-009.
 """
 from __future__ import annotations
 
@@ -135,9 +136,22 @@ def _emailed_today(sub: NewsletterSubscriber, today: date) -> bool:
     )
 
 
+def reclaim_stale() -> tuple[int, int]:
+    """Follow-ups a crashed sender left in "sending": recorded as sent if the email went, else failed (due again)."""
+    from . import claims
+
+    return claims.reclaim(
+        GuideFollowupSend.objects.filter(claims.stale_q("created_at"), status=Send.SENDING).select_related("guide"),
+        ref=lambda row: row.guide,
+        since=lambda row: row.claimed_at or row.created_at,
+        release_to=Send.FAILED,
+    )
+
+
 def send_due(now: datetime | None = None, limit: int = 300) -> FollowupResult:
     now = now or timezone.now()
     result = FollowupResult()
+    reclaim_stale()
     for guide in Guide.objects.filter(status=Guide.Status.PUBLISHED, followups_enabled=True).select_related("cover_image"):
         plan = steps(guide)
         if not plan:
@@ -183,11 +197,13 @@ def send_due(now: datetime | None = None, limit: int = 300) -> FollowupResult:
 def _claim(guide: Guide, sub: NewsletterSubscriber, step: int, today: date) -> GuideFollowupSend | None:
     try:
         with transaction.atomic():
-            return GuideFollowupSend.objects.create(guide=guide, subscriber=sub, step=step, local_date=today)
+            return GuideFollowupSend.objects.create(
+                guide=guide, subscriber=sub, step=step, local_date=today, claimed_at=timezone.now()
+            )
     except IntegrityError:
         pass
     taken = GuideFollowupSend.objects.filter(guide=guide, subscriber=sub, step=step, status=Send.FAILED).update(
-        status=Send.SENDING, local_date=today, error=""
+        status=Send.SENDING, local_date=today, error="", claimed_at=timezone.now()
     )
     return GuideFollowupSend.objects.get(guide=guide, subscriber=sub, step=step) if taken else None
 

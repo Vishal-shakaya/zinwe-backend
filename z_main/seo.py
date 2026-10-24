@@ -6,11 +6,15 @@ dev server proxies them.
 - robots.txt: on the production portal host (ZINWE_SEARCH_INDEXING), public pages are open and the signed-in
   app, onboarding, personal links and the API are not. Everywhere else (local, dev, the admin and API hosts)
   everything is closed.
-- sitemap.xml: ONE list of every public URL: all the website's pages (from the frontend build's
-  sitemap-pages.xml, which build/seoPages.ts checks against the app's routes) plus every published blog
-  article. /blog's lastmod is the newest article's when that's later than the build.
+- sitemap.xml: ONE list of every public URL (the only sitemap robots.txt names): all the website's pages (from
+  the frontend build's sitemap-pages.xml, which build/seoPages.ts checks against the app's routes) plus every
+  public blog page -- articles, live series and their released episodes, guides (z_blog/sitemap.py). A URL in
+  both is listed once, with the later lastmod (e.g. /blog: the newest article's when later than the build).
+  It sits at the site root so it may list any URL on the site (a sitemap under /api/blog/ may, by the sitemaps
+  protocol, only list URLs under /api/blog/).
 - sitemap-pages.xml: the file the frontend build writes next to index.html (build/seoPages.ts), with its URLs
-  moved onto this environment's own address (kept for reference; sitemap.xml already includes it).
+  moved onto this environment's own address (kept for reference; sitemap.xml already includes it, so robots.txt
+  doesn't name it: one complete list, no duplicate submissions). /api/blog/sitemap.xml likewise.
 """
 from __future__ import annotations
 
@@ -27,6 +31,7 @@ from django.views.decorators.cache import cache_control
 from django.views.decorators.http import require_GET
 
 from z_blog import services as blog
+from z_blog import sitemap as blog_sitemap
 
 log = logging.getLogger(__name__)
 
@@ -96,16 +101,16 @@ def frontend_pages() -> list[tuple[str, date | None]]:
 
 
 def sitemap_urls() -> list[tuple[str, date | None]]:
-    """Every public URL: the website's pages, then the published blog articles (newest first)."""
+    """Every public URL: the website's pages, then every public blog page (z_blog/sitemap.py). A URL in both is
+    listed once, with the later lastmod."""
     base = settings.ZINWE_APP_URL
     urls: dict[str, date | None] = dict(frontend_pages())
-    articles = list(blog.published().order_by("-updated_at"))
-    if articles:
-        newest = articles[0].updated_at.date()
-        index = f"{base}/blog"
-        urls[index] = max(filter(None, [urls.get(index), newest]))
-        for article in articles:
-            urls[f"{base}/blog/{article.slug}"] = article.updated_at.date()
+    has_articles = blog.published().exists()
+    for path, when in blog_sitemap.entries():
+        loc = f"{base}{path}"
+        if path == "/blog" and not has_articles:
+            continue  # no article yet: the build's entry (and date) stands, not "now"
+        urls[loc] = max(filter(None, [urls.get(loc), when.date()]))
     return list(urls.items())
 
 
@@ -119,7 +124,7 @@ def robots_txt(request: HttpRequest) -> HttpResponse:
 @require_GET
 @cache_control(public=True, max_age=3600)
 def sitemap_index(request: HttpRequest) -> HttpResponse:
-    """GET /sitemap.xml -- every public URL in one list: the website's pages + published blog articles."""
+    """GET /sitemap.xml -- every public URL in one list: the website's pages + every public blog page."""
     lines = []
     for loc, when in sitemap_urls():
         lastmod = f"<lastmod>{when:%Y-%m-%d}</lastmod>" if when else ""

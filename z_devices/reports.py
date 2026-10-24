@@ -7,9 +7,9 @@ For the period: a day-by-day trend and the top apps, websites and data-hungry si
 lists each of their days. Shown on the dashboard's Reports page, downloaded as CSV or PDF (report_pdf.py) and
 emailed (report_mail.py, report_schedules.py).
 
-Worked time follows the Activity page's rule (features/workDay.ts): each change in the work log runs until the
-next one on that day; the last stretch runs to "now" today, and on a past day an unfinished stretch (they never
-logged out) isn't counted.
+Worked time per day comes from work_time.py (FIX-011), the same rules Activity uses: each change in the work log
+runs until the next one, a stretch over midnight is split between the two days, the last stretch runs to "now"
+today, and an unfinished stretch (they never logged out) isn't counted. A day worked is a day they logged in.
 """
 from __future__ import annotations
 
@@ -28,6 +28,7 @@ from z_auth.entitlements import entitlements_for
 from z_auth.models import User
 
 from .models import DeviceEvent, Member, UsageMetric, WorkLog
+from .work_time import day_bounds, work_days, work_zone
 
 MAX_DAYS = 366
 TOP = 10
@@ -43,7 +44,8 @@ class BadPeriod(ValueError):
 
 def clamp_period(owner: User, start: date, end: date) -> tuple[date, date]:
     """The period the owner may see: never in the future, never before the plan keeps history."""
-    today = timezone.localdate()
+    tz = work_zone(owner)
+    today = timezone.localdate(timezone=tz)
     if start > end:
         raise BadPeriod("The start date is after the end date.")
     if start > today:
@@ -53,20 +55,15 @@ def clamp_period(owner: User, start: date, end: date) -> tuple[date, date]:
         raise BadPeriod("Pick a period of a year or less.")
     floor = entitlements_for(owner).history_since()
     if floor is not None:
-        start = max(start, timezone.localtime(floor).date())
+        start = max(start, timezone.localtime(floor, tz).date())
     return start, end
 
 
-def _bounds(start: date, end: date) -> tuple[datetime, datetime]:
-    tz = timezone.get_current_timezone()
-    lo = timezone.make_aware(datetime.combine(start, datetime.min.time()), tz)
-    hi = timezone.make_aware(datetime.combine(end + timedelta(days=1), datetime.min.time()), tz)
-    return lo, hi
-
-
-def _minutes(at: datetime) -> int:
-    """Minutes since local midnight: 9:30 AM -> 570."""
-    local = timezone.localtime(at)
+def _minutes(at: datetime | None, tz: Any) -> int | None:
+    """Minutes since local midnight: 9:30 AM -> 570; None stays None."""
+    if at is None:
+        return None
+    local = at.astimezone(tz)
     return local.hour * 60 + local.minute
 
 
@@ -111,62 +108,41 @@ class _Collector:
         })
 
 
-def _work(c: _Collector, owner: User, lo: datetime, hi: datetime, now: datetime, member: Member | None) -> None:
-    logs = WorkLog.objects.filter(owner=owner, at__gte=lo, at__lt=hi)
+def _work(c: _Collector, owner: User, lo: datetime, hi: datetime, now: datetime, member: Member | None,
+          tz: Any) -> None:
+    logs = WorkLog.objects.filter(owner=owner)
     if member is not None:
         logs = logs.filter(member=member)
-    days: dict[tuple[Any, date], list[WorkLog]] = defaultdict(list)
-    names: dict[Any, tuple[str, int | None]] = {}
-    for log in logs.select_related("member", "device").order_by("at", "id"):
-        key = ("m", log.member_id) if log.member_id else ("d", log.device_id)
-        days[(key, timezone.localtime(log.at).date())].append(log)
-        names[key] = (log.member.name if log.member else log.device.hostname, log.member_id)
-
-    today = timezone.localdate()
-    for (key, day), entries in days.items():
-        row = c.person(key, names[key][1], names[key][0])
-        trend = c.daily.get(day)
-        mine = c.person_day(day) if member is not None else None
-        row["days_worked"] += 1
-        worked = on_break = breaks = 0
-        for i, entry in enumerate(entries):
-            nxt = entries[i + 1] if i + 1 < len(entries) else None
-            if nxt is not None:
-                until: datetime | None = nxt.at
-            elif day == today and entry.state != WorkLog.State.ENDED:
-                until = now
-            else:
-                until = None
-            span = max(0, int((until - entry.at).total_seconds())) if until is not None else 0
-            if entry.state == WorkLog.State.WORKING:
-                worked += span
-            elif entry.state == WorkLog.State.ON_BREAK:
-                on_break += span
-                breaks += 1
-            else:
-                row["logouts"] += 1
-            if entry.approval == WorkLog.Approval.PENDING:
-                row["to_review"] += 1
-        first_in = next((_minutes(e.at) for e in entries if e.state == WorkLog.State.WORKING), None)
-        last_out = next((_minutes(e.at) for e in reversed(entries) if e.state == WorkLog.State.ENDED), None)
-        if first_in is not None:
-            row["_in"].append(first_in)
-        if last_out is not None:
-            row["_out"].append(last_out)
-        row["worked_seconds"] += worked
-        row["break_seconds"] += on_break
-        row["breaks"] += breaks
-        if trend is not None:
-            trend["worked_seconds"] += worked
-            trend["break_seconds"] += on_break
-            trend["breaks"] += breaks
-            trend["people"] += 1
-        if mine is not None:
-            mine.update(worked_seconds=worked, break_seconds=on_break, breaks=breaks, first_in=first_in,
-                        last_out=last_out, people=1)
-        elif trend is not None:
-            c.day_person(day, key, names[key][1], names[key][0]).update(
-                worked_seconds=worked, break_seconds=on_break, breaks=breaks, first_in=first_in, last_out=last_out)
+    since = entitlements_for(owner).history_since()
+    for key, sample, days in work_days(logs, lo, hi, now, tz, since=since):
+        name, member_id = (sample.member.name if sample.member else sample.device.hostname), sample.member_id
+        row = c.person(key, member_id, name)
+        for day, w in sorted(days.items()):
+            trend = c.daily.get(day)
+            mine = c.person_day(day) if member is not None else None
+            row["days_worked"] += int(w.logged_in)  # FIX-012: a log-out (or last night's tail) alone isn't a day
+            row["logouts"] += w.logouts
+            row["to_review"] += w.to_review
+            first_in, last_out = _minutes(w.first_in, tz), _minutes(w.last_out, tz)
+            if first_in is not None:
+                row["_in"].append(first_in)
+            if last_out is not None:
+                row["_out"].append(last_out)
+            row["worked_seconds"] += w.worked
+            row["break_seconds"] += w.on_break
+            row["breaks"] += w.breaks
+            if trend is not None:
+                trend["worked_seconds"] += w.worked
+                trend["break_seconds"] += w.on_break
+                trend["breaks"] += w.breaks
+                trend["people"] += 1
+            if mine is not None:
+                mine.update(worked_seconds=w.worked, break_seconds=w.on_break, breaks=w.breaks, first_in=first_in,
+                            last_out=last_out, people=1)
+            elif trend is not None:
+                c.day_person(day, key, member_id, name).update(
+                    worked_seconds=w.worked, break_seconds=w.on_break, breaks=w.breaks, first_in=first_in,
+                    last_out=last_out)
 
 
 def _alerts(c: _Collector, owner: User, lo: datetime, hi: datetime, ent: Any, member: Member | None):  # type: ignore[no-untyped-def]
@@ -179,7 +155,7 @@ def _alerts(c: _Collector, owner: User, lo: datetime, hi: datetime, ent: Any, me
     )
     if member is not None:
         alerts = alerts.filter(device__member=member)
-    tz = timezone.get_current_timezone()
+    tz = work_zone(owner)
     rows = (
         alerts.annotate(day=TruncDate("occurred_at", tzinfo=tz))
         .values("device__member_id", "device__member__name", "device_id", "device__hostname", "day")
@@ -208,7 +184,7 @@ def _usage(c: _Collector, owner: User, lo: datetime, hi: datetime, ent: Any, mem
                                          bucket_start__lt=hi)
     if member is not None:
         metrics = metrics.filter(device__member=member)
-    tz = timezone.get_current_timezone()
+    tz = work_zone(owner)
     rows = (
         metrics.annotate(day=TruncDate("bucket_start", tzinfo=tz))
         .values("device__member_id", "device__member__name", "device_id", "device__hostname", "day", "category")
@@ -260,10 +236,11 @@ def build_report(
     team or, with `member`, for that one person."""
     now = now or timezone.now()
     ent = entitlements_for(owner)
-    lo, hi = _bounds(start, end)
+    tz = work_zone(owner)
+    lo, hi = day_bounds(start, end, tz)
     c = _Collector(start, end)
     if ent.has(plan.WORK_TIME):
-        _work(c, owner, lo, hi, now, member)
+        _work(c, owner, lo, hi, now, member, tz)
     alerts = _alerts(c, owner, lo, hi, ent, member)
     _usage(c, owner, lo, hi, ent, member)
 

@@ -48,6 +48,11 @@ def _refused(exc: Exception) -> Response:
     return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
 
+def _audit(request: Request, action: str, properties: dict | None = None, ref: object = None) -> None:
+    """The staff audit trail (FIX-007): an "admin.<action>" analytics event with who did it. Never raises."""
+    track(f"admin.{action}", properties or {}, actor_email=request.user.email, ref=ref)
+
+
 class MeView(StaffView):
     """GET /api/admin/me/ -- confirm the operator is staff; used by the app guard."""
 
@@ -122,10 +127,12 @@ class SubscriberDetailView(StaffView):
 
     def delete(self, request: Request, pk: int) -> Response:
         user = _owner_or_404(pk)
+        email = user.email
         try:
             services.delete_customer(user)
         except services.AdminActionError as exc:
             return _refused(exc)
+        _audit(request, "customer_deleted", {"customer_id": pk, "email": email})
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -264,7 +271,10 @@ class RemarkView(StaffView):
         user = _owner_or_404(pk)
         serializer = RemarkSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        view = services.set_remark(user, serializer.validated_data["text"], request.user)
+        text = serializer.validated_data["text"]
+        view = services.set_remark(user, text, request.user)
+        # The note itself stays out of the log (it's in CustomerRemark, with updated_by).
+        _audit(request, "remark_saved" if (text or "").strip() else "remark_cleared", {"customer_id": user.pk}, user)
         return Response(SubscriberSerializer(view).data)
 
 
@@ -401,9 +411,16 @@ class ReleaseDetailView(StaffView):
         release = get_object_or_404(AgentRelease, pk=pk)
         data = UpdateReleaseSerializer(data=request.data)
         data.is_valid(raise_exception=True)
+        changed = []
         for field, value in data.validated_data.items():
-            setattr(release, field, value.strip() if isinstance(value, str) else value)
-        release.save(update_fields=list(data.validated_data) or None)
+            value = value.strip() if isinstance(value, str) else value
+            if getattr(release, field) != value:
+                setattr(release, field, value)
+                changed.append(field)
+        # Only what changed is written; an empty or no-change PATCH writes nothing (FIX-007).
+        if changed:
+            release.save(update_fields=changed)
+            _audit(request, "release_updated", {"version": release.version, "fields": sorted(changed)}, release)
         return Response(ReleaseRowSerializer(release).data)
 
 
@@ -422,6 +439,10 @@ class AnnouncementListView(StaffView):
         data = AnnouncementSerializer(data=request.data)
         data.is_valid(raise_exception=True)
         announcement = data.save(created_by=request.user)
+        _audit(request, "announcement_created", {
+            "id": announcement.pk, "title": announcement.title, "placement": announcement.placement,
+            "audience": announcement.audience,
+        }, announcement)
         return Response(AnnouncementSerializer(announcement).data, status=status.HTTP_201_CREATED)
 
 
@@ -447,10 +468,15 @@ class AnnouncementDetailView(StaffView):
         announcement = get_object_or_404(Announcement, pk=pk)
         data = AnnouncementSerializer(announcement, data=request.data, partial=True)
         data.is_valid(raise_exception=True)
-        return Response(AnnouncementSerializer(data.save()).data)
+        announcement = data.save()
+        _audit(request, "announcement_updated", {"id": pk, "fields": sorted(data.validated_data)}, announcement)
+        return Response(AnnouncementSerializer(announcement).data)
 
     def delete(self, request: Request, pk: int) -> Response:
-        get_object_or_404(Announcement, pk=pk).delete()
+        announcement = get_object_or_404(Announcement, pk=pk)
+        title = announcement.title
+        announcement.delete()
+        _audit(request, "announcement_deleted", {"id": pk, "title": title})
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -476,7 +502,12 @@ class SubscriptionDetailView(StaffView):
         subscription = get_object_or_404(Subscription.objects.select_related("owner", "company", "plan"), pk=pk)
         data = AdminSubscriptionSerializer(subscription, data={"payment_link": request.data.get("payment_link", "")}, partial=True)
         data.is_valid(raise_exception=True)
-        return Response(AdminSubscriptionSerializer(data.save()).data)
+        subscription = data.save()
+        _audit(request, "payment_link_set", {
+            "subscription_id": subscription.pk, "customer_id": subscription.owner_id,
+            "payment_link": subscription.payment_link,
+        }, subscription)
+        return Response(AdminSubscriptionSerializer(subscription).data)
 
 
 class InvoicePdfView(StaffView):
@@ -508,6 +539,7 @@ class ReleaseNoteListView(StaffView):
         data = ReleaseNoteSerializer(data=request.data)
         data.is_valid(raise_exception=True)
         note = data.save(created_by=request.user)
+        _audit(request, "release_note_created", {"id": note.pk, "version": note.version}, note)
         return Response(ReleaseNoteSerializer(note).data, status=status.HTTP_201_CREATED)
 
 
@@ -520,12 +552,22 @@ class ReleaseNoteDetailView(StaffView):
         from .serializers import ReleaseNoteSerializer
 
         note = get_object_or_404(ReleaseNote, pk=pk)
+        was_published = note.published_at is not None
         data = ReleaseNoteSerializer(note, data=request.data, partial=True)
         data.is_valid(raise_exception=True)
-        return Response(ReleaseNoteSerializer(data.save()).data)
+        note = data.save()
+        props = {"id": pk, "version": note.version, "fields": sorted(data.validated_data)}
+        if "published_at" in data.validated_data and was_published != (note.published_at is not None):
+            _audit(request, "release_note_published" if note.published_at else "release_note_unpublished", props, note)
+        else:
+            _audit(request, "release_note_updated", props, note)
+        return Response(ReleaseNoteSerializer(note).data)
 
     def delete(self, request: Request, pk: int) -> Response:
         from z_auth.models import ReleaseNote
 
-        get_object_or_404(ReleaseNote, pk=pk).delete()
+        note = get_object_or_404(ReleaseNote, pk=pk)
+        version = note.version
+        note.delete()
+        _audit(request, "release_note_deleted", {"id": pk, "version": version})
         return Response(status=status.HTTP_204_NO_CONTENT)

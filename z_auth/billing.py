@@ -305,6 +305,20 @@ def subscription_due(subscription: Subscription | None) -> pricing.Quote | None:
     return amount_due(subscription)
 
 
+def costs_more(plan: Plan, subscription: Subscription) -> bool:
+    """
+    `plan` is dearer than the subscription's current plan, compared as the subscriber pays: in their own
+    currency and billing cycle (FIX-004c; a USD yearly customer compares USD yearly prices). When either plan has
+    no price in that currency (not sold in USD yet), falls back to the rupee monthly catalogue.
+    """
+    current = subscription.plan
+    _, new = pricing.cycle_prices(plan, subscription.currency, subscription.billing_cycle)
+    _, old = pricing.cycle_prices(current, subscription.currency, subscription.billing_cycle)
+    if new <= 0 or (old <= 0 and current.requires_payment):
+        return plan.price_inr_monthly > current.price_inr_monthly
+    return new > old
+
+
 def check_upgrade(subscription: Subscription | None, plan: Plan) -> Subscription:
     """
     The subscription an upgrade to `plan` would start from: an active plan (free, trial or paid), no payment
@@ -314,7 +328,7 @@ def check_upgrade(subscription: Subscription | None, plan: Plan) -> Subscription
         raise UpgradeNotAllowed("An upgrade starts from an active plan. Choose a plan on the plans page instead.")
     if has_payment_under_review(subscription):
         raise PaymentUnderReview()
-    if not plan.is_active or not plan.requires_payment or plan.price_inr_monthly <= subscription.plan.price_inr_monthly:
+    if not plan.is_active or not plan.requires_payment or not costs_more(plan, subscription):
         raise UpgradeNotAllowed()
     return subscription
 
@@ -520,7 +534,7 @@ def payment_target(
                 subscription = subscribe(user, upgrade_plan)  # swaps the pending choice
             upgrade_plan = None  # an ordinary first payment from here
         elif subscription.status == Status.ACTIVE:
-            if not upgrade_plan.requires_payment or upgrade_plan.price_inr_monthly <= subscription.plan.price_inr_monthly:
+            if not upgrade_plan.requires_payment or not costs_more(upgrade_plan, subscription):
                 raise UpgradeNotAllowed()
         else:
             raise NothingToPay()

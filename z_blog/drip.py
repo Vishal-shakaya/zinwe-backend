@@ -8,7 +8,9 @@ the releases simply waits for the next episode to go live. `run_jobs` calls `sen
 
 Idempotent like the newsletter: each (subscriber, episode) is one `SeriesSend` row, claimed before its
 email goes out, so concurrent runs never send anything twice. A failed email is retried on the
-subscriber's next send day. Demo-domain addresses are logged, never delivered (z_notification).
+subscriber's next send day. A claim a crash left in "sending" is taken back after `claims.STALE_AFTER`: recorded as
+sent if the email went, else failed (so retried on the next send day) -- FIX-009. Demo-domain addresses are logged,
+never delivered (z_notification).
 """
 from __future__ import annotations
 
@@ -87,12 +89,14 @@ def _claim(series: Series, sub: NewsletterSubscriber, article: Article, today: d
     """Take this (subscriber, episode) for sending, or None if it's sent or another sender has it."""
     try:
         with transaction.atomic():
-            return SeriesSend.objects.create(series=series, subscriber=sub, article=article, local_date=today)
+            return SeriesSend.objects.create(
+                series=series, subscriber=sub, article=article, local_date=today, claimed_at=timezone.now()
+            )
     except IntegrityError:
         pass
     # A failed earlier try: take it again (only one sender wins the update).
     taken = SeriesSend.objects.filter(subscriber=sub, article=article, status=Send.FAILED).update(
-        status=Send.SENDING, local_date=today, error=""
+        status=Send.SENDING, local_date=today, error="", claimed_at=timezone.now()
     )
     return SeriesSend.objects.get(subscriber=sub, article=article) if taken else None
 
@@ -111,6 +115,19 @@ def _deliver(row: SeriesSend, sub: NewsletterSubscriber, article: Article) -> bo
     return False
 
 
+def reclaim_stale() -> tuple[int, int]:
+    """Episodes a crashed sender left in "sending": recorded as sent if the email went, else failed (retried on
+    the member's next send day, like any failed email)."""
+    from . import claims
+
+    return claims.reclaim(
+        SeriesSend.objects.filter(claims.stale_q("created_at"), status=Send.SENDING).select_related("article"),
+        ref=lambda row: row.article,
+        since=lambda row: row.claimed_at or row.created_at,
+        release_to=Send.FAILED,
+    )
+
+
 def _next_episode(released: list[Article], done: set[int]) -> Article | None:
     return next((a for a in released if a.pk not in done), None)
 
@@ -120,6 +137,7 @@ def send_due(now: datetime | None = None, limit: int = 500) -> DripResult:
     now = now or timezone.now()
     result = DripResult()
     budget = limit
+    reclaim_stale()
     shows = Series.objects.filter(status=Series.Status.PUBLISHED, drip_enabled=True)
     for show in shows:
         released = svc.lineup(show, now).released

@@ -5,7 +5,8 @@ every confirmed subscriber.
 Sending is idempotent: each (issue, subscriber) pair is one `NewsletterDelivery` row, claimed
 atomically before its email goes out, so a background thread and the `run_jobs` loop can both run
 `send_pending()` without anyone getting the email twice. An issue queued for a *scheduled*
-article waits until the article goes live.
+article waits until the article goes live. A claim left in "sending" by a crash is taken back after
+`claims.STALE_AFTER` and sent once more, unless the email had already gone (z_blog/claims.py, FIX-009).
 """
 from __future__ import annotations
 
@@ -420,10 +421,26 @@ def _start(issue: NewsletterIssue, now: datetime) -> None:
         )
 
 
+def reclaim_stale(issue_id: int | None = None) -> tuple[int, int]:
+    """Deliveries a crashed sender left in "sending": recorded as sent if the email went, else back to pending."""
+    from . import claims
+
+    stale = NewsletterDelivery.objects.filter(claims.stale_q("issue__started_at"), status=Delivery.SENDING)
+    if issue_id is not None:
+        stale = stale.filter(issue_id=issue_id)
+    return claims.reclaim(
+        stale.select_related("issue"),
+        ref=lambda d: d.issue.article,
+        since=lambda d: d.claimed_at or d.issue.started_at,
+        release_to=Delivery.PENDING,
+    )
+
+
 def send_pending(issue_id: int | None = None, limit: int = 500, now: datetime | None = None) -> RunResult:
     """Send up to `limit` waiting newsletter emails (all issues, or one). Safe to run concurrently."""
     now = now or timezone.now()
     result = RunResult()
+    reclaim_stale(issue_id)
     issues = NewsletterIssue.objects.filter(status__in=[Issue.QUEUED, Issue.SENDING]).select_related(
         "article", "article__cover_image", "article__series", "article__series__cover_image"
     ).order_by("created_at")
@@ -438,7 +455,7 @@ def send_pending(issue_id: int | None = None, limit: int = 500, now: datetime | 
             _start(issue, now)
         for delivery in issue.deliveries.filter(status=Delivery.PENDING).select_related("subscriber")[:budget]:
             if not NewsletterDelivery.objects.filter(pk=delivery.pk, status=Delivery.PENDING).update(
-                status=Delivery.SENDING
+                status=Delivery.SENDING, claimed_at=timezone.now()
             ):
                 continue  # another sender has it
             budget -= 1

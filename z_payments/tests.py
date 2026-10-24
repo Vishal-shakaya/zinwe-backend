@@ -316,3 +316,110 @@ class RazorpayTests(PortalTestCase):
             response = self.post(ORDER_URL, {"accept_terms": True, "upgrade_plan": plan, "offer": offer.pk})
             self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, (offer.pk, plan, response.content))
         self.assertEqual(RazorpayOrder.objects.filter(offer__isnull=False).count(), 0)
+
+    # --- FIX-004a: abandoned orders expire ----------------------------------------------------------------
+
+    def age(self, order: RazorpayOrder, hours: float) -> None:
+        from django.utils import timezone
+
+        RazorpayOrder.objects.filter(pk=order.pk).update(created_at=timezone.now() - timedelta(hours=hours))
+
+    def test_abandoned_orders_are_marked_failed_after_a_day(self) -> None:
+        self.start()
+        fresh = RazorpayOrder.objects.get()
+        old = RazorpayOrder.objects.create(
+            owner=self.owner, subscription=fresh.subscription, amount_paise=fresh.amount_paise, order_id="order_old",
+            receipt="r-old", due=fresh.due,
+        )
+        ancient = RazorpayOrder.objects.create(
+            owner=self.owner, subscription=fresh.subscription, amount_paise=fresh.amount_paise, order_id="order_anc",
+            receipt="r-anc", due=fresh.due,
+        )
+        self.age(fresh, 2)
+        self.age(old, 25)
+        self.age(ancient, 24 * 10)  # older than the 3-day window: still cleaned up
+        with mock.patch.object(api, "order_payments", return_value=[{"id": "pay_x", "status": "failed"}]):
+            result = reconcile()
+        self.assertEqual((result.checked, result.confirmed, result.expired), (3, 0, 2))
+        self.assertIn("2 expired", result.summary())
+        statuses = dict(RazorpayOrder.objects.values_list("order_id", "status"))
+        self.assertEqual(statuses, {fresh.order_id: "created", "order_old": "failed", "order_anc": "failed"})
+        old.refresh_from_db()
+        self.assertIn("No payment", old.error)
+        self.assertFalse(ManualPayment.objects.exists())
+
+    def test_razorpay_down_never_expires_an_order(self) -> None:
+        self.start()
+        order = RazorpayOrder.objects.get()
+        self.age(order, 30)
+        with mock.patch.object(api, "order_payments", side_effect=api.RazorpayError("down")):
+            result = reconcile()
+        self.assertEqual((result.expired, len(result.errors)), (0, 1))
+        order.refresh_from_db()
+        self.assertEqual(order.status, "created")
+
+    def test_a_late_payment_on_an_expired_order_still_counts(self) -> None:
+        self.start()
+        order = RazorpayOrder.objects.get()
+        self.age(order, 30)
+        with mock.patch.object(api, "order_payments", return_value=[]):
+            reconcile()
+        order.refresh_from_db()
+        self.assertEqual(order.status, "failed")
+        with mock.patch.object(api, "fetch_payment", return_value=self.paid(order)):
+            self.assertEqual(self.verify(order).json()["status"], "paid")
+        order.refresh_from_db()
+        self.assertEqual((order.status, order.error), ("paid", ""))
+        self.assertEqual(ManualPayment.objects.get().status, "verified")
+
+    # --- FIX-004b: no row lock held while Razorpay is called ------------------------------------------------
+
+    def test_razorpay_is_called_outside_the_locked_transaction(self) -> None:
+        from django.db import connection
+
+        from .services import confirm
+
+        self.start()
+        order = RazorpayOrder.objects.get()
+        depth = len(connection.atomic_blocks)
+        seen: list[int] = []
+
+        def fetch(payment_id):  # type: ignore[no-untyped-def]
+            seen.append(len(connection.atomic_blocks))
+            return self.paid(order, status_="authorized")
+
+        def capture(payment_id, amount, currency):  # type: ignore[no-untyped-def]
+            seen.append(len(connection.atomic_blocks))
+            return self.paid(order)
+
+        with mock.patch.object(api, "fetch_payment", side_effect=fetch),                 mock.patch.object(api, "capture", side_effect=capture):
+            result = confirm(order.pk, "pay_1", via="checkout")
+        self.assertEqual(result.order.status, "paid")
+        self.assertEqual(seen, [depth, depth])
+
+    def test_confirmed_meanwhile_is_rechecked_under_the_lock(self) -> None:
+        """The webhook finishes the order while the checkout is still asking Razorpay: one payment, not two."""
+        from .services import confirm
+
+        self.start()
+        order = RazorpayOrder.objects.get()
+        calls = {"n": 0}
+
+        def fetch(payment_id):  # type: ignore[no-untyped-def]
+            calls["n"] += 1
+            if calls["n"] == 1:
+                confirm(order.pk, payment_id, via="webhook")  # the other caller wins the race
+            return self.paid(order)
+
+        with mock.patch.object(api, "fetch_payment", side_effect=fetch):
+            result = confirm(order.pk, "pay_1", via="checkout")
+        self.assertEqual(ManualPayment.objects.count(), 1)
+        self.assertEqual((result.order.status, result.order.confirmed_via), ("paid", "webhook"))
+        self.assertEqual(result.payment, ManualPayment.objects.get())
+
+    def test_capture_race_is_not_a_failure(self) -> None:
+        """Two callers capture at once: Razorpay refuses the second capture, we re-read the payment instead."""
+        self.start()
+        order = RazorpayOrder.objects.get()
+        with mock.patch.object(api, "fetch_payment", side_effect=[self.paid(order, status_="authorized"), self.paid(order)]),                 mock.patch.object(api, "capture", side_effect=api.RazorpayError("already captured", 400)):
+            self.assertEqual(self.verify(order).json()["status"], "paid")

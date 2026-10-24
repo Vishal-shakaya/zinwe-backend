@@ -163,30 +163,6 @@ class TermsAcceptSerializer(serializers.Serializer):
         return value
 
 
-class RegisterSerializer(serializers.Serializer):
-    email = serializers.EmailField(
-        max_length=254, error_messages={"invalid": "Enter a valid email address."}
-    )
-    password = serializers.CharField(write_only=True, trim_whitespace=False, max_length=128)
-    full_name = serializers.CharField(max_length=150)
-    company = serializers.CharField(max_length=160, required=False, allow_blank=True, default="")
-    phone = serializers.CharField(max_length=32, required=False, allow_blank=True, default="")
-
-    def validate_email(self, value: str) -> str:
-        value = value.strip().lower()
-        if User.objects.filter(email__iexact=value).exists():
-            raise serializers.ValidationError("An account with this email already exists.")
-        return value
-
-    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
-        candidate = User(email=attrs["email"], full_name=attrs["full_name"])
-        try:
-            password_validation.validate_password(attrs["password"], user=candidate)
-        except DjangoValidationError as exc:
-            raise serializers.ValidationError({"password": list(exc.messages)}) from exc
-        return attrs
-
-
 class LoginSerializer(serializers.Serializer):
     email = serializers.EmailField(error_messages={"invalid": "Enter a valid email address."})
     password = serializers.CharField(write_only=True, trim_whitespace=False)

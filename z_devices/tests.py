@@ -273,31 +273,7 @@ class OwnerTests(DeviceTestCase):
             self.assertEqual(self.client.get(url).status_code, status.HTTP_401_UNAUTHORIZED)
 
 
-class EnrollmentKeyEndpointTests(DeviceTestCase):
-    """The legacy org-key endpoints stay (back-compat) even though enrol no longer uses them."""
-
-    def test_get_key_creates_one_when_missing(self) -> None:
-        EnrollmentKey.objects.all().delete()
-        self.as_owner()
-
-        first = self.client.get(KEY_URL).json()["key"]
-        second = self.client.get(KEY_URL).json()["key"]
-
-        self.assertRegex(first, r"^ZNW-[2-9A-Z]{4}-[2-9A-Z]{4}-[2-9A-Z]{4}$")
-        self.assertEqual(first, second)
-        self.assertEqual(EnrollmentKey.objects.count(), 1)
-
-    def test_rotate_revokes_old_key_and_issues_a_new_one(self) -> None:
-        key = EnrollmentKey.objects.create(owner=self.owner)
-        self.as_owner()
-
-        response = self.client.post(ROTATE_URL)
-
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertNotEqual(response.json()["key"], key.key)
-        key.refresh_from_db()
-        self.assertFalse(key.is_active)
-        self.assertIsNotNone(key.revoked_at)
+# The org-key endpoints are retired (410 Gone): see test_fix_round.RetiredEnrollmentKeyTests (FIX-005).
 
 
 class MemberTests(DeviceTestCase):

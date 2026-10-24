@@ -11,7 +11,7 @@ urlpatterns = [
     path("signup/verify/", views.SignupVerifyView.as_view(), name="signup-verify"),
     path("otp/resend/", views.ResendCodeView.as_view(), name="otp-resend"),
     # Sign-in / out
-    path("register/", views.RegisterView.as_view(), name="register"),  # deprecated: use signup/
+    path("register/", views.RegisterView.as_view(), name="register"),  # retired: 410 Gone, use signup/ (FIX-002)
     path("login/", views.LoginView.as_view(), name="login"),
     path("login/otp/request/", views.LoginCodeRequestView.as_view(), name="login-otp-request"),
     path("login/otp/verify/", views.LoginCodeVerifyView.as_view(), name="login-otp-verify"),

@@ -61,6 +61,17 @@ def payment_form(**overrides):  # type: ignore[no-untyped-def]
     return {k: v for k, v in data.items() if v is not None}
 
 
+def approve_as_staff(payment_id: int, reviewer: User) -> None:
+    """Approve the way staff do (admin app, FIX-003): UTR + amount off the receipt, duplicate-UTR check."""
+    from z_adminapi.services import review_payment
+
+    payment = ManualPayment.objects.get(pk=payment_id)
+    review_payment(
+        payment_id, reviewer, approve=True,
+        reference=f"UTR-TEST-{payment_id}", amount=payment.amount_inr,
+    )
+
+
 class MediaMixin:
     """Uploads go to a throwaway MEDIA_ROOT."""
 
@@ -685,6 +696,24 @@ class AdminReviewTests(MediaMixin, PortalTestCase):
                 ADMIN_PAYMENTS, {"action": action, "_selected_action": [self.payment_id], **extra}
             )
 
+    def approve(self, payment_id: int | None = None) -> None:
+        with self.captureOnCommitCallbacks(execute=True):
+            approve_as_staff(payment_id or self.payment_id, self.admin)
+
+    def test_django_admin_cannot_verify(self) -> None:
+        """FIX-003: approving needs UTR + amount + the duplicate-UTR check -- the admin app only."""
+        response = self.client.get(ADMIN_PAYMENTS)
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "verify_payments")
+        self.assertContains(response, "reject_payments")
+
+        self.run_action("verify_payments")
+        payment = ManualPayment.objects.get()
+        self.assertEqual((payment.status, payment.reviewed_by), ("submitted", None))
+        self.assertFalse(PlanActivation.objects.exists())
+        self.assertEqual(Subscription.objects.get().status, "pending_payment")
+        self.assertEqual(len(mail.outbox), 0)
+
     def owner_view(self, url: str):  # type: ignore[no-untyped-def]
         self.client.logout()
         self.use_token(self.owner_token)
@@ -695,8 +724,7 @@ class AdminReviewTests(MediaMixin, PortalTestCase):
             self.client.force_login(self.admin)
 
     def test_verify_activates_for_a_month(self) -> None:
-        response = self.run_action("verify_payments")
-        self.assertEqual(response.status_code, 302)
+        self.approve()
 
         payment = ManualPayment.objects.get()
         self.assertEqual(payment.status, "verified")
@@ -738,8 +766,7 @@ class AdminReviewTests(MediaMixin, PortalTestCase):
         self.use_token(None)
         self.client.force_login(self.admin)
         mail.outbox.clear()
-        with self.captureOnCommitCallbacks(execute=True):
-            self.client.post(ADMIN_PAYMENTS, {"action": "verify_payments", "_selected_action": [payment_id]})
+        self.approve(payment_id)
 
         self.assertEqual(ManualPayment.objects.get(pk=payment_id).status, "verified")
         paid = Subscription.objects.get(owner=other, status="active")
@@ -753,14 +780,16 @@ class AdminReviewTests(MediaMixin, PortalTestCase):
 
     def test_verify_keeps_one_active_plan(self) -> None:
         PlanActivation.objects.create(user=self.owner, plan=Plan.objects.get(code="free"))
-        self.run_action("verify_payments")
+        self.approve()
         self.assertEqual(PlanActivation.objects.filter(user=self.owner, is_active=True).count(), 1)
 
     def test_verify_twice_is_refused(self) -> None:
-        self.run_action("verify_payments")
+        from z_adminapi.services import AdminActionError
+
+        self.approve()
         mail.outbox.clear()
-        response = self.run_action("verify_payments")
-        self.assertEqual(response.status_code, 302)
+        with self.assertRaisesMessage(AdminActionError, "already verified"):
+            self.approve()
         self.assertEqual(len(mail.outbox), 0)
         self.assertEqual(PlanActivation.objects.count(), 1)
 
@@ -859,10 +888,7 @@ class JourneyTests(MediaMixin, PortalTestCase):
         self.use_token(None)
         self.client.force_login(admin)
         with self.captureOnCommitCallbacks(execute=True):
-            self.client.post(
-                ADMIN_PAYMENTS,
-                {"action": "verify_payments", "_selected_action": [response.json()["id"]]},
-            )
+            approve_as_staff(response.json()["id"], admin)
         self.client.logout()
         self.client.credentials(HTTP_AUTHORIZATION=token)
         self.assertEqual(self.step(), {"step": "complete", "has_company": True, "subscription_status": "active"})

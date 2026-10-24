@@ -1,4 +1,5 @@
 from django import forms
+from django.conf import settings
 from django.contrib import admin, messages
 from django.contrib.admin import helpers
 from django.contrib.auth.admin import UserAdmin as DjangoUserAdmin
@@ -159,8 +160,12 @@ class RejectPaymentForm(forms.Form):
 @admin.register(ManualPayment)
 class ManualPaymentAdmin(admin.ModelAdmin):
     """
-    Payments to check. Select rows, then run **Verify payment** or
-    **Reject payment** (asks for a reason on a second page).
+    Payments, read here; **approve them in the admin app** (Payments -> Approve), never here.
+
+    Approving needs the UTR / reference and the amount read off the receipt, and refuses a
+    reference already used on an approved payment (`z_adminapi.services.review_payment`).
+    The old one-click "Verify payment" action skipped all three, so it was removed (FIX-003).
+    **Reject payment** stays (asks for a reason on a second page).
     """
 
     list_display = (
@@ -171,7 +176,7 @@ class ManualPaymentAdmin(admin.ModelAdmin):
     search_fields = ("reference", "payer_name", "subscription__owner__email", "subscription__company__name")
     date_hierarchy = "submitted_at"
     list_select_related = ("subscription__owner", "subscription__plan")
-    actions = ["verify_payments", "reject_payments"]
+    actions = ["reject_payments"]
     fields = (
         "subscription", "method", "amount_inr", "reference", "paid_on", "payer_name", "proof_link",
         "status", "rejection_reason", "submitted_at", "reviewed_at", "reviewed_by",
@@ -220,19 +225,15 @@ class ManualPaymentAdmin(admin.ModelAdmin):
         return proof_file_response(get_object_or_404(ManualPayment, pk=payment_id))
 
     # Actions
-    @admin.action(description="Verify payment (activates the plan for one month)")
-    def verify_payments(self, request: HttpRequest, queryset: QuerySet) -> None:
-        done = 0
-        for payment in queryset.order_by("pk"):
-            try:
-                billing.verify_payment(payment.pk, request.user)
-                done += 1
-            except billing.ReviewNotAllowed as exc:
-                self.message_user(request, str(exc), messages.WARNING)
-        if done:
+    def changelist_view(self, request: HttpRequest, extra_context: dict | None = None) -> HttpResponse:
+        if request.method == "GET":
             self.message_user(
-                request, f"{done} payment(s) verified. The owners have been emailed.", messages.SUCCESS
+                request,
+                f"To approve a payment, use the admin app ({settings.ZINWE_ADMIN_URL}): it asks for the "
+                "UTR and amount on the receipt and refuses a UTR already used.",
+                messages.INFO,
             )
+        return super().changelist_view(request, extra_context)
 
     @admin.action(description="Reject payment (asks for a reason)")
     def reject_payments(self, request: HttpRequest, queryset: QuerySet) -> TemplateResponse | None:

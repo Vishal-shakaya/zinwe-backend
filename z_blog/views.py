@@ -17,6 +17,8 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from z_analytics.services import track
+
 from . import newsletter, series, services
 from .models import Article, BlogImage
 from .serializers import (
@@ -33,6 +35,12 @@ PAGE_SIZE = 9
 
 def _refused(exc: Exception) -> Response:
     return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+def _audit(request: Request, action: str, article: Article, **extra: object) -> None:
+    """Staff audit trail (FIX-007): "admin.blog_article_<action>", like z_adminapi's. Never raises."""
+    track(f"admin.blog_article_{action}", {"id": article.pk, "title": article.title, **extra},
+          actor_email=request.user.email, ref=article if article.pk else None)
 
 
 # --- Public ---------------------------------------------------------------------
@@ -114,27 +122,13 @@ class PublicImageView(APIView):
 
 
 def sitemap(request: Request) -> HttpResponse:
-    """GET /api/blog/sitemap.xml -- the blog index + every published article, for search engines."""
-    base = settings.ZINWE_APP_URL
-    articles = list(services.published())
-    # The index changes when an article does (not on every request), so its lastmod is the newest article's.
-    urls = [(f"{base}/blog", max((a.updated_at for a in articles), default=timezone.now()))]
-    urls += [(f"{base}/blog/{a.slug}", a.updated_at) for a in articles]
-    # Members-only series: each series and its released episodes (their public openings). The hub,
-    # /blog/series, is in the website's own sitemap-pages.xml.
-    for show in series.live_series():
-        episodes = series.lineup(show).released
-        urls.append((f"{base}/blog/series/{show.slug}", max([show.updated_at, *(a.updated_at for a in episodes)])))
-        urls += [(f"{base}{series.path(a)}", a.updated_at) for a in episodes]
-    # Free guides: the library and each guide's page.
-    from . import guides
+    """GET /api/blog/sitemap.xml -- every public blog page (z_blog/sitemap.py). Kept for anything that already points
+    here; search engines are given /sitemap.xml (z_main/seo.py), which includes all of these."""
+    from .sitemap import entries
 
-    books = list(guides.live())
-    if books:
-        urls.append((f"{base}/blog/guides", max(g.updated_at for g in books)))
-        urls += [(f"{base}{guides.path(g)}", g.updated_at) for g in books]
+    base = settings.ZINWE_APP_URL
     body = "".join(
-        f"<url><loc>{escape(loc)}</loc><lastmod>{when:%Y-%m-%d}</lastmod></url>" for loc, when in urls
+        f"<url><loc>{escape(base + path)}</loc><lastmod>{when:%Y-%m-%d}</lastmod></url>" for path, when in entries()
     )
     xml = f'<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{body}</urlset>'
     return HttpResponse(xml, content_type="application/xml")
@@ -202,6 +196,7 @@ class StaffArticlesView(APIView):
             article = services.save_article(None, data.validated_data, request.user)
         except services.BlogError as exc:
             return _refused(exc)
+        _audit(request, "created", article)
         return Response(StaffArticleSerializer(article).data, status=status.HTTP_201_CREATED)
 
 
@@ -221,10 +216,13 @@ class StaffArticleView(APIView):
             article = services.save_article(article, data.validated_data, request.user)
         except services.BlogError as exc:
             return _refused(exc)
+        _audit(request, "updated", article, fields=sorted(data.validated_data))
         return Response(StaffArticleSerializer(article).data)
 
     def delete(self, request: Request, pk: int) -> Response:
-        get_object_or_404(Article, pk=pk).delete()
+        article = get_object_or_404(Article, pk=pk)
+        _audit(request, "deleted", article)
+        article.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -246,6 +244,7 @@ class StaffPublishView(APIView):
                 article = services.unpublish(article)
         except services.BlogError as exc:
             return _refused(exc)
+        _audit(request, "published" if self.publish else "unpublished", article)
         return Response(StaffArticleSerializer(article).data)
 
 

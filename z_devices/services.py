@@ -28,7 +28,6 @@ from .models import (
     AgentRelease,
     Device,
     DeviceEvent,
-    EnrollmentKey,
     Member,
     Message,
     Policy,
@@ -61,24 +60,8 @@ class MemberAlreadyExists(Exception):
     """This owner already registered a member with this email."""
 
 
-# --- Enrollment keys --------------------------------------------------------
-
-
-def get_active_key(owner: User) -> EnrollmentKey:
-    """The owner's active key, created on first use."""
-    key = owner.enrollment_keys.filter(is_active=True).first()
-    return key or EnrollmentKey.objects.create(owner=owner)
-
-
-@transaction.atomic
-def rotate_key(owner: User) -> EnrollmentKey:
-    """Revoke the active key (enrolled devices keep working) and issue a new one."""
-    owner.enrollment_keys.filter(is_active=True).update(is_active=False, revoked_at=timezone.now())
-    key = EnrollmentKey.objects.create(owner=owner)
-    transaction.on_commit(
-        lambda: track("devices.key_rotated", {}, actor_email=owner.email, ref=key)
-    )
-    return key
+# Enrollment keys (the org-wide key) are retired (FIX-005): a PC enrols with its member's id + email
+# (`enroll_device`). The EnrollmentKey table stays for history; nothing creates keys any more.
 
 
 # --- Members ----------------------------------------------------------------
@@ -746,13 +729,50 @@ def decide_break(owner: User, log: WorkLog, decision: str, note: str = "") -> Wo
 
 def work_log_for_owner(owner: User, day: Any, member_id: int | None = None) -> QuerySet:
     """The owner's work-day changes on one local calendar day, oldest first (none before the plan's history)."""
+    from .work_time import day_bounds, work_zone
+
+    tz = work_zone(owner)
     since = entitlements_for(owner).history_since()
-    if since is not None and day < timezone.localtime(since).date():
+    if since is not None and day < timezone.localtime(since, tz).date():
         return WorkLog.objects.none()
-    logs = WorkLog.objects.filter(owner=owner, at__date=day).select_related("device", "member")
+    lo, hi = day_bounds(day, day, tz)
+    logs = WorkLog.objects.filter(owner=owner, at__gte=lo, at__lt=hi).select_related("device", "member")
     if member_id is not None:
         logs = logs.filter(member_id=member_id)
     return logs.order_by("at", "id")
+
+
+def work_day_totals(owner: User, day: Any, member_id: int | None = None, now: Any = None) -> dict[str, Any]:
+    """
+    FIX-011: each person's time on one day for Activity, split at midnight like reports (work_time.py).
+    `carried_in` are the changes from the day before whose stretch was still running at midnight (log in 22:00,
+    log out 02:00: the 22:00 log-in is carried into the second day); `totals` has one row per person.
+    """
+    from .work_time import day_bounds, work_days, work_zone
+
+    tz = work_zone(owner)
+    since = entitlements_for(owner).history_since()
+    if since is not None and day < timezone.localtime(since, tz).date():
+        return {"carried_in": [], "totals": []}
+    lo, hi = day_bounds(day, day, tz)
+    logs = WorkLog.objects.filter(owner=owner)
+    if member_id is not None:
+        logs = logs.filter(member_id=member_id)
+    carried: list[WorkLog] = []
+    totals = []
+    for key, sample, days in work_days(logs, lo, hi, now or timezone.now(), tz, since=since):
+        w = days.get(day)
+        if w is None:
+            continue
+        if w.carried_in is not None:
+            carried.append(w.carried_in)
+        totals.append({
+            "key": f"{key[0]}{key[1]}", "member_id": sample.member_id, "device_id": sample.device_id,
+            "worked_seconds": w.worked, "break_seconds": w.on_break, "breaks": w.breaks, "logged_in": w.logged_in,
+            "open_ended": w.open_ended, "continues": w.continues,
+            "carried_in": w.carried_in.pk if w.carried_in is not None else None,
+        })
+    return {"carried_in": carried, "totals": totals}
 
 
 def record_heartbeat(device: Device, data: dict[str, Any], ip: str | None) -> dict[str, Any]:

@@ -15,6 +15,8 @@ from rest_framework.response import Response
 from rest_framework.throttling import AnonRateThrottle
 from rest_framework.views import APIView
 
+from z_analytics.services import track
+
 from . import newsletter
 from .models import Article, NewsletterIssue, NewsletterSubscriber
 from .services import BlogError
@@ -123,6 +125,8 @@ class StaffSubscriberView(APIView):
 
     def delete(self, request: Request, pk: int) -> Response:
         get_object_or_404(NewsletterSubscriber, pk=pk).delete()
+        # Audit trail (FIX-007): who erased which row -- never the address itself, it was erased on request.
+        track("admin.newsletter_subscriber_erased", {"subscriber_id": pk}, actor_email=request.user.email)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -168,6 +172,8 @@ class StaffArticleNewsletterView(APIView):
             newsletter.queue(article, data.validated_data.get("subject", ""), request.user)
         except BlogError as exc:
             return _refused(exc)
+        track("admin.newsletter_queued", {"article_id": article.pk, "title": article.title},
+              actor_email=request.user.email, ref=article)
         return Response(_state(article), status=status.HTTP_201_CREATED)
 
 

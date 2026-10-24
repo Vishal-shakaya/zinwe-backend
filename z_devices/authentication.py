@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from rest_framework import authentication, exceptions, permissions
 from rest_framework.request import Request
+from rest_framework.throttling import ScopedRateThrottle
 
 from .models import Device, hash_device_token
 
@@ -57,3 +58,18 @@ class IsOwner(permissions.IsAuthenticated):
 
     def has_permission(self, request: Request, view) -> bool:  # type: ignore[no-untyped-def]
         return super().has_permission(request, view) and not isinstance(request.auth, Device)
+
+
+
+class DeviceScopedThrottle(ScopedRateThrottle):
+    """
+    `throttle_scope` per enrolled PC (FIX-006), not per IP: an office of 50 PCs behind one address must not share
+    a limit. Runs after authentication + IsDevice, so `request.auth` is the Device; anything else falls back to
+    the client IP. Rates: settings REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"] (device_heartbeat / device_events /
+    device_metrics), each overridable by env.
+    """
+
+    def get_cache_key(self, request: Request, view) -> str | None:  # type: ignore[no-untyped-def]
+        device = request.auth
+        ident = f"device-{device.pk}" if isinstance(device, Device) else self.get_ident(request)
+        return self.cache_format % {"scope": self.scope, "ident": ident}

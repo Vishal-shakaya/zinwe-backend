@@ -31,7 +31,6 @@ from .serializers import (
     PlanActivateSerializer,
     PlanActivationSerializer,
     PlanSerializer,
-    RegisterSerializer,
     ResendCodeSerializer,
     SignupSerializer,
     TermsAcceptSerializer,
@@ -159,24 +158,26 @@ class ResendCodeView(PublicView):
 # --- Sign-in ------------------------------------------------------------------
 
 
+REGISTER_GONE_DETAIL = (
+    "This endpoint has been retired. Create an account with POST /api/auth/signup/ "
+    "and confirm it with the email code at POST /api/auth/signup/verify/."
+)
+
+
 class RegisterView(PublicView):
     """
-    POST /api/auth/register/ -- DEPRECATED: use `signup/` (email code) instead.
+    /api/auth/register/ -- RETIRED (FIX-002): always 410 Gone, creates nothing.
 
-    Still creates an active (verified) account and returns `{token, user}` for
-    older clients.
+    It used to create a verified account without the email code and with no
+    throttle. The route stays so old callers get a clear answer instead of a 404.
     """
 
     throttle_classes: list = []
 
-    def post(self, request: Request) -> Response:
-        serializer = RegisterSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        user = services.register_user(**serializer.validated_data)
-        return Response(
-            {"token": services.get_token(user), "user": UserSerializer(user).data},
-            status=status.HTTP_201_CREATED,
-        )
+    def gone(self, request: Request, *args: Any, **kwargs: Any) -> Response:
+        return Response({"detail": REGISTER_GONE_DETAIL}, status=status.HTTP_410_GONE)
+
+    get = post = put = patch = delete = gone
 
 
 class FailedLoginThrottle(SimpleRateThrottle):

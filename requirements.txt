@@ -12,5 +12,7 @@ psycopg[binary]>=3.2,<4
 nh3>=0.3,<1
 # Invoice PDFs (pure Python, no system libraries)
 fpdf2>=2.8,<3
+# Shapes Devanagari in report PDFs (conjuncts, vowel signs); binary wheels for Windows and Linux (FIX-012)
+uharfbuzz>=0.39,<1
 # UPI QR codes on the payment page (pure Python)
 segno>=1.6,<2

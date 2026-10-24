@@ -12,7 +12,8 @@ class NotificationAdmin(admin.ModelAdmin):
     list_filter = ("status", "channel", "template", "created_at")
     search_fields = ("recipient", "subject", "ref_id")
     date_hierarchy = "created_at"
-    readonly_fields = [f.name for f in Notification._meta.fields]
+    readonly_fields = [f.name for f in Notification._meta.fields if f.name != "retry_payload"]
+    exclude = ("retry_payload",)  # the copy kept for a retry (HTML, attachments): not for reading here
 
     def has_add_permission(self, request: HttpRequest) -> bool:
         return False

@@ -8,7 +8,7 @@ from rest_framework import serializers
 
 from .events import EVENT_TYPE_PATTERN, build_title, event_kind
 from .models import (
-    Device, DeviceEvent, EnrollmentKey, Member, Message, NotificationPrefs, Policy, ReportSchedule, WorkLog,
+    Device, DeviceEvent, Member, Message, NotificationPrefs, Policy, ReportSchedule, WorkLog,
 )
 
 
@@ -272,7 +272,16 @@ class BreakDecisionSerializer(serializers.Serializer):
     """POST /api/devices/work-log/<id>/decision/ -- approve or deny one break."""
 
     decision = serializers.ChoiceField(choices=[("approved", "Approve"), ("denied", "Deny")])
-    note = serializers.CharField(max_length=280, required=False, allow_blank=True, default="")
+    # FIX-012: the limit is the model's (WorkLog.decision_note, 280); the dashboard dialog must match it.
+    NOTE_MAX = WorkLog._meta.get_field("decision_note").max_length
+    note = serializers.CharField(required=False, allow_blank=True, default="")
+
+    def validate_note(self, value: str) -> str:
+        if len(value) > self.NOTE_MAX:
+            raise serializers.ValidationError(
+                f"Keep the note to {self.NOTE_MAX} characters or fewer (this one has {len(value)})."
+            )
+        return value
 
 
 class WorkLogSerializer(serializers.ModelSerializer):
@@ -288,12 +297,6 @@ class WorkLogSerializer(serializers.ModelSerializer):
 
     def get_member_name(self, obj: WorkLog) -> str | None:
         return obj.member.name if obj.member_id else None
-
-
-class EnrollmentKeySerializer(serializers.ModelSerializer):
-    class Meta:
-        model = EnrollmentKey
-        fields = ["key", "created_at", "last_used_at"]
 
 
 class DeviceSerializer(serializers.ModelSerializer):

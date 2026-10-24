@@ -245,6 +245,12 @@ REST_FRAMEWORK = {
         "member_feedback": "10/hour",
         "online_payment": "60/hour",
         "contact": "10/hour",
+        # Device-token endpoints, per enrolled PC (z_devices.authentication.DeviceScopedThrottle, FIX-006). Far
+        # above what the agent sends: a heartbeat every 60 s (+ one per log in / break), events every 30 s in up to
+        # 20 batches (plus one-by-one retries of a refused batch), metrics in a few batches after each heartbeat.
+        "device_heartbeat": env_str("ZINWE_THROTTLE_DEVICE_HEARTBEAT", "120/min"),
+        "device_events": env_str("ZINWE_THROTTLE_DEVICE_EVENTS", "300/min"),
+        "device_metrics": env_str("ZINWE_THROTTLE_DEVICE_METRICS", "60/min"),
     },
     # Adds `retry_after` (seconds) to every 429 body.
     "EXCEPTION_HANDLER": "z_main.exceptions.exception_handler",

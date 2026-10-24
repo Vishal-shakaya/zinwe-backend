@@ -155,3 +155,59 @@ class PaymentTermsTests(_UpgradeBase):
         payment = ManualPayment.objects.get()
         self.assertEqual(payment.terms_version, settings.ZINWE_LEGAL_VERSION)
         self.assertIsNotNone(payment.terms_accepted_at)
+
+
+class UpgradeCurrencyTests(PortalTestCase):
+    """FIX-004c: "costs more" is judged in the subscriber's own currency and billing cycle, not INR monthly."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        from decimal import Decimal as D
+
+        from .models import Plan
+
+        self.owner = self.make_owner()
+        self.plans = {p.code: p for p in Plan.objects.filter(code__in=("startups", "teams", "businesses"))}
+        # INR order is startups < teams < businesses. In USD, Teams is made cheaper than Startups.
+        Plan.objects.filter(code="startups").update(price_usd_monthly=D("20"), list_price_usd_monthly=0, price_usd_yearly=D("200"))
+        Plan.objects.filter(code="teams").update(price_usd_monthly=D("15"), list_price_usd_monthly=0, price_usd_yearly=D("300"))
+        Plan.objects.filter(code="businesses").update(price_usd_monthly=D("40"), list_price_usd_monthly=0, price_usd_yearly=D("400"))
+        for code in self.plans:
+            self.plans[code].refresh_from_db()
+
+    def sub(self, currency: str, cycle: str) -> Subscription:
+        return Subscription.objects.create(
+            owner=self.owner, plan=self.plans["startups"], status=Subscription.Status.ACTIVE,
+            currency=currency, billing_cycle=cycle, amount_inr=1,
+            starts_at=timezone.now(), ends_at=timezone.now() + timedelta(days=20),
+        )
+
+    def test_usd_monthly_compares_usd_monthly_prices(self) -> None:
+        from .billing import UpgradeNotAllowed, check_upgrade
+
+        sub = self.sub("USD", "monthly")
+        with self.assertRaises(UpgradeNotAllowed):  # $15 < $20, though dearer in rupees
+            check_upgrade(sub, self.plans["teams"])
+        self.assertEqual(check_upgrade(sub, self.plans["businesses"]), sub)
+
+    def test_usd_yearly_compares_usd_yearly_prices(self) -> None:
+        from .billing import check_upgrade
+
+        sub = self.sub("USD", "yearly")
+        self.assertEqual(check_upgrade(sub, self.plans["teams"]), sub)  # $300/yr > $200/yr
+
+    def test_inr_unchanged(self) -> None:
+        from .billing import UpgradeNotAllowed, check_upgrade
+
+        sub = self.sub("INR", "monthly")
+        self.assertEqual(check_upgrade(sub, self.plans["teams"]), sub)
+        sub.plan = self.plans["businesses"]
+        with self.assertRaises(UpgradeNotAllowed):
+            check_upgrade(sub, self.plans["teams"])
+
+    def test_payment_target_uses_the_same_rule(self) -> None:
+        from .billing import UpgradeNotAllowed, payment_target
+
+        self.sub("USD", "monthly")
+        with self.assertRaises(UpgradeNotAllowed):
+            payment_target(self.owner, self.plans["teams"])

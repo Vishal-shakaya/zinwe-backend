@@ -266,6 +266,9 @@ class NewsletterDelivery(models.Model):
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING, db_index=True)
     error = models.CharField(max_length=300, blank=True)
     sent_at = models.DateTimeField(null=True, blank=True)
+    # When a sender took this row ("sending"): a claim older than z_blog.claims.STALE_AFTER was left by a crash and
+    # is taken back by the hourly jobs (FIX-009). Null on rows from before 2026-10-24.
+    claimed_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=["issue", "subscriber"], name="z_blog_one_delivery_each")]
@@ -291,6 +294,9 @@ class SeriesSend(models.Model):
     error = models.CharField(max_length=300, blank=True)
     sent_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    # When a sender took this row ("sending"): a claim older than z_blog.claims.STALE_AFTER was left by a crash and
+    # is taken back by the hourly jobs (FIX-009). Null on rows from before 2026-10-24.
+    claimed_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=["subscriber", "article"], name="z_blog_one_send_each")]
@@ -407,6 +413,9 @@ class GuideFollowupSend(models.Model):
     error = models.CharField(max_length=300, blank=True)
     sent_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    # When a sender took this row ("sending"): a claim older than z_blog.claims.STALE_AFTER was left by a crash and
+    # is taken back by the hourly jobs (FIX-009). Null on rows from before 2026-10-24.
+    claimed_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=["guide", "subscriber", "step"], name="z_blog_one_followup_each")]

@@ -503,20 +503,6 @@ def logout(user: User, token: Any) -> None:
         Token.objects.filter(user=user).delete()
 
 
-def register_user(
-    email: str, password: str, full_name: str, company: str = "", phone: str = ""
-) -> User:
-    """
-    Create an active, verified user. Input must already be validated.
-
-    Deprecated together with `POST register/`: new accounts use `signup()` (email code).
-    """
-    return User.objects.create_user(
-        email=email, password=password, full_name=full_name, company=company, phone=phone,
-        email_verified_at=timezone.now(),
-    )
-
-
 # --- Plans ------------------------------------------------------------------
 
 
