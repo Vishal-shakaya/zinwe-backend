@@ -14,7 +14,7 @@ from rest_framework.views import APIView
 
 from z_main.client import get_client_ip, get_user_agent
 
-from . import entitlements, otp, services
+from . import entitlements, otp, services, social
 from .announcements import announcements_for, website_announcements
 from .billing import current_subscription
 from .company import get_company
@@ -278,6 +278,44 @@ class LoginCodeVerifyView(PublicView):
             FailedLoginThrottle().record_failure(request, self)
             return code_error()
         return Response(auth_response(user))
+
+
+class SocialConfigView(PublicView):
+    """GET /api/auth/social/ -- which sign-in providers this site offers, with their public client ids (FR-38)."""
+
+    throttle_classes: list = []
+
+    def get(self, request: Request) -> Response:
+        return Response(social.public_config())
+
+
+class SocialLoginView(PublicView):
+    """
+    POST /api/auth/social/<provider>/ {code, redirect_uri?} -- sign in or sign up with Google or LinkedIn (FR-38).
+
+    200 AuthResponse + `created`; 400 {code, detail} when the provider refuses; 403 account_paused; 404 unknown
+    provider. LinkedIn also needs the exact `redirect_uri` the website sent the person from.
+    """
+
+    throttle_scope = "auth_social"
+
+    def post(self, request: Request, provider: str) -> Response:
+        if provider not in social.PROVIDERS:
+            return Response({"detail": "Unknown sign-in provider."}, status=status.HTTP_404_NOT_FOUND)
+        code = str(request.data.get("code") or "").strip()
+        if not code or len(code) > 2048:
+            return Response({"code": ["This field is required."]}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            if provider == "google":
+                identity = social.google_identity(code)
+            else:
+                identity = social.linkedin_identity(code, str(request.data.get("redirect_uri") or ""))
+            user, created = social.sign_in(identity)
+        except social.SocialError as exc:
+            return Response({"code": exc.code, "detail": exc.message}, status=status.HTTP_400_BAD_REQUEST)
+        except services.AccountPaused as exc:
+            return Response({"code": exc.code, "detail": exc.message}, status=status.HTTP_403_FORBIDDEN)
+        return Response({**auth_response(user), "created": created})
 
 
 class LogoutView(APIView):

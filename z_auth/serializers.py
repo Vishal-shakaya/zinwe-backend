@@ -132,6 +132,7 @@ class UserSerializer(serializers.ModelSerializer):
         model = User
         fields = (
             "id", "email", "full_name", "phone", "is_staff", "date_joined", "email_verified", "terms", "tour_done",
+            "auth_provider", "avatar_url",
         )
         read_only_fields = fields
 

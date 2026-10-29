@@ -157,7 +157,8 @@ class SignupVerifyTests(PortalTestCase):
         self.assertEqual(body["token"], Token.objects.get(user=user).key)
         self.assertEqual(
             set(body["user"]),
-            {"id", "email", "full_name", "phone", "is_staff", "date_joined", "email_verified", "terms", "tour_done"},
+            {"id", "email", "full_name", "phone", "is_staff", "date_joined", "email_verified", "terms", "tour_done",
+             "auth_provider", "avatar_url"},
         )
         self.assertTrue(body["user"]["email_verified"])
         self.assertEqual(body["onboarding"], FRESH_ONBOARDING)
@@ -399,6 +400,7 @@ class LogoutAndMeTests(PortalTestCase):
             set(body),
             {
                 "id", "email", "full_name", "phone", "is_staff", "date_joined", "email_verified", "terms", "tour_done",
+                "auth_provider", "avatar_url",
                 "onboarding", "company", "subscription", "active_plan", "entitlements",
             },
         )

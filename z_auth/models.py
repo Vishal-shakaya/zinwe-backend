@@ -74,6 +74,10 @@ class User(AbstractBaseUser, PermissionsMixin):
     tour_done_at = models.DateTimeField(
         null=True, blank=True, help_text="When the owner finished or skipped the dashboard tour (shown once per account).",
     )
+    # FR-38: the last social provider used to sign in ("google" / "linkedin"; empty = email only) and the
+    # profile photo it gave us, for the onboarding "Signed in with …" card.
+    auth_provider = models.CharField(max_length=20, blank=True, default="")
+    avatar_url = models.URLField(max_length=500, blank=True, default="")
 
     objects = UserManager()
 

@@ -234,6 +234,7 @@ REST_FRAMEWORK = {
         "auth_login": "20/hour",
         "auth_login_ip": "300/hour",
         "auth_otp": "30/hour",
+        "auth_social": "60/hour",
         "alert_email": "60/hour",
         "report_send": "30/hour",
         "support": "30/hour",
@@ -305,6 +306,14 @@ ZINWE_VERSION = "0.1.0"
 ZINWE_TEAM_NOTIFY_EMAIL = env_str("ZINWE_TEAM_NOTIFY_EMAIL", "hello@zinwe.io")
 # The customer website/dashboard, for links in emails (prod: https://zinwe.io).
 ZINWE_APP_URL = env_str("ZINWE_APP_URL", "http://localhost:5173").rstrip("/")
+
+# Social sign-in (FR-38). A provider is offered only when both its id and secret are set (z_auth/social.py).
+GOOGLE_OAUTH_CLIENT_ID = env_str("GOOGLE_OAUTH_CLIENT_ID", "")
+GOOGLE_OAUTH_CLIENT_SECRET = env_str("GOOGLE_OAUTH_CLIENT_SECRET", "")
+LINKEDIN_CLIENT_ID = env_str("LINKEDIN_CLIENT_ID", "")
+LINKEDIN_CLIENT_SECRET = env_str("LINKEDIN_CLIENT_SECRET", "")
+# Where LinkedIn may send people back to (exact match, one per site). Default: this site's /auth/linkedin/callback.
+LINKEDIN_REDIRECT_URIS = env_list("LINKEDIN_REDIRECT_URIS", f"{ZINWE_APP_URL}/auth/linkedin/callback")
 # Version (date) of the Terms, Privacy, Refund, Cookie, Disclaimer and Acceptable Use policies that
 # owners accept at sign-up and with each payment. Bump it when the Terms change: every owner on an
 # older version is then asked once, in the dashboard, to accept the new one (POST auth/terms/accept/).
