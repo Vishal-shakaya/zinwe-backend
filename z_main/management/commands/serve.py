@@ -35,6 +35,20 @@ def _reload_dirs(base: Path) -> list[str]:
     return sorted({str(d) for d in dirs if d.is_dir()})
 
 
+def _log_start(mode: str, port: int) -> None:
+    """FR-37: one "server" row on the admin's Logs page per API start (deploys, crashes, reboots). Never fails."""
+    from z_analytics.ops import record_quietly, release_info
+
+    release = release_info() or {}
+    stamp = release.get("stamp", "")
+    details = [["Release", stamp or "none (not a zinwe-server release)"], ["Mode", f"{mode}, port {port}"]]
+    for key in ("backend", "frontend", "admin"):
+        if release.get(key):
+            details.append([key.capitalize(), release[key]])
+    details.append(["Source", "manage.py serve"])
+    record_quietly("server", "Server", f"API started{f' · {stamp}' if stamp else ''}", details=details, source="manage.py serve")
+
+
 class Command(BaseCommand):
     help = "Run the Zinwe backend on the Uvicorn ASGI server."
 
@@ -87,5 +101,6 @@ class Command(BaseCommand):
         else:
             kwargs["workers"] = workers
 
+        _log_start(mode, opts["port"])
         self.stdout.flush()
         uvicorn.run(ASGI_APP, **kwargs)

@@ -40,4 +40,7 @@ urlpatterns = [
     path("announcements/<int:pk>/", views.AnnouncementDetailView.as_view(), name="announcement-detail"),
     path("release-notes/", views.ReleaseNoteListView.as_view(), name="release-notes"),
     path("release-notes/<int:pk>/", views.ReleaseNoteDetailView.as_view(), name="release-note-detail"),
+    path("logs/", views.LogsView.as_view(), name="logs"),
+    path("logs/status/", views.LogsStatusView.as_view(), name="logs-status"),
+    path("logs/ops/<int:pk>/resolve/", views.LogResolveView.as_view(), name="log-resolve"),
 ]

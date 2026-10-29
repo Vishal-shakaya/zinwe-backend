@@ -713,13 +713,18 @@ def _support_waiting() -> int:
 
 
 def badges() -> dict[str, int]:
-    """What needs the team now, for the sidebar badges: payments to check, support waiting, new website forms."""
+    """
+    What needs the team now, for the sidebar badges: payments to check, support waiting, new website forms, and
+    failed jobs nobody has handled (FR-37: the red dot on Logs).
+    """
+    from z_analytics.models import OpsEvent
     from z_forms.services import new_count
 
     return {
         "payments_waiting": ManualPayment.objects.filter(status=PaymentStatus.SUBMITTED).count(),
         "support_waiting": _support_waiting(),
         "forms_new": new_count(),
+        "logs_attention": OpsEvent.objects.filter(unresolved=True).count(),
     }
 
 

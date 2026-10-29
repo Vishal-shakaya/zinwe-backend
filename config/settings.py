@@ -305,6 +305,9 @@ EMAIL_FILE_PATH = env_str("EMAIL_FILE_PATH", str(BASE_DIR / "sent-emails"))
 # --- Zinwe ------------------------------------------------------------------
 
 ZINWE_VERSION = "0.1.0"
+# FR-37: which environment this is ("prod", "dev"; the Logs page names it). Empty = read it from the release path
+# (/srv/zinwe/<flavour>/releases/...) or "local" on a developer PC (z_analytics.ops.environment).
+ZINWE_ENV = env_str("ZINWE_FLAVOUR", "")
 ZINWE_TEAM_NOTIFY_EMAIL = env_str("ZINWE_TEAM_NOTIFY_EMAIL", "hello@zinwe.io")
 # The customer website/dashboard, for links in emails (prod: https://zinwe.io).
 ZINWE_APP_URL = env_str("ZINWE_APP_URL", "http://localhost:5173").rstrip("/")
@@ -428,11 +431,15 @@ ZINWE_PAYMENT_PROOF_MAX_BYTES = 5 * 1024 * 1024
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
-    "handlers": {"console": {"class": "logging.StreamHandler"}},
+    "handlers": {
+        "console": {"class": "logging.StreamHandler"},
+        # FR-37: each unhandled 500 also becomes an "error" row on the admin's Logs page (rate-limited, never raises).
+        "ops_errors": {"class": "z_analytics.error_log.OpsErrorHandler", "level": "ERROR"},
+    },
     "loggers": {
         "zinwe": {"handlers": ["console"], "level": "INFO" if DEBUG else "WARNING"},
         # Without this, 500 tracebacks are dropped when DEBUG=False (Django only
         # logs to console in DEBUG). On servers they land in the systemd journal.
-        "django.request": {"handlers": ["console"], "level": "ERROR", "propagate": False},
+        "django.request": {"handlers": ["console", "ops_errors"], "level": "ERROR", "propagate": False},
     },
 }

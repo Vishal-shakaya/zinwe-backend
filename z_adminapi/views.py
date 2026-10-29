@@ -571,3 +571,51 @@ class ReleaseNoteDetailView(StaffView):
         note.delete()
         _audit(request, "release_note_deleted", {"id": pk, "version": version})
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# --- Logs (FR-37) -------------------------------------------------------------------
+
+
+class LogsView(StaffView):
+    """
+    GET /api/admin/logs/?range=24h|7d|30d&type=all|server|deploy|backup|agent|staff|error&q=&limit= -- one timeline,
+    newest first: ops events (deploys, backups, API starts, 500s) merged with staff actions from the audit trail,
+    agent releases and payment reviews. {env, range, type, q, now, counts{all, <type>...}, total, truncated, rows[]}.
+    type=error also lists every failed job. At most `limit` rows (default 300, max 1000).
+    """
+
+    def get(self, request: Request) -> Response:
+        from .logs import LogsQueryError, log_rows
+
+        p = request.query_params
+        try:
+            return Response(log_rows(p.get("range"), p.get("type"), p.get("q"), p.get("limit")))
+        except LogsQueryError as exc:
+            return _refused(exc)
+
+
+class LogsStatusView(StaffView):
+    """
+    GET /api/admin/logs/status/ -- this environment's health: API (release, started), database, server CPU / memory /
+    disk (null where the OS doesn't say), last deploy and backup, and the unresolved failures (menu dot).
+    """
+
+    def get(self, request: Request) -> Response:
+        from .logs import status as logs_status
+
+        return Response(logs_status(request.get_host()))
+
+
+class LogResolveView(StaffView):
+    """POST /api/admin/logs/ops/<id>/resolve/ -- mark a failed job as handled (clears the dot); audit-logged."""
+
+    def post(self, request: Request, pk: int) -> Response:
+        from z_analytics.models import OpsEvent
+
+        from .logs import ops_row, resolve
+
+        event = get_object_or_404(OpsEvent, pk=pk)
+        if event.unresolved:
+            resolve(event, request.user.email)
+            _audit(request, "log_resolved", {"id": event.pk, "what": event.what}, event)
+        return Response(ops_row(event))
