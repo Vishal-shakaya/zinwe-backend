@@ -5,6 +5,7 @@ from django.http import FileResponse, Http404, HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status
+from rest_framework.parsers import JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -14,7 +15,7 @@ from rest_framework.views import APIView
 from z_auth import entitlements as plan
 from z_main.client import get_client_ip
 
-from . import services, work_tasks
+from . import pictures, services, work_tasks
 from .models import AgentRelease, DeviceEvent, WorkLog
 from .authentication import DeviceScopedThrottle, DeviceTokenAuthentication, IsDevice, IsOwner
 from .serializers import (
@@ -89,9 +90,10 @@ class HeartbeatView(APIView):
     def post(self, request: Request) -> Response:
         serializer = HeartbeatSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        return Response(
-            services.record_heartbeat(request.auth, serializer.validated_data, get_client_ip(request))
-        )
+        response = services.record_heartbeat(request.auth, serializer.validated_data, get_client_ip(request))
+        if request.auth.member_id:  # FR-44: the tray keeps its member's picture in step (null = initials)
+            response["picture"] = pictures.picture_payload(request.auth.member, request)
+        return Response(response)
 
 
 class CurrentPolicyView(APIView):
@@ -126,7 +128,7 @@ class DeviceMessagesView(APIView):
             return Response([])  # plan enforcement: no chat on this plan (bare array = agent contract)
         services.mark_delivered(request.auth)  # the PC has them now: "Delivered" for the admin
         messages = services.messages_for_device(request.auth)
-        return Response(MessageSerializer(messages, many=True).data)
+        return Response(MessageSerializer(messages, many=True, context={"request": request}).data)
 
     def post(self, request: Request) -> Response:
         plan.require(request.auth.owner, plan.TEAM_CHAT)
@@ -135,7 +137,7 @@ class DeviceMessagesView(APIView):
         message = services.reply_from_member(request.auth, serializer.validated_data["body"])
         if message is None:
             return Response({"detail": "This PC isn't linked to a member."}, status=status.HTTP_400_BAD_REQUEST)
-        return Response(MessageSerializer(message).data, status=status.HTTP_201_CREATED)
+        return Response(MessageSerializer(message, context={"request": request}).data, status=status.HTTP_201_CREATED)
 
 
 class OwnerFeedView(APIView):
@@ -318,7 +320,7 @@ class MemberListCreateView(APIView):
 
     def get(self, request: Request) -> Response:
         members = services.members_for_owner(request.user)
-        return Response(MemberSerializer(members, many=True).data)
+        return Response(MemberSerializer(members, many=True, context={"request": request}).data)
 
     def post(self, request: Request) -> Response:
         serializer = MemberCreateSerializer(data=request.data)
@@ -332,7 +334,7 @@ class MemberListCreateView(APIView):
             )
         except services.MemberAlreadyExists as exc:
             return Response({"email": [str(exc)]}, status=status.HTTP_409_CONFLICT)
-        return Response(MemberSerializer(member).data, status=status.HTTP_201_CREATED)
+        return Response(MemberSerializer(member, context={"request": request}).data, status=status.HTTP_201_CREATED)
 
 
 class MemberDetailView(APIView):
@@ -348,7 +350,7 @@ class MemberDetailView(APIView):
         data.is_valid(raise_exception=True)
         member.role = data.validated_data["role"]
         member.save(update_fields=["role"])
-        return Response(MemberSerializer(member).data)
+        return Response(MemberSerializer(member, context={"request": request}).data)
 
 
 class MemberTagsView(APIView):
@@ -375,7 +377,7 @@ class MemberRotateIdView(APIView):
         data = MemberRotateSerializer(data=request.data)
         data.is_valid(raise_exception=True)
         services.rotate_member_code(member, email=data.validated_data["email"])
-        return Response(MemberSerializer(member).data)
+        return Response(MemberSerializer(member, context={"request": request}).data)
 
 
 class DeviceUsbRestoreView(APIView):
@@ -402,7 +404,7 @@ class MemberDeactivateView(APIView):
     def post(self, request: Request, member_id: int) -> Response:
         member = get_object_or_404(request.user.members, pk=member_id)
         services.deactivate_member(member)
-        return Response(MemberSerializer(member).data)
+        return Response(MemberSerializer(member, context={"request": request}).data)
 
 
 class MemberMessageView(APIView):
@@ -430,7 +432,7 @@ class MemberMessageView(APIView):
             channel=serializer.validated_data["channel"],
             event=event,
         )
-        return Response(MessageSerializer(message).data, status=status.HTTP_201_CREATED)
+        return Response(MessageSerializer(message, context={"request": request}).data, status=status.HTTP_201_CREATED)
 
 
 class MemberThreadView(APIView):
@@ -446,7 +448,7 @@ class MemberThreadView(APIView):
         member = get_object_or_404(request.user.members, pk=member_id)
         services.mark_thread_read_by_owner(member)
         thread = services.thread_for_owner(request.user, member)
-        return Response(MessageSerializer(thread, many=True).data)
+        return Response(MessageSerializer(thread, many=True, context={"request": request}).data)
 
 
 class PolicyView(APIView):
@@ -885,12 +887,12 @@ class TaskListView(_TaskView):
         if _is_device(request):
             if not plan.entitlements_for(request.auth.owner).has(plan.TEAM_CHAT):
                 return Response([])
-            return Response(TaskSerializer(work_tasks.tasks_for_device(request.auth), many=True).data)
+            return Response(TaskSerializer(work_tasks.tasks_for_device(request.auth), many=True, context={"request": request}).data)
         plan.require(request.user, plan.TEAM_CHAT)
         query = TaskListQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         tasks = work_tasks.tasks_for_owner(request.user, query.validated_data["status"], query.validated_data["member"])
-        return Response(TaskSerializer(tasks, many=True).data)
+        return Response(TaskSerializer(tasks, many=True, context={"request": request}).data)
 
 
 class MemberTaskCreateView(APIView):
@@ -909,7 +911,7 @@ class MemberTaskCreateView(APIView):
             task = work_tasks.create_task(request.user, member, **serializer.validated_data)
         except work_tasks.TaskRefused as exc:
             return _refused(exc)
-        return Response(TaskSerializer(task).data, status=status.HTTP_201_CREATED)
+        return Response(TaskSerializer(task, context={"request": request}).data, status=status.HTTP_201_CREATED)
 
 
 class TaskDetailView(APIView):
@@ -930,7 +932,7 @@ class TaskDetailView(APIView):
             task = work_tasks.edit_task(request.user, task, serializer.validated_data)
         except work_tasks.TaskRefused as exc:
             return _refused(exc)
-        return Response(TaskSerializer(task).data)
+        return Response(TaskSerializer(task, context={"request": request}).data)
 
 
 class TaskActionView(_TaskView):
@@ -962,4 +964,122 @@ class TaskActionView(_TaskView):
                 task = work_tasks.owner_action(request.user, task, data["action"], data["note"])
         except work_tasks.TaskRefused as exc:
             return _refused(exc)
-        return Response(TaskSerializer(task).data)
+        return Response(TaskSerializer(task, context={"request": request}).data)
+
+
+# --- FR-44: team pictures -----------------------------------------------------------------------------------
+
+
+def _picture_error(exc: "pictures.PictureRejected") -> Response:
+    return Response({"code": exc.code, "detail": exc.detail}, status=status.HTTP_400_BAD_REQUEST)
+
+
+def _apply_picture(request: Request, member) -> Response:  # type: ignore[no-untyped-def]
+    """PUT body: JSON {kind: "avatar", key} or multipart `file` (a photo). Shared by the owner and device views."""
+    try:
+        upload = request.FILES.get("file")
+        if upload is not None:
+            if upload.size > pictures.MAX_UPLOAD_BYTES:  # refused before reading it
+                raise pictures.PictureRejected("too_large", "That photo is too big. Pick one under 10 MB and try again.")
+            pictures.set_photo(member, upload.read())
+        elif request.data.get("kind") == "avatar":
+            pictures.set_avatar(member, str(request.data.get("key") or ""))
+        elif request.content_type.startswith("multipart/"):
+            raise pictures.PictureRejected("not_an_image", "Choose a photo to upload.")
+        else:
+            return Response(
+                {"code": "bad_request", "detail": 'Send {"kind": "avatar", "key": ...} or a photo as `file`.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+    except pictures.PictureRejected as exc:
+        return _picture_error(exc)
+    return Response({"picture": pictures.picture_payload(member, request)})
+
+
+class MemberPictureView(APIView):
+    """
+    PUT /api/devices/members/<id>/picture/ -- JSON {kind: avatar, key} or multipart `file` -> 200 {picture}.
+    DELETE -> 204 (back to initials). Owner only, their own members only. 30 writes/hour per owner.
+    """
+
+    permission_classes = [IsOwner]
+    parser_classes = [JSONParser, MultiPartParser]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "member_picture"
+
+    def put(self, request: Request, member_id: int) -> Response:
+        member = get_object_or_404(request.user.members, pk=member_id)
+        return _apply_picture(request, member)
+
+    def delete(self, request: Request, member_id: int) -> Response:
+        member = get_object_or_404(request.user.members, pk=member_id)
+        pictures.clear(member)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class DevicePictureView(APIView):
+    """
+    `Authorization: Device <token>` -- the member's own picture, from their Zinwe window (tray -> Me).
+    GET -> {picture}; PUT (same bodies as the owner's) -> 200 {picture}; DELETE -> 204. Writes: 30/hour per PC.
+    409 when the PC isn't linked to a member.
+    """
+
+    authentication_classes = [DeviceTokenAuthentication]
+    permission_classes = [IsDevice]
+    parser_classes = [JSONParser, MultiPartParser]
+    throttle_scope = "device_picture"
+
+    def get_throttles(self):  # type: ignore[no-untyped-def]
+        return [] if self.request.method in ("GET", "HEAD", "OPTIONS") else [DeviceScopedThrottle()]
+
+    def _member(self, request: Request):  # type: ignore[no-untyped-def]
+        return request.auth.member if request.auth.member_id else None
+
+    def _unlinked(self) -> Response:
+        return Response(
+            {"code": "no_member", "detail": "This PC isn't linked to a member."}, status=status.HTTP_409_CONFLICT
+        )
+
+    def get(self, request: Request) -> Response:
+        member = self._member(request)
+        if member is None:
+            return self._unlinked()
+        return Response({"picture": pictures.picture_payload(member, request)})
+
+    def put(self, request: Request) -> Response:
+        member = self._member(request)
+        if member is None:
+            return self._unlinked()
+        return _apply_picture(request, member)
+
+    def delete(self, request: Request) -> Response:
+        member = self._member(request)
+        if member is None:
+            return self._unlinked()
+        pictures.clear(member)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class PictureFileView(APIView):
+    """
+    GET /api/devices/pictures/<signed>.jpg -- a member's photo. No auth header (works in <img> and the tray): the
+    signed token (member id + picture version) is the key. Changed / removed picture or deleted member -> 404.
+    Cached for a year: the URL changes whenever the picture does.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes: list = []
+
+    def get(self, request: Request, token: str) -> HttpResponse:
+        member = pictures.member_for_token(token)
+        if member is None:
+            raise Http404
+        try:
+            handle = member.picture_file.open("rb")
+        except (FileNotFoundError, OSError):
+            raise Http404 from None
+        response = FileResponse(handle, content_type="image/jpeg")
+        response["Cache-Control"] = "private, max-age=31536000, immutable"
+        response["X-Content-Type-Options"] = "nosniff"
+        response["Content-Disposition"] = "inline"
+        return response

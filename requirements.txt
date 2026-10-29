@@ -14,5 +14,7 @@ nh3>=0.3,<1
 fpdf2>=2.8,<3
 # Shapes Devanagari in report PDFs (conjuncts, vowel signs); binary wheels for Windows and Linux (FIX-012)
 uharfbuzz>=0.39,<1
+# Team pictures (FR-44): decode + re-encode member photos to a 256 px JPEG
+Pillow>=11,<13
 # UPI QR codes on the payment page (pure Python)
 segno>=1.6,<2

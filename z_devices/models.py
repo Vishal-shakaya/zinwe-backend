@@ -80,6 +80,13 @@ class Member(models.Model):
         MANAGEMENT = "management", "Management"
         OTHER = "other", "Other"
 
+    class PictureKind(models.TextChoices):
+        """FR-44: what the member's picture is. None = their initials on the role tint."""
+
+        NONE = "", "Initials"
+        AVATAR = "avatar", "Library avatar"
+        PHOTO = "photo", "Photo"
+
     owner = models.ForeignKey("z_auth.User", on_delete=models.CASCADE, related_name="members")
     name = models.CharField(max_length=150)
     email = models.EmailField()
@@ -87,6 +94,14 @@ class Member(models.Model):
     member_code = models.CharField(max_length=16, unique=True, default=generate_member_code)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    # FR-44 team pictures (z_devices.pictures): a library avatar key, or a 256 px JPEG stored under
+    # MEDIA_ROOT/member-pictures/ (never served from /media/: only through a signed URL that names the version).
+    picture_kind = models.CharField(max_length=8, choices=PictureKind.choices, blank=True, default="")
+    picture_key = models.CharField(max_length=8, blank=True, default="")
+    picture_file = models.FileField(upload_to="member-pictures/", max_length=120, blank=True, default="")
+    # Bumped on every change, so the signed URL (and every client cache) changes with the picture.
+    picture_version = models.PositiveIntegerField(default=0)
+    picture_updated_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ["-created_at"]
