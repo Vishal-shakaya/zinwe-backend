@@ -85,11 +85,11 @@ class OwnerFeedTests(DeviceTestCase):
         self.assertEqual(self.feed()["items"], [])
 
     def test_settings_choose_what_shows(self) -> None:
-        self.assertEqual(self.client.get(PREFS).json(), {"chat": True, "alerts": "warning", "approvals": True})
+        self.assertEqual(self.client.get(PREFS).json(), {"chat": True, "alerts": "warning", "approvals": True, "tasks": True})
         self.alert("info")
         self.assertEqual(self.feed()["items"], [])  # default: warnings and up
         response = self.client.patch(PREFS, {"chat": False, "alerts": "all"}, format="json")
-        self.assertEqual(response.json(), {"chat": False, "alerts": "all", "approvals": True})
+        self.assertEqual(response.json(), {"chat": False, "alerts": "all", "approvals": True, "tasks": True})
         self.reply()
         self.assertEqual([i["kind"] for i in self.feed()["items"]], ["alert"])
         self.assertEqual(self.client.patch(PREFS, {"alerts": "loud"}, format="json").status_code, status.HTTP_400_BAD_REQUEST)

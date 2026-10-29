@@ -310,10 +310,18 @@ class Message(models.Model):
         CHAT_EMAIL = "chat_email", "Chat + email"
         EMAIL = "email", "Email only"
 
+    class Kind(models.TextChoices):
+        """FR-20: a plain chat line, or the line that carries a task (its card in the thread)."""
+
+        CHAT = "chat", "Chat"
+        TASK = "task", "Task"
+
     owner = models.ForeignKey(
         "z_auth.User", on_delete=models.CASCADE, related_name="sent_messages"
     )
     member = models.ForeignKey(Member, on_delete=models.CASCADE, related_name="messages")
+    # db_default too, so the previous release (which doesn't know the column) can still insert chat lines.
+    kind = models.CharField(max_length=8, choices=Kind.choices, default=Kind.CHAT, db_default=Kind.CHAT)
     # Who wrote this line of the conversation (admin alert vs member reply).
     sender = models.CharField(max_length=10, choices=Sender.choices, default=Sender.OWNER)
     # Admin lines: widget, widget + email, or email only (member replies are always chat).
@@ -338,6 +346,102 @@ class Message(models.Model):
 
     def __str__(self) -> str:
         return f"{self.title} -> {self.member} ({self.severity})"
+
+
+class Task(models.Model):
+    """
+    FR-20 v2: a piece of work the owner hands one member from the chat or the Tasks page.
+
+    Creating it also posts a chat line (`Message.kind = "task"`, `message`) so the task sits in the thread in
+    order; the member works it from their Zinwe window (device API). Status flow:
+    sent -> seen -> accepted -> progress -> review (member says done, waiting for the owner's OK) -> approved,
+    with the side states help (member asked for help, `help_note`) and cancelled. Rules: `work_tasks.py`.
+    """
+
+    class Status(models.TextChoices):
+        SENT = "sent", "Sent"
+        SEEN = "seen", "Seen"
+        ACCEPTED = "accepted", "Confirmed"
+        PROGRESS = "progress", "In progress"
+        HELP = "help", "Needs help"
+        REVIEW = "review", "Done, waiting for your OK"
+        APPROVED = "approved", "Approved"
+        CANCELLED = "cancelled", "Cancelled"
+
+    class Priority(models.TextChoices):
+        NORMAL = "normal", "Normal"
+        HIGH = "high", "High"
+
+    class By(models.TextChoices):
+        OWNER = "owner", "Owner"
+        MEMBER = "member", "Member"
+
+    # Not open any more: shown under Done (approved) or greyed out (cancelled).
+    CLOSED = (Status.APPROVED, Status.CANCELLED)
+
+    owner = models.ForeignKey("z_auth.User", on_delete=models.CASCADE, related_name="tasks")
+    member = models.ForeignKey(Member, on_delete=models.CASCADE, related_name="tasks")
+    message = models.OneToOneField(
+        Message, null=True, blank=True, on_delete=models.SET_NULL, related_name="task"
+    )
+    title = models.CharField(max_length=120)
+    note = models.TextField(blank=True, max_length=1000)
+    due_at = models.DateTimeField(null=True, blank=True)
+    priority = models.CharField(max_length=8, choices=Priority.choices, default=Priority.NORMAL)
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.SENT)
+    help_note = models.TextField(blank=True, max_length=1000)
+    status_changed_at = models.DateTimeField(default=timezone.now)
+    status_changed_by = models.CharField(max_length=8, choices=By.choices, default=By.OWNER)
+    nudged_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at", "-id"]
+        indexes = [
+            models.Index(fields=["owner", "status"]),
+            models.Index(fields=["member", "status"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.title} -> {self.member} ({self.status})"
+
+    @property
+    def is_open(self) -> bool:
+        return self.status not in self.CLOSED
+
+
+class TaskStep(models.Model):
+    """One checklist line of a task; the member ticks it in their Zinwe window."""
+
+    task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name="steps")
+    title = models.CharField(max_length=200)
+    done = models.BooleanField(default=False)
+    position = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ["position", "id"]
+
+    def __str__(self) -> str:
+        return f"{'[x]' if self.done else '[ ]'} {self.title}"
+
+
+class TaskActivity(models.Model):
+    """What happened to a task, oldest first: who did it (owner/member), the action and an optional note."""
+
+    task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name="activity")
+    at = models.DateTimeField(default=timezone.now)
+    by = models.CharField(max_length=8, choices=Task.By.choices)
+    action = models.CharField(max_length=16)
+    note = models.TextField(blank=True, max_length=1000)
+
+    class Meta:
+        ordering = ["at", "id"]
+        indexes = [models.Index(fields=["task", "at"])]
+        verbose_name_plural = "task activity"
+
+    def __str__(self) -> str:
+        return f"{self.by} {self.action} @ {self.at:%Y-%m-%d %H:%M}"
 
 
 class DeviceEvent(models.Model):
@@ -511,6 +615,8 @@ class NotificationPrefs(models.Model):
     chat = models.BooleanField(default=True)
     alerts = models.CharField(max_length=10, choices=AlertLevel.choices, default=AlertLevel.WARNING)
     approvals = models.BooleanField(default=True)
+    # FR-20: a member asked for help on a task, or marked one done (waiting for the owner's OK).
+    tasks = models.BooleanField(default=True, db_default=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self) -> str:

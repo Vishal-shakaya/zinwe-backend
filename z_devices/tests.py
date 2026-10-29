@@ -1172,7 +1172,7 @@ class MessageTests(DeviceTestCase):
         self.assertEqual(
             set(created),
             {"id", "sender", "channel", "title", "body", "severity", "created_at", "read_by_owner", "read_by_member",
-             "delivered_at", "read_by_member_at"},
+             "delivered_at", "read_by_member_at", "kind", "task"},  # FR-20: kind + task (null on chat lines)
         )
         self.assertIsNone(created["delivered_at"])  # not on the PC yet
         self.assertEqual(created["sender"], "owner")

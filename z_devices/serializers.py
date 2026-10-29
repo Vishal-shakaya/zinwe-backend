@@ -8,7 +8,7 @@ from rest_framework import serializers
 
 from .events import EVENT_TYPE_PATTERN, build_title, event_kind
 from .models import (
-    Device, DeviceEvent, Member, Message, NotificationPrefs, Policy, ReportSchedule, WorkLog,
+    Device, DeviceEvent, Member, Message, NotificationPrefs, Policy, ReportSchedule, Task, WorkLog,
 )
 
 
@@ -155,16 +155,25 @@ class MessageSerializer(serializers.ModelSerializer):
     """
 
     body = serializers.SerializerMethodField()
+    # FR-20: "task" lines carry the task (its live card in the thread); null on chat lines. Older Zinwe windows
+    # ignore both fields and show the line's title + body as an ordinary message.
+    task = serializers.SerializerMethodField()
 
     class Meta:
         model = Message
         fields = [
-            "id", "sender", "channel", "title", "body", "severity", "created_at", "read_by_owner", "read_by_member",
-            "delivered_at", "read_by_member_at",
+            "id", "sender", "channel", "kind", "title", "body", "severity", "created_at", "read_by_owner",
+            "read_by_member", "delivered_at", "read_by_member_at", "task",
         ]
 
     def get_body(self, obj: Message) -> str | None:
         return obj.body or None
+
+    def get_task(self, obj: Message) -> dict[str, Any] | None:
+        if obj.kind != Message.Kind.TASK:
+            return None
+        task = _task_of(obj)
+        return TaskSerializer(task).data if task is not None else None
 
 
 class EventHandledSerializer(serializers.Serializer):
@@ -184,7 +193,7 @@ class NotificationPrefsSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = NotificationPrefs
-        fields = ["chat", "alerts", "approvals"]
+        fields = ["chat", "alerts", "approvals", "tasks"]
 
 
 class MemberFeedbackSerializer(serializers.Serializer):
@@ -684,3 +693,109 @@ class ReportDeliverySerializer(serializers.Serializer):
 
     def get_member_name(self, obj) -> str | None:  # type: ignore[no-untyped-def]
         return obj.member.name if obj.member_id else None
+
+
+# --- FR-20 v2: tasks ------------------------------------------------------------
+
+
+class TaskStepSerializer(serializers.Serializer):
+    id = serializers.IntegerField(read_only=True)
+    title = serializers.CharField(read_only=True)
+    done = serializers.BooleanField(read_only=True)
+
+
+class TaskActivitySerializer(serializers.Serializer):
+    at = serializers.DateTimeField(read_only=True)
+    by = serializers.CharField(read_only=True)
+    action = serializers.CharField(read_only=True)
+    note = serializers.CharField(read_only=True)
+
+
+class TaskSerializer(serializers.Serializer):
+    """The Task of the FR-20 v2 contract, for the owner's dashboard and the member's Zinwe window alike."""
+
+    id = serializers.IntegerField(read_only=True)
+    member_id = serializers.IntegerField(read_only=True)
+    member_name = serializers.CharField(source="member.name", read_only=True)
+    title = serializers.CharField(read_only=True)
+    note = serializers.CharField(read_only=True)
+    due_at = serializers.DateTimeField(read_only=True, allow_null=True)
+    priority = serializers.CharField(read_only=True)
+    steps = TaskStepSerializer(many=True, read_only=True)
+    status = serializers.CharField(read_only=True)
+    help_note = serializers.CharField(read_only=True)
+    created_at = serializers.DateTimeField(read_only=True)
+    updated_at = serializers.DateTimeField(read_only=True)
+    status_changed_at = serializers.DateTimeField(read_only=True)
+    status_changed_by = serializers.CharField(read_only=True)
+    message_id = serializers.IntegerField(read_only=True, allow_null=True)
+    activity = TaskActivitySerializer(many=True, read_only=True)
+
+
+def _task_of(message: Message) -> Any:
+    try:
+        return message.task  # reverse one-to-one: raises when the line carries no task
+    except Exception:  # noqa: BLE001 -- RelatedObjectDoesNotExist
+        return None
+
+
+class TaskCreateSerializer(serializers.Serializer):
+    """POST /api/devices/members/<id>/tasks/ -- {title, note?, due_at?, priority?, steps?: [title]}."""
+
+    title = serializers.CharField(max_length=120, trim_whitespace=True)
+    note = serializers.CharField(max_length=1000, required=False, allow_blank=True, default="")
+    due_at = serializers.DateTimeField(required=False, allow_null=True, default=None)
+    priority = serializers.ChoiceField(choices=Task.Priority.choices, required=False, default=Task.Priority.NORMAL)
+    steps = serializers.ListField(
+        child=serializers.CharField(max_length=200, allow_blank=True, trim_whitespace=True),
+        required=False, default=list, max_length=20,
+    )
+
+
+class TaskUpdateSerializer(serializers.Serializer):
+    """PATCH /api/devices/tasks/<id>/ -- any of {title, note, due_at, priority, steps: [title | {id?, title, done?}]}."""
+
+    title = serializers.CharField(max_length=120, trim_whitespace=True, required=False)
+    note = serializers.CharField(max_length=1000, required=False, allow_blank=True)
+    due_at = serializers.DateTimeField(required=False, allow_null=True)
+    priority = serializers.ChoiceField(choices=Task.Priority.choices, required=False)
+    steps = serializers.ListField(child=serializers.JSONField(), required=False, max_length=20)
+
+    def validate_steps(self, value: list[Any]) -> list[Any]:
+        for item in value:
+            if isinstance(item, str):
+                if len(item) > 200:
+                    raise serializers.ValidationError("A step is up to 200 characters.")
+            elif isinstance(item, dict):
+                if not isinstance(item.get("title", ""), str) or len(item.get("title", "")) > 200:
+                    raise serializers.ValidationError("A step needs a title of up to 200 characters.")
+                if "id" in item and item["id"] is not None and not isinstance(item["id"], int):
+                    raise serializers.ValidationError("A step id is a number.")
+                if "done" in item and not isinstance(item["done"], bool):
+                    raise serializers.ValidationError("done is true or false.")
+            else:
+                raise serializers.ValidationError("Each step is a title or {id, title, done}.")
+        return value
+
+
+class TaskOwnerActionSerializer(serializers.Serializer):
+    """POST /api/devices/tasks/<id>/action/ (owner) -- {action: approve|reopen|cancel|nudge, note?}."""
+
+    action = serializers.ChoiceField(choices=["approve", "reopen", "cancel", "nudge"])
+    note = serializers.CharField(max_length=1000, required=False, allow_blank=True, default="")
+
+
+class TaskDeviceActionSerializer(serializers.Serializer):
+    """POST /api/devices/tasks/<id>/action/ (device) -- {action: seen|accept|start|help|done|note, note?, step_id?, step_done?}."""
+
+    action = serializers.ChoiceField(choices=["seen", "accept", "start", "help", "done", "note"])
+    note = serializers.CharField(max_length=1000, required=False, allow_blank=True, default="")
+    step_id = serializers.IntegerField(required=False, allow_null=True, default=None)
+    step_done = serializers.BooleanField(required=False, allow_null=True, default=None)
+
+
+class TaskListQuerySerializer(serializers.Serializer):
+    """GET /api/devices/tasks/?status=open|done|all&member=<id> (owner)."""
+
+    status = serializers.ChoiceField(choices=["open", "done", "all"], required=False, default="open")
+    member = serializers.IntegerField(required=False, min_value=1, default=None)

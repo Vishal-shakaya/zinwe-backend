@@ -353,9 +353,9 @@ def messages_for_device(device: Device) -> QuerySet:
     """
     if device.member_id is None:
         return Message.objects.none()
-    return Message.objects.filter(member_id=device.member_id).exclude(channel=Message.Channel.EMAIL).order_by(
-        "-created_at", "-id"
-    )[:MESSAGE_FEED_LIMIT]
+    return _with_tasks(
+        Message.objects.filter(member_id=device.member_id).exclude(channel=Message.Channel.EMAIL)
+    ).order_by("-created_at", "-id")[:MESSAGE_FEED_LIMIT]
 
 
 def mark_delivered(device: Device) -> int:
@@ -389,7 +389,14 @@ def mark_read_by_member(device: Device) -> int:
 
 def thread_for_owner(owner: User, member: Member) -> QuerySet:
     """The full conversation with one member (both directions), newest first. Owner-scoped."""
-    return Message.objects.filter(owner=owner, member=member).order_by("-created_at", "-id")[:MESSAGE_FEED_LIMIT]
+    return _with_tasks(Message.objects.filter(owner=owner, member=member)).order_by("-created_at", "-id")[
+        :MESSAGE_FEED_LIMIT
+    ]
+
+
+def _with_tasks(qs: QuerySet) -> QuerySet:
+    """FR-20: task lines carry their task (steps + activity) without a query per line."""
+    return qs.select_related("task__member").prefetch_related("task__steps", "task__activity")
 
 
 def mark_thread_read_by_owner(member: Member) -> int:

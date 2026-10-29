@@ -1,6 +1,6 @@
 """
 FR-15: what's new for the owner since their dashboard last looked, for browser notifications: member chat replies,
-alerts and requests waiting for their OK (breaks, log-outs). The dashboard polls `feed(owner, since)` and shows
+alerts, requests waiting for their OK (breaks, log-outs) and tasks a member needs help with or finished (FR-20). The dashboard polls `feed(owner, since)` and shows
 each item as a notification; `NotificationPrefs` says which kinds the owner wants.
 """
 from __future__ import annotations
@@ -15,7 +15,7 @@ from z_auth.entitlements import entitlements_for
 from z_auth.models import User
 
 from .events import build_title
-from .models import DeviceEvent, Message, NotificationPrefs, WorkLog
+from .models import DeviceEvent, Message, NotificationPrefs, TaskActivity, WorkLog
 
 # A browser that was asleep for a day shouldn't pop a day of notifications: look back at most this far.
 MAX_LOOKBACK = timedelta(hours=1)
@@ -93,6 +93,25 @@ def feed(owner: User, since: datetime | None, now: datetime | None = None) -> di
                 "id": f"approval-{w.pk}", "kind": "approval", "title": f"{who} wants to {what}",
                 "body": _short(" · ".join(p for p in [w.reason, w.note] if p)) or "Waiting for your OK on Activity.",
                 "at": w.created_at.isoformat(), "link": f"/app/activity?member={w.member_id}" if w.member_id else "/app/activity",
+            })
+
+    if prefs.tasks and ent.has(plan.TEAM_CHAT):
+        # FR-20: a member asked for help on a task, or finished one (it now waits for the owner's OK).
+        moves = (
+            TaskActivity.objects.filter(
+                task__owner=owner, by="member", action__in=("help", "done"), at__gt=since
+            )
+            .select_related("task__member")
+            .order_by("-at")[:MAX_ITEMS]
+        )
+        for a in moves:
+            who = a.task.member.name
+            help_asked = a.action == "help"
+            items.append({
+                "id": f"task-{a.pk}", "kind": "task",
+                "title": f"{who} needs help with a task" if help_asked else f"{who} finished a task",
+                "body": _short(f"{a.task.title}: {a.note}" if a.note else a.task.title),
+                "at": a.at.isoformat(), "link": f"/app/tasks?task={a.task_id}",
             })
 
     items.sort(key=lambda i: i["at"], reverse=True)

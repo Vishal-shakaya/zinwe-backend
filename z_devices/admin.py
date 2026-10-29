@@ -10,6 +10,9 @@ from .models import (
     Member,
     Message,
     Policy,
+    Task,
+    TaskActivity,
+    TaskStep,
     UsageMetric,
 )
 
@@ -85,6 +88,42 @@ class MessageAdmin(admin.ModelAdmin):
     # Messages are sent from the dashboard (POST .../message/) so the send is
     # tracked; admin is a read-only audit view.
     readonly_fields = ("owner", "member", "title", "body", "severity", "created_at")
+
+    def has_add_permission(self, request: HttpRequest) -> bool:
+        return False
+
+    def has_change_permission(self, request: HttpRequest, obj=None) -> bool:  # type: ignore[no-untyped-def]
+        return False
+
+
+class TaskStepInline(admin.TabularInline):
+    model = TaskStep
+    extra = 0
+    readonly_fields = ("title", "done", "position")
+    can_delete = False
+
+
+class TaskActivityInline(admin.TabularInline):
+    model = TaskActivity
+    extra = 0
+    readonly_fields = ("at", "by", "action", "note")
+    can_delete = False
+
+
+@admin.register(Task)
+class TaskAdmin(admin.ModelAdmin):
+    """FR-20 tasks: a read-only audit view (owners and members change them from the dashboard and the PC)."""
+
+    list_display = ("updated_at", "title", "status", "member", "owner")
+    list_filter = ("status", "priority")
+    search_fields = ("title", "member__name", "member__email", "owner__email")
+    list_select_related = ("member", "owner")
+    raw_id_fields = ("owner", "member", "message")
+    inlines = [TaskStepInline, TaskActivityInline]
+    readonly_fields = (
+        "owner", "member", "message", "title", "note", "due_at", "priority", "status", "help_note",
+        "status_changed_at", "status_changed_by", "nudged_at", "created_at", "updated_at",
+    )
 
     def has_add_permission(self, request: HttpRequest) -> bool:
         return False

@@ -252,6 +252,8 @@ REST_FRAMEWORK = {
         "device_heartbeat": env_str("ZINWE_THROTTLE_DEVICE_HEARTBEAT", "120/min"),
         "device_events": env_str("ZINWE_THROTTLE_DEVICE_EVENTS", "300/min"),
         "device_metrics": env_str("ZINWE_THROTTLE_DEVICE_METRICS", "60/min"),
+        # FR-20: the member's task taps (seen, start, a step ticked...) from their Zinwe window, per PC.
+        "device_tasks": env_str("ZINWE_THROTTLE_DEVICE_TASKS", "120/min"),
     },
     # Adds `retry_after` (seconds) to every 429 body.
     "EXCEPTION_HANDLER": "z_main.exceptions.exception_handler",

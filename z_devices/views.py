@@ -14,7 +14,7 @@ from rest_framework.views import APIView
 from z_auth import entitlements as plan
 from z_main.client import get_client_ip
 
-from . import services
+from . import services, work_tasks
 from .models import AgentRelease, DeviceEvent, WorkLog
 from .authentication import DeviceScopedThrottle, DeviceTokenAuthentication, IsDevice, IsOwner
 from .serializers import (
@@ -837,3 +837,129 @@ class MetricsTopView(APIView):
             limit=query.validated_data["limit"],
         )
         return Response(data)
+
+
+# --- FR-20 v2: tasks (owner: token auth; the member's PC: Device token) ------------------------------------
+
+
+class IsOwnerOrDevice(IsOwner):
+    """A logged-in owner, or an enrolled PC (each view then branches on which)."""
+
+    def has_permission(self, request: Request, view) -> bool:  # type: ignore[no-untyped-def]
+        return IsDevice().has_permission(request, view) or super().has_permission(request, view)
+
+
+def _is_device(request: Request) -> bool:
+    from .models import Device
+
+    return isinstance(request.auth, Device)
+
+
+class _TaskView(APIView):
+    """Owner or device. Device calls are throttled per PC; owner calls aren't."""
+
+    authentication_classes = [DeviceTokenAuthentication, *APIView.authentication_classes]
+    permission_classes = [IsOwnerOrDevice]
+    throttle_scope = "device_tasks"
+
+    def get_throttles(self):  # type: ignore[no-untyped-def]
+        return [DeviceScopedThrottle()] if _is_device(self.request) else []
+
+
+def _refused(exc: "work_tasks.TaskRefused") -> Response:
+    return Response({exc.field: [exc.message]}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class TaskListView(_TaskView):
+    """
+    GET /api/devices/tasks/
+    - owner: ?status=open|done|all (default open; done = approved or cancelled) &member=<id> -> [Task], newest
+      activity first.
+    - device: the PC's member's open tasks + the ones approved in the last 7 days -> [Task] (bare array; empty when
+      the plan has no team_chat or the PC has no member).
+    """
+
+    def get(self, request: Request) -> Response:
+        from .serializers import TaskListQuerySerializer, TaskSerializer
+
+        if _is_device(request):
+            if not plan.entitlements_for(request.auth.owner).has(plan.TEAM_CHAT):
+                return Response([])
+            return Response(TaskSerializer(work_tasks.tasks_for_device(request.auth), many=True).data)
+        plan.require(request.user, plan.TEAM_CHAT)
+        query = TaskListQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        tasks = work_tasks.tasks_for_owner(request.user, query.validated_data["status"], query.validated_data["member"])
+        return Response(TaskSerializer(tasks, many=True).data)
+
+
+class MemberTaskCreateView(APIView):
+    """POST /api/devices/members/<id>/tasks/ -- {title, note?, due_at?, priority?, steps?: [title]} -> Task (201)."""
+
+    permission_classes = [IsOwner]
+
+    def post(self, request: Request, member_id: int) -> Response:
+        from .serializers import TaskCreateSerializer, TaskSerializer
+
+        plan.require(request.user, plan.TEAM_CHAT)
+        member = get_object_or_404(request.user.members, pk=member_id)
+        serializer = TaskCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            task = work_tasks.create_task(request.user, member, **serializer.validated_data)
+        except work_tasks.TaskRefused as exc:
+            return _refused(exc)
+        return Response(TaskSerializer(task).data, status=status.HTTP_201_CREATED)
+
+
+class TaskDetailView(APIView):
+    """PATCH /api/devices/tasks/<id>/ -- {title?, note?, due_at?, priority?, steps?} -> Task (owner only)."""
+
+    permission_classes = [IsOwner]
+
+    def patch(self, request: Request, task_id: int) -> Response:
+        from .serializers import TaskSerializer, TaskUpdateSerializer
+
+        plan.require(request.user, plan.TEAM_CHAT)
+        task = work_tasks.task_for_owner(request.user, task_id)
+        if task is None:
+            raise Http404
+        serializer = TaskUpdateSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        try:
+            task = work_tasks.edit_task(request.user, task, serializer.validated_data)
+        except work_tasks.TaskRefused as exc:
+            return _refused(exc)
+        return Response(TaskSerializer(task).data)
+
+
+class TaskActionView(_TaskView):
+    """
+    POST /api/devices/tasks/<id>/action/ -> Task
+    - owner: {action: approve|reopen|cancel|nudge, note?}
+    - device (the task's own member only): {action: seen|accept|start|help|done|note, note?, step_id?, step_done?}
+    """
+
+    def post(self, request: Request, task_id: int) -> Response:
+        from .serializers import TaskDeviceActionSerializer, TaskOwnerActionSerializer, TaskSerializer
+
+        device = _is_device(request)
+        plan.require(request.auth.owner if device else request.user, plan.TEAM_CHAT)
+        task = (
+            work_tasks.task_for_device(request.auth, task_id) if device else work_tasks.task_for_owner(request.user, task_id)
+        )
+        if task is None:
+            raise Http404
+        serializer = (TaskDeviceActionSerializer if device else TaskOwnerActionSerializer)(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        try:
+            if device:
+                task = work_tasks.member_action(
+                    request.auth, task, data["action"], data["note"], data["step_id"], data["step_done"]
+                )
+            else:
+                task = work_tasks.owner_action(request.user, task, data["action"], data["note"])
+        except work_tasks.TaskRefused as exc:
+            return _refused(exc)
+        return Response(TaskSerializer(task).data)
