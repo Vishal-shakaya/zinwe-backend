@@ -22,8 +22,10 @@ class Event(models.Model):
 
 class OpsEvent(models.Model):
     """
-    FR-37: one thing that happened to this environment's servers, for the admin's Logs page: a deploy, rollback,
-    backup (with its off-site copy), API start, Windows agent release or unhandled server error.
+    FR-37: one server event for the admin's Logs page (deploy, rollback, backup, API start, 500 error).
+
+    Deploys and rollbacks, backups (with their off-site copy), API starts, Windows agent releases and unhandled
+    server errors of this environment.
 
     Written by `manage.py ops_event` (called by zinwe-server.sh after deploy / rollback / backup), by
     `manage.py serve` when the API starts, and by `z_analytics.ops.OpsErrorHandler` for 500s. Staff actions are NOT
