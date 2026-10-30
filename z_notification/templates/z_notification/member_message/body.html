@@ -1,16 +1,17 @@
 <!doctype html>
 <html lang="en">
-<body style="margin:0;padding:24px;background:#f6f7f9;font-family:Segoe UI,Arial,sans-serif;color:#1d2433;">
-  <div style="max-width:560px;margin:0 auto;background:#ffffff;border-radius:8px;padding:28px;font-size:15px;line-height:1.55;">
+<body style="margin:0;padding:24px;background:#ffffff;font-family:Segoe UI,Arial,sans-serif;color:#141210;">
+  <div style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #e5e5e5;border-radius:8px;padding:28px;font-size:15px;line-height:1.55;">
     {% include "z_notification/_brand.html" %}
     <p style="margin:0 0 16px;">Hi {{ first_name }},</p>
     <p style="margin:0 0 12px;"><strong>{{ company }}</strong> sent you a message on Zinwe:</p>
-    <div style="margin:0 0 16px;padding:14px 16px;border-left:3px solid {% if urgent %}#b42121{% else %}#FD6D02{% endif %};background:#f6f7f9;border-radius:4px;">
+    <div style="margin:0 0 16px;padding:14px 16px;border-left:3px solid {% if urgent %}#c0331c{% else %}#f26a0a{% endif %};background:#f5f5f5;border-radius:4px;">
+      {% if urgent %}<p style="margin:0 0 4px;font-size:12px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;color:#c0331c;">Urgent</p>{% endif %}
       <p style="margin:0;font-weight:600;">{{ message.title }}</p>
       {% if message.body %}<p style="margin:8px 0 0;white-space:pre-wrap;">{{ message.body }}</p>{% endif %}
     </div>
-    <p style="margin:0 0 16px;color:#4b5563;">{% if in_widget %}You'll also see it in the Zinwe widget on your work PC, where you can reply.{% else %}To reply, open the Zinwe widget on your work PC.{% endif %}</p>
-    <p style="margin:0;color:#6b7280;">Sent by Zinwe for {{ company }}<br>SKYTECHNO, New Delhi</p>
+    <p style="margin:0 0 16px;color:#404040;">{% if in_widget %}You'll also see it in the Zinwe widget on your work PC, where you can reply.{% else %}To reply, open the Zinwe widget on your work PC.{% endif %}</p>
+    <p style="margin:0;color:#6b6b6b;">Sent by Zinwe for {{ company }}<br>SKYTECHNO, New Delhi</p>
   </div>
 </body>
 </html>

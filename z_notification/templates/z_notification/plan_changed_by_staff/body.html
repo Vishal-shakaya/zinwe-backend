@@ -1,16 +1,16 @@
 <!doctype html>
 <html lang="en">
-<body style="margin:0;padding:24px;background:#f6f7f9;font-family:Segoe UI,Arial,sans-serif;color:#1d2433;">
-  <div style="max-width:560px;margin:0 auto;background:#ffffff;border-radius:8px;padding:28px;">
+<body style="margin:0;padding:24px;background:#ffffff;font-family:Segoe UI,Arial,sans-serif;color:#141210;">
+  <div style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #e5e5e5;border-radius:8px;padding:28px;">
     {% include "z_notification/_brand.html" %}
     <p style="margin:0 0 16px;">Hi {{ first_name }},</p>
     <p style="margin:0 0 16px;">Our team has moved your Zinwe account {% if previous_plan %}from {{ previous_plan.name }} {% endif %}to the <strong>{{ plan.name }}</strong> plan. The change is already live.</p>
     <p style="margin:0 0 16px;">{% if plan.max_devices %}It covers up to {{ plan.max_devices }} PCs.{% endif %}{% if ends_at %} It runs until {{ ends_at|date:"j F Y" }}.{% endif %}</p>
-    {% if over_limit %}<p style="margin:0 0 16px;padding:12px 16px;background:#fff7ed;border-left:4px solid #f97316;">You have {{ devices }} PCs connected, {{ over_limit }} more than this plan covers. The PCs already connected keep working, but you can't add new ones until you're under the limit or on a bigger plan.</p>{% endif %}
+    {% if over_limit %}<p style="margin:0 0 16px;padding:12px 16px;background:#fdebdc;border-left:4px solid #f26a0a;">You have {{ devices }} PCs connected, {{ over_limit }} more than this plan covers. The PCs already connected keep working, but you can't add new ones until you're under the limit or on a bigger plan.</p>{% endif %}
     {% if downgrade %}<p style="margin:0 0 16px;">Paid days left on {{ previous_plan.name }} end with this change. If that's not what you agreed with us, reply to this email and we'll put it right.</p>{% endif %}
-    <p style="margin:0 0 20px;"><a href="{{ billing_url }}" style="display:inline-block;padding:10px 18px;background:#FD6D02;color:#0d0d0e;border-radius:6px;font-weight:600;text-decoration:none;">See your plan</a></p>
+    <p style="margin:0 0 20px;"><a href="{{ billing_url }}" style="display:inline-block;padding:10px 18px;background:#f26a0a;color:#141210;border-radius:6px;font-weight:600;text-decoration:none;">See your plan</a></p>
     <p style="margin:0 0 16px;">Questions? Just reply to this email.</p>
-    <p style="margin:0;">The Zinwe team<br><span style="color:#6b7280;">SKYTECHNO, New Delhi</span></p>
+    <p style="margin:0;">The Zinwe team<br><span style="color:#6b6b6b;">SKYTECHNO, New Delhi</span></p>
   </div>
 </body>
 </html>

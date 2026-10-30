@@ -231,3 +231,28 @@ class PlainTextIsNeverEscapedTests(TestCase):
                     "owner": value, "total": value, "hostname": value, "count": 1, "days_left": 3,
                 })
                 self.assertNotIn("&amp;", text)
+
+
+class EmailPaletteTests(TestCase):
+    """v1.3.2 colour rule: transactional emails use only white, black + neutral greys, orange, and a small red."""
+
+    def test_transactional_templates_use_only_the_palette(self) -> None:
+        import re
+        from pathlib import Path
+
+        from .palette import EMAIL_PALETTE, EXEMPT_TEMPLATES, LOGO_COLOURS
+
+        allowed = set(EMAIL_PALETTE.values())
+        root = Path(__file__).parent / "templates" / "z_notification"
+        checked = 0
+        for path in sorted(root.rglob("*.html")):
+            if path.parent.name in EXEMPT_TEMPLATES:
+                continue
+            text = path.read_text(encoding="utf-8")
+            extra = LOGO_COLOURS if path.name == "_brand.html" else set()
+            found = {h.lower() for h in re.findall(r"#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b", text)}
+            self.assertFalse(found - allowed - extra, f"{path.parent.name}/{path.name}: {sorted(found - allowed - extra)}")
+            self.assertNotIn("cid:", text)  # never inline images (Gmail drops such mail)
+            self.assertNotIn("data:image", text)
+            checked += 1
+        self.assertGreater(checked, 25)
