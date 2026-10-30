@@ -270,7 +270,7 @@ class PrerenderTests(BlogTestCase):
         r = self.client.get(f"/blog/{a['slug']}")
         html = r.content.decode()
         self.assertEqual(r.status_code, 200)
-        self.assertIn("<title>Stop USB leaks | Zinwe — Zinwe</title>", html)
+        self.assertIn("<title>Stop USB leaks | Zinwe</title>", html)  # the typed brand isn't doubled
         self.assertIn('<meta name="description" content="Guide &quot;for&quot; small teams" data-prerender-content="Default description."', html)
         self.assertIn('<meta property="og:type" content="article" data-prerender-content="website"', html)
         self.assertIn(f'<link rel="canonical" href="https://zinwe.test/blog/{a["slug"]}" data-prerender />', html)

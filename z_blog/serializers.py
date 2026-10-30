@@ -5,6 +5,7 @@ from typing import Any
 from rest_framework import serializers
 
 from .models import Article, Attachment, BlogImage, Series
+from .seo_meta import article_description, page_title
 from .services import state
 
 
@@ -41,16 +42,23 @@ class ArticleDetailSerializer(ArticleCardSerializer):
     """Public article page: body + SEO fields (falling back to title / summary)."""
 
     seo_title = serializers.SerializerMethodField()
+    page_title = serializers.SerializerMethodField()
     meta_description = serializers.SerializerMethodField()
 
     class Meta(ArticleCardSerializer.Meta):
-        fields = [*ArticleCardSerializer.Meta.fields, "body_html", "seo_title", "meta_description", "updated_at"]
+        fields = [
+            *ArticleCardSerializer.Meta.fields, "body_html", "seo_title", "page_title", "meta_description", "updated_at",
+        ]
 
     def get_seo_title(self, obj: Article) -> str:
         return obj.seo_title or obj.title
 
+    def get_page_title(self, obj: Article) -> str:
+        """The whole <title>, as the pre-rendered page has it ("<seo title> | Zinwe", the brand dropped past 60)."""
+        return page_title(obj.seo_title or obj.title)
+
     def get_meta_description(self, obj: Article) -> str:
-        return obj.meta_description or obj.summary
+        return article_description(obj)
 
 
 class StaffArticleSerializer(serializers.ModelSerializer):

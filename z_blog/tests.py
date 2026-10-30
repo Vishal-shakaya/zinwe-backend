@@ -173,7 +173,11 @@ class PublicTests(BlogTestCase):
         self.publish(title="Release", type="new_release")
         self.anon()
         body = self.client.get(f"{PUBLIC}main/").json()
-        self.assertEqual((body["seo_title"], body["meta_description"]), ("Main", "Short summary."))
+        # No meta description: a 140-160 character one from the summary, then the body, cut at a word.
+        self.assertEqual((body["seo_title"], body["page_title"]), ("Main", "Main | Zinwe"))
+        self.assertTrue(body["meta_description"].startswith("Short summary. word word"), body["meta_description"])
+        self.assertTrue(140 <= len(body["meta_description"]) <= 160, len(body["meta_description"]))
+        self.assertTrue(body["meta_description"].endswith("word…"))
         self.assertIn("word", body["body_html"])
         self.assertEqual([r["title"] for r in body["related"]][0], "Other guide")  # same type first
         self.assertEqual(len(body["related"]), 2)

@@ -91,6 +91,20 @@ class SeoFilesTests(TestCase):
         self.assertIn("<urlset", response.content.decode())
         self.assertEqual(response.content.decode().count("<url>"), 0)
 
+    def test_blog_index_date_is_the_newest_articles_not_the_build_day(self) -> None:
+        from datetime import datetime, timezone as tz
+
+        from z_blog.models import Article
+
+        self._publish_article()
+        went_live = datetime(2026, 9, 14, 8, 0, tzinfo=tz.utc)  # before the build's 2026-10-01
+        Article.objects.update(published_at=went_live, updated_at=went_live)
+        with override_settings(**PROD, ZINWE_FRONTEND_INDEX=self.index):
+            body = self.client.get("/sitemap.xml").content.decode()
+        self.assertIn("<loc>https://zinwe.io/blog</loc><lastmod>2026-09-14</lastmod>", body)
+        self.assertIn("<loc>https://zinwe.io/blog/stop-usb-leaks</loc><lastmod>2026-09-14</lastmod>", body)
+        self.assertIn("<loc>https://zinwe.io/plans</loc><lastmod>2026-10-01</lastmod>", body)  # site pages: the build's
+
     def _publish_article(self) -> None:
         from django.utils import timezone
 

@@ -18,6 +18,7 @@ from rest_framework.views import APIView
 
 from . import series as svc
 from .models import Article, Attachment, NewsletterSubscriber, Series
+from .seo_meta import article_description, page_title
 from .serializers import (
     SeriesInputSerializer,
     StaffArticleSerializer,
@@ -154,7 +155,8 @@ class PublicEpisodeView(APIView):
             "planned_episodes": a.series.planned_episodes,
             "season_info": next((x for x in svc.seasons(a.series, [a]) if x["number"] == a.season), None),
             "seo_title": a.seo_title or a.title,
-            "meta_description": a.meta_description or a.summary,
+            "page_title": page_title(a.seo_title or a.title, a.series.title),
+            "meta_description": article_description(a),
             "updated_at": a.updated_at,
             "teaser_html": a.teaser_html,
             "locked": not unlocked,

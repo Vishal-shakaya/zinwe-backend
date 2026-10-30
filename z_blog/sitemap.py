@@ -14,22 +14,27 @@ from datetime import datetime
 from django.utils import timezone
 
 from . import guides, series, services
+from .seo_meta import modified_at
 
 
 def entries() -> list[tuple[str, datetime]]:
-    """(path, last modified) for every public blog page, index pages first."""
+    """(path, last modified) for every public blog page, index pages first. A page's last-modified time is its last
+    edit or its publish time, whichever is later (a scheduled article was last saved before it went live); an index
+    page's is the newest of what it lists."""
     out: list[tuple[str, datetime]] = []
-    articles = list(services.published())
-    # The index changes when an article does (not on every request), so its lastmod is the newest article's.
-    out.append(("/blog", max((a.updated_at for a in articles), default=timezone.now())))
-    out += [(f"/blog/{a.slug}", a.updated_at) for a in articles]
+    articles = [(a, modified_at(a)) for a in services.published()]
+    out.append(("/blog", max((when for _, when in articles), default=timezone.now())))
+    out += [(f"/blog/{a.slug}", when) for a, when in articles]
 
-    shows = [(show, series.lineup(show).released) for show in series.live_series()]
+    shows = []
+    for show in series.live_series():
+        episodes = [(a, modified_at(a)) for a in series.lineup(show).released]
+        shows.append((show, episodes, max([show.updated_at, *(when for _, when in episodes)])))
     if shows:
-        out.append(("/blog/series", max(max([s.updated_at, *(a.updated_at for a in eps)]) for s, eps in shows)))
-    for show, episodes in shows:
-        out.append((f"/blog/series/{show.slug}", max([show.updated_at, *(a.updated_at for a in episodes)])))
-        out += [(series.path(a), a.updated_at) for a in episodes]
+        out.append(("/blog/series", max(when for _, _, when in shows)))
+    for show, episodes, when in shows:
+        out.append((f"/blog/series/{show.slug}", when))
+        out += [(series.path(a), ep_when) for a, ep_when in episodes]
 
     books = list(guides.live())
     if books:

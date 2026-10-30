@@ -9,7 +9,9 @@ dev server proxies them.
 - sitemap.xml: ONE list of every public URL (the only sitemap robots.txt names): all the website's pages (from
   the frontend build's sitemap-pages.xml, which build/seoPages.ts checks against the app's routes) plus every
   public blog page -- articles, live series and their released episodes, guides (z_blog/sitemap.py). A URL in
-  both is listed once, with the later lastmod (e.g. /blog: the newest article's when later than the build).
+  both is listed once, with the blog's lastmod (e.g. /blog: when its newest article changed or went live).
+  Only live content is listed: drafts, scheduled (future) articles and episodes, unpublished series and guides,
+  and noindex pages never are.
   It sits at the site root so it may list any URL on the site (a sitemap under /api/blog/ may, by the sitemaps
   protocol, only list URLs under /api/blog/).
 - sitemap-pages.xml: the file the frontend build writes next to index.html (build/seoPages.ts), with its URLs
@@ -101,8 +103,9 @@ def frontend_pages() -> list[tuple[str, date | None]]:
 
 
 def sitemap_urls() -> list[tuple[str, date | None]]:
-    """Every public URL: the website's pages, then every public blog page (z_blog/sitemap.py). A URL in both is
-    listed once, with the later lastmod."""
+    """Every public URL: the website's pages, then every public blog page (z_blog/sitemap.py). A URL in both
+    (/blog, /blog/series, /blog/guides) is listed once, with the blog's date: when its newest article, episode or
+    guide changed. The build stamps every page with the day it was built, which says nothing about the list."""
     base = settings.ZINWE_APP_URL
     urls: dict[str, date | None] = dict(frontend_pages())
     has_articles = blog.published().exists()
@@ -110,7 +113,7 @@ def sitemap_urls() -> list[tuple[str, date | None]]:
         loc = f"{base}{path}"
         if path == "/blog" and not has_articles:
             continue  # no article yet: the build's entry (and date) stands, not "now"
-        urls[loc] = max(filter(None, [urls.get(loc), when.date()]))
+        urls[loc] = when.date()
     return list(urls.items())
 
 
