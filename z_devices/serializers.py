@@ -67,6 +67,13 @@ class MemberSerializer(serializers.Serializer):
     download_url = serializers.SerializerMethodField()
     # Unread replies from this member (for the Team list chat badge).
     unread = serializers.SerializerMethodField()
+    # FR-44: null, {kind: avatar, key}, or {kind: photo, url, updated_at} (z_devices.pictures.picture_payload).
+    picture = serializers.SerializerMethodField()
+
+    def get_picture(self, obj: Member) -> dict[str, Any] | None:
+        from .pictures import picture_payload
+
+        return picture_payload(obj, self.context.get("request"))
 
     def get_download_url(self, obj: Member) -> str:
         from django.conf import settings
@@ -173,7 +180,7 @@ class MessageSerializer(serializers.ModelSerializer):
         if obj.kind != Message.Kind.TASK:
             return None
         task = _task_of(obj)
-        return TaskSerializer(task).data if task is not None else None
+        return TaskSerializer(task, context=self.context).data if task is not None else None
 
 
 class EventHandledSerializer(serializers.Serializer):
@@ -717,6 +724,8 @@ class TaskSerializer(serializers.Serializer):
     id = serializers.IntegerField(read_only=True)
     member_id = serializers.IntegerField(read_only=True)
     member_name = serializers.CharField(source="member.name", read_only=True)
+    # FR-44: the assignee's picture (same object as the member payloads' `picture`).
+    member_picture = serializers.SerializerMethodField()
     title = serializers.CharField(read_only=True)
     note = serializers.CharField(read_only=True)
     due_at = serializers.DateTimeField(read_only=True, allow_null=True)
@@ -730,6 +739,11 @@ class TaskSerializer(serializers.Serializer):
     status_changed_by = serializers.CharField(read_only=True)
     message_id = serializers.IntegerField(read_only=True, allow_null=True)
     activity = TaskActivitySerializer(many=True, read_only=True)
+
+    def get_member_picture(self, obj: Any) -> dict[str, Any] | None:
+        from .pictures import picture_payload
+
+        return picture_payload(obj.member, self.context.get("request"))
 
 
 def _task_of(message: Message) -> Any:

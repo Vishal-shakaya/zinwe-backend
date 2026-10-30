@@ -254,6 +254,9 @@ REST_FRAMEWORK = {
         "device_metrics": env_str("ZINWE_THROTTLE_DEVICE_METRICS", "60/min"),
         # FR-20: the member's task taps (seen, start, a step ticked...) from their Zinwe window, per PC.
         "device_tasks": env_str("ZINWE_THROTTLE_DEVICE_TASKS", "120/min"),
+        # FR-44: picture writes (set / upload / remove), per owner account and per PC.
+        "member_picture": env_str("ZINWE_THROTTLE_MEMBER_PICTURE", "30/hour"),
+        "device_picture": env_str("ZINWE_THROTTLE_DEVICE_PICTURE", "30/hour"),
     },
     # Adds `retry_after` (seconds) to every 429 body.
     "EXCEPTION_HANDLER": "z_main.exceptions.exception_handler",

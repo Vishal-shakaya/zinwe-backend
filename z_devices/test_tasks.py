@@ -21,7 +21,7 @@ from .tests import MEMBERS_URL, MESSAGES_URL, DeviceTestCase
 TASKS_URL = "/api/devices/tasks/"
 
 TASK_KEYS = {
-    "id", "member_id", "member_name", "title", "note", "due_at", "priority", "steps", "status", "help_note",
+    "id", "member_id", "member_name", "member_picture", "title", "note", "due_at", "priority", "steps", "status", "help_note",
     "created_at", "updated_at", "status_changed_at", "status_changed_by", "message_id", "activity",
 }
 

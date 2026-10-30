@@ -17,6 +17,10 @@ urlpatterns = [
     path("members/", views.MemberListCreateView.as_view(), name="members"),
     path("members/tags/", views.MemberTagsView.as_view(), name="member-tags"),
     path("members/<int:member_id>/", views.MemberDetailView.as_view(), name="member-detail"),
+    # FR-44 team pictures: the owner sets any of their members'; a PC sets its own member's; a signed URL serves it.
+    path("members/<int:member_id>/picture/", views.MemberPictureView.as_view(), name="member-picture"),
+    path("me/picture/", views.DevicePictureView.as_view(), name="device-picture"),
+    path("pictures/<str:token>.jpg", views.PictureFileView.as_view(), name="picture"),
     path(
         "members/<int:member_id>/rotate-id/",
         views.MemberRotateIdView.as_view(),

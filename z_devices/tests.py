@@ -50,6 +50,7 @@ METRICS_UPLOAD_URL = "/api/devices/metrics/upload/"
 HEARTBEAT_RESPONSE_KEYS = {
     "device_id", "server_time", "next_heartbeat_seconds", "policy_version", "consent_state", "usb_restore",
     "company_name", "owner_name",
+    "picture",  # FR-44: the PC's member's picture (null = initials)
 }
 
 # The non-usb feature blocks as a freshly created policy emits them (see contract defaults).
@@ -345,7 +346,7 @@ class MemberTests(DeviceTestCase):
             set(row),
             {
                 "id", "name", "email", "member_id", "role", "is_active", "created_at",
-                "online", "device", "download_url", "unread",
+                "online", "device", "download_url", "unread", "picture",
             },
         )
 
