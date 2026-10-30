@@ -83,8 +83,10 @@ LOGO = ("/brand/zinwe-logo-96.png", 390, 96)  # the publisher logo in structured
 DEFAULT_IMAGE = "/brand/og-image.png"  # the site's share image (1200 x 630), for a page with no cover
 
 # Readable before the app's CSS and JS arrive (and for text-only crawlers); the app replaces it.
+# Top/bottom space is padding, not margin: a top margin collapses through #root into <body>, so the
+# whole page jumped 40 px when the app took over (CLS 0.45 on articles).
 STYLE = (
-    "<style data-prerender>.prerender{max-width:760px;margin:40px auto;padding:0 16px;"
+    "<style data-prerender>.prerender{max-width:760px;margin:0 auto;padding:40px 16px;"
     "font-family:Geist,system-ui,-apple-system,Segoe UI,sans-serif;line-height:1.7;color:#15161a}"
     ".prerender img{max-width:100%;height:auto}.prerender a{color:#c2410c}"
     ".prerender nav{margin-bottom:24px;font-size:14px}</style>"
