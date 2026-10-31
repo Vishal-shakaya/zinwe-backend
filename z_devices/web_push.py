@@ -21,11 +21,13 @@ from __future__ import annotations
 import json
 import logging
 import threading
+from datetime import timedelta
 from typing import Any, Iterable
 from urllib.parse import urlsplit
 
 from django.conf import settings
 from django.db import close_old_connections, connection, transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from z_auth.models import User
@@ -40,6 +42,9 @@ MAX_AT_ONCE = 5  # notifications from one event batch, then one summary (the sam
 MAX_THREADS = 8  # sending at once in this process; above this a push is dropped, the request never waits
 TIMEOUT_SECONDS = 5
 TTL_SECONDS = 4 * 60 * 60  # the push service holds it this long for a sleeping phone; later it's stale news
+# Warnings: at most one this often per browser, the same pace as the owner's alert emails, so a busy day doesn't turn
+# the owner's phone off for good. Critical alerts always go. An open dashboard's poll still shows every alert.
+ALERT_PUSH_EVERY = timedelta(minutes=30)
 GONE = {404, 410}
 
 # Who may be posted to: the browsers' push services, so a saved address can't aim this server at anything else.
@@ -134,13 +139,28 @@ def send(owner_id: int, kind: str, ids: Iterable[int]) -> int:
         subscriptions = list(PushSubscription.objects.filter(owner_id=owner_id)) if owner else []
         if not subscriptions:
             return 0
-        payloads = _payloads(owner_feed.items_for(owner, kind, ids))
+        items = owner_feed.items_for(owner, kind, ids)
+        payloads = _payloads(_paced_alerts(owner_id, items) if kind == "alert" else items)
         if not payloads:
             return 0
         return sum(_deliver(subscription, payloads) for subscription in subscriptions)
     except Exception:  # noqa: BLE001 -- a push is a courtesy: never the cause of a failure
         logger.exception("Push for owner %s failed", owner_id)
         return 0
+
+
+def _paced_alerts(owner_id: int, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    Keep the critical alerts; the rest only if it's been ALERT_PUSH_EVERY. The UPDATE is the claim: the database checks
+    and sets in one step, so two API workers can't both decide it's time.
+    """
+    critical = [i for i in items if i.get("severity") == "critical"]
+    if len(critical) == len(items):
+        return items
+    now = timezone.now()
+    due = Q(last_alert_at__isnull=True) | Q(last_alert_at__lte=now - ALERT_PUSH_EVERY)
+    claimed = PushSubscription.objects.filter(due, owner_id=owner_id).update(last_alert_at=now)
+    return items if claimed else critical
 
 
 def _payloads(items: list[dict[str, Any]]) -> list[str]:

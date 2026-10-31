@@ -117,7 +117,7 @@ class HappyPathTests(TodoTestCase):
         self.as_device(self.token)
         body = self.client.get(TODOS_URL).json()
         self.assertEqual(body["member_id"], self.member.id)
-        self.assertEqual({t["title"]: t["deleted"] for t in body["todos"]}, {"Keep": False, "Gone": True})
+        self.assertEqual({t["title"]: t["deleted"] for t in body["todos"]}, {"Keep": False, "": True})
         self.assertEqual(set(body["todos"][0]), TODO_KEYS)
 
     def test_owner_sees_them_read_only_and_never_the_deleted_ones(self) -> None:
@@ -208,20 +208,26 @@ class LastWriteWinsTests(TodoTestCase):
 
 
 class DeleteTests(TodoTestCase):
-    def test_delete_is_soft(self) -> None:
-        self.put(stamp(-1), title="Keep the row")
+    def test_delete_erases_the_words_and_keeps_an_empty_marker(self) -> None:
+        self.put(stamp(-1), title="Call the doctor", steps=[{"title": "Find the number", "done": False}])
         at = stamp()
         body = self.delete(at).json()
         self.assertTrue(body["deleted"])
         row = MemberTodo.objects.get()
-        self.assertEqual((row.title, row.deleted_at, row.updated_at), ("Keep the row", at, at))
+        self.assertEqual((row.title, row.steps, row.due_date, row.deleted_at, row.updated_at), ("", [], None, at, at))
+
+    def test_undo_brings_it_back_with_a_newer_save(self) -> None:
+        self.put(stamp(-5), title="Call the doctor")
+        self.delete(stamp(-3))
+        body = self.put(stamp(-1), title="Call the doctor").json()
+        self.assertEqual((body["title"], body["deleted"]), ("Call the doctor", False))
 
     def test_delete_wins_over_an_older_edit_that_arrives_late(self) -> None:
         self.put(stamp(-5))
         self.delete(stamp(-1))
         body = self.put(stamp(-2), title="Late edit").json()
         self.assertTrue(body["deleted"])
-        self.assertEqual(body["title"], "Update the client tracker")
+        self.assertEqual(body["title"], "")
 
     def test_delete_wins_a_tie(self) -> None:
         at = stamp(-1)

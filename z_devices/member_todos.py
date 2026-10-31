@@ -92,8 +92,8 @@ def save_todo(device: Device, client_id: str, data: dict[str, Any]) -> tuple[Mem
 @transaction.atomic
 def delete_todo(device: Device, client_id: str, updated_at: datetime) -> MemberTodo:
     """
-    DELETE todos/<client_id>/. Soft: the row stays, marked deleted. An id the server never saw is kept as an empty
-    deleted row (the to-do was made and deleted offline), so a late edit from another PC can't bring it to life.
+    DELETE todos/<client_id>/. The member's words go: the title, date and steps are erased. An empty row stays, marked
+    deleted, so their other PCs learn of it and a late edit can't bring it to life. Undo on the PC sends it again, newer.
     """
     at = _when(updated_at)
     todo, created = _locked(device, client_id, {"updated_at": at, "deleted_at": at})
@@ -101,5 +101,8 @@ def delete_todo(device: Device, client_id: str, updated_at: datetime) -> MemberT
         return todo
     todo.deleted_at = at
     todo.updated_at = at
-    todo.save(update_fields=["deleted_at", "updated_at"])
+    todo.title = ""
+    todo.due_date = None
+    todo.steps = []
+    todo.save(update_fields=["deleted_at", "updated_at", "title", "due_date", "steps"])
     return todo

@@ -707,6 +707,8 @@ class PushSubscription(models.Model):
     user_agent = models.CharField(max_length=255, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     last_success_at = models.DateTimeField(null=True, blank=True)
+    # When this browser last got a non-critical alert: at most one every 30 minutes (web_push.ALERT_PUSH_EVERY).
+    last_alert_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self) -> str:
         return f"Push for {self.owner_id}: {self.user_agent[:40] or 'a browser'}"

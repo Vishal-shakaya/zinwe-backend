@@ -368,6 +368,30 @@ class LiveEventTests(PushMixin, TaskTestCase):
         self.member_task("help", note="Stuck")
         self.assertEqual(self.push.calls, [])
 
+    def test_a_second_warning_within_30_minutes_stays_quiet(self) -> None:
+        self.upload(make_event(type="usb.blocked", severity="warning"))
+        self.upload(make_event(type="usb.blocked", severity="warning"))
+        self.assertEqual(len(self.push.calls), 1)
+
+    def test_a_warning_after_30_minutes_arrives(self) -> None:
+        self.upload(make_event(type="usb.blocked", severity="warning"))
+        PushSubscription.objects.update(last_alert_at=timezone.now() - timedelta(minutes=31))
+        self.upload(make_event(type="usb.blocked", severity="warning"))
+        self.assertEqual(len(self.push.calls), 2)
+
+    def test_a_critical_alert_is_never_held_back(self) -> None:
+        self.upload(make_event(type="usb.blocked", severity="warning"))
+        self.upload(make_event(type="usb.blocked", severity="critical"))
+        self.upload(make_event(type="usb.blocked", severity="critical"))
+        self.assertEqual(len(self.push.calls), 3)
+
+    def test_a_held_warning_doesnt_hold_the_critical_one_in_its_batch(self) -> None:
+        self.upload(make_event(type="usb.blocked", severity="warning"))
+        self.upload(make_event(type="usb.blocked", severity="warning"), make_event(type="usb.blocked", severity="critical"))
+        critical = DeviceEvent.objects.get(severity="critical")
+        self.assertEqual(self.push.tags[-1], f"alert-{critical.pk}")
+        self.assertEqual(len(self.push.calls), 2)
+
     def test_alert_level_critical_drops_warnings(self) -> None:
         self.prefs(alerts="critical")
         self.upload(make_event(type="usb.blocked", severity="warning"))
