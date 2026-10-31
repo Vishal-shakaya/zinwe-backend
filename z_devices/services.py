@@ -16,6 +16,7 @@ from django.db import IntegrityError, transaction
 from django.db.models import F, Q, QuerySet, Sum, Value
 from django.db.models.functions import Coalesce
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 
 from z_analytics.services import track
 from z_auth import entitlements as plan
@@ -36,6 +37,7 @@ from .models import (
     generate_member_code,
     hash_device_token,
 )
+from .work_time import day_so_far, day_start, local_day, work_zone
 
 # How many of a member's recent messages the agent is handed per poll.
 MESSAGE_FEED_LIMIT = 50
@@ -414,13 +416,16 @@ def unread_from_member(member: Member) -> int:
 
 
 def current_device_for(member: Member) -> Device | None:
-    """The member's most recently seen PC (prefetched devices sorted in Python)."""
+    """
+    The member's most recently seen PC (prefetched devices sorted in Python). A PC their day moved away from
+    comes last: it keeps heartbeating, but it isn't where the day is.
+    """
     devices = list(member.devices.all())
     if not devices:
         return None
     return max(
         devices,
-        key=lambda d: (d.last_seen_at or d.enrolled_at, d.id),
+        key=lambda d: (d.work_moved_to_id is None, d.last_seen_at or d.enrolled_at, d.id),
     )
 
 
@@ -458,6 +463,11 @@ def enroll_device(data: dict[str, Any], ip: str | None) -> tuple[Device, str, bo
 
     now = timezone.now()
     token = Device.new_token()
+    # A hand-over belongs to the member it happened to: this PC may be joining as someone else. (Reinstalled for the
+    # same member it keeps its place: Start day there is still a move back.)
+    Device.objects.filter(owner=member.owner, machine_id=data["machine_id"]).exclude(member=member).update(
+        work_moved_to=None, work_moved_at=None, work_carry=None
+    )
     device, created = Device.objects.update_or_create(
         owner=member.owner,
         machine_id=data["machine_id"],
@@ -621,6 +631,8 @@ def monitoring_allowed(device: Device) -> bool:
 
 
 LOGGED_WORK_STATES = {Device.WorkState.WORKING, Device.WorkState.ON_BREAK, Device.WorkState.ENDED}
+# A day in progress: the states that make a PC the one that owns the member's day.
+ACTIVE_WORK_STATES = (Device.WorkState.WORKING, Device.WorkState.ON_BREAK)
 # What the owner approves or questions: breaks, and since FR-16 log-outs too.
 APPROVED_STATES = {Device.WorkState.ON_BREAK, Device.WorkState.ENDED}
 
@@ -667,6 +679,7 @@ def _log_work_events(device: Device, events: list[dict[str, Any]], now: Any) -> 
     "back from break". Returns how many rows were added.
     """
     added = 0
+    tz = work_zone(device.owner)
     for event in sorted(events, key=lambda e: e["at"]):
         at, state = event["at"], event["state"]
         if at > now + WORK_EVENT_MAX_SKEW or at < now - WORK_EVENT_MAX_AGE:
@@ -677,13 +690,15 @@ def _log_work_events(device: Device, events: list[dict[str, Any]], now: Any) -> 
             device=device, state=state, at__range=(at - WORK_EVENT_SAME_WITHIN, at + WORK_EVENT_SAME_WITHIN)
         ).exists():
             continue
-        previous = (
+        last = (
             WorkLog.objects.filter(device=device, at__lt=at)
             .order_by("-at", "-id")
-            .values_list("state", flat=True)
+            .values_list("state", "at")
             .first()
-        ) or ""
-        if previous == state:
+        )
+        previous = last[0] if last else ""
+        # Yesterday's forgotten log-out doesn't swallow today's log in: the day counts from that line.
+        if previous == state and local_day(last[1], tz) == local_day(at, tz):
             continue
         explained = state in APPROVED_STATES
         WorkLog.objects.create(
@@ -695,6 +710,150 @@ def _log_work_events(device: Device, events: list[dict[str, Any]], now: Any) -> 
         )
         added += 1
     return added
+
+
+# --- One person, one work day, across PCs ------------------------------------
+
+# The Device fields a hand-over changes.
+HANDOVER_FIELDS = [
+    "work_state", "worked_seconds", "break_seconds", "work_since", "work_moved_to", "work_moved_at", "work_carry",
+]
+
+
+def _start_after(data: dict[str, Any], moved_at: Any, now: Any) -> Any:
+    """
+    When a PC the day moved away from was started again, or None: the first "working" change after the move. An
+    agent that hasn't heard of the move yet (or never will: an older one) keeps reporting the day it began before
+    the move, which is not a new start. Any press after the move means the member is back at this PC.
+    """
+    events = data.get("work_events")
+    if events is not None:
+        return min(
+            (e["at"] for e in events if e["state"] == Device.WorkState.WORKING
+             and moved_at < e["at"] <= now + WORK_EVENT_MAX_SKEW),
+            default=None,
+        )
+    changed = data.get("work_changed_at")
+    return changed if data["work_state"] == Device.WorkState.WORKING and changed and moved_at < changed <= now else None
+
+
+def _last_start(device: Device, midnight: Any) -> Any:
+    """When this PC last started (or took over) today's day. Coming back from a break isn't a start."""
+    return (
+        WorkLog.objects.filter(device=device, state=WorkLog.State.WORKING, at__gte=midnight)
+        .exclude(previous_state=WorkLog.State.ON_BREAK, moved_from="")
+        .order_by("-at", "-id")
+        .values_list("at", flat=True)
+        .first()
+    )
+
+
+def _start_line(device: Device, at: Any) -> WorkLog:
+    """The "working" line of the start at `at`: the one just logged, or a new one (a PC restarting may have none)."""
+    near = (at - WORK_EVENT_SAME_WITHIN, at + WORK_EVENT_SAME_WITHIN)
+    return WorkLog.objects.filter(device=device, state=WorkLog.State.WORKING, at__range=near).first() or (
+        WorkLog.objects.create(
+            owner_id=device.owner_id, device=device, member_id=device.member_id, state=WorkLog.State.WORKING, at=at,
+            previous_state=WorkLog.objects.filter(member_id=device.member_id, at__lt=at)
+            .order_by("-at", "-id").values_list("state", flat=True).first() or "",
+        )
+    )
+
+
+def _carry(device: Device, line: WorkLog, tz: Any, from_hostname: str = "") -> dict[str, Any]:
+    """What the member's day adds up to when `line` starts, wherever it ran, for the timer that carries it on."""
+    so_far = day_so_far(WorkLog.objects.filter(member_id=device.member_id), line.at, tz)
+    return {
+        "at": line.at.isoformat(),
+        "worked_seconds": so_far.worked,
+        "break_seconds": so_far.on_break,
+        "breaks": so_far.breaks,
+        "first_start": so_far.first_in.isoformat() if so_far.first_in else None,
+        "from_hostname": from_hostname,
+    }
+
+
+def _hand_over(loser: Device, winner: Device, at: Any, tz: Any) -> None:
+    """
+    The member's day moves from `loser` to `winner` at `at`: one "Moved to" line on the winner, no log-out, nothing
+    to approve. The loser's work state stops counting from here; it stays enrolled and keeps heartbeating.
+    A PC that had gone quiet earlier (switched off, offline) left off at its last heartbeat, not at the move.
+    """
+    quiet_since = at - timedelta(seconds=settings.ZINWE_DEVICE_OFFLINE_AFTER_SECONDS)
+    line = _start_line(winner, at)
+    line.moved_from = loser.hostname
+    line.left_off_at = loser.last_seen_at if loser.last_seen_at and loser.last_seen_at < quiet_since else None
+    line.previous_state = loser.work_state
+    line.save(update_fields=["moved_from", "left_off_at", "previous_state"])
+
+    winner.work_moved_to, winner.work_moved_at = None, None
+    winner.work_carry = _carry(winner, line, tz, loser.hostname)
+    loser.work_moved_to, loser.work_moved_at, loser.work_carry = winner, at, None
+    loser.work_state = Device.WorkState.NOT_STARTED
+    loser.worked_seconds, loser.break_seconds, loser.work_since = 0, 0, None
+    winner.save(update_fields=HANDOVER_FIELDS)
+    loser.save(update_fields=HANDOVER_FIELDS)
+    # PCs the day left earlier now point at where it is.
+    Device.objects.filter(work_moved_to=loser).exclude(pk=winner.pk).update(work_moved_to=winner)
+
+
+def _settle_work_day(device: Device, data: dict[str, Any], now: Any) -> bool:
+    """
+    Log this heartbeat's work changes and decide which of the member's PCs owns the day: last Start day wins. Runs
+    inside the heartbeat's transaction. The member's row is the lock, so two of their PCs heartbeating at once take
+    turns, and what the other one changed is read fresh here. Returns False when this PC doesn't own the day: what
+    it reports isn't stored.
+    """
+    tz = work_zone(device.owner)
+    today = local_day(now, tz)
+    if device.member_id:
+        Member.objects.select_for_update().filter(pk=device.member_id).first()
+        device.refresh_from_db(fields=HANDOVER_FIELDS)
+    # Midnight: a move or a carry is good for its own day only.
+    if device.work_moved_at and (device.work_moved_to_id is None or local_day(device.work_moved_at, tz) != today):
+        device.work_moved_to, device.work_moved_at = None, None
+    if device.work_carry and local_day(parse_datetime(device.work_carry["at"]), tz) != today:
+        device.work_carry = None
+
+    events = data.get("work_events")
+    start = None
+    if device.work_moved_to_id:
+        moved_at = device.work_moved_at
+        start = _start_after(data, moved_at, now)
+        if start is None:
+            # What it did before the move (it was offline) still counts; nothing after it does.
+            if events is not None:
+                _log_work_events(device, [e for e in events if e["at"] <= moved_at], now)
+            return False
+        if events is not None:
+            events = [e for e in events if e["at"] <= moved_at or e["at"] >= start]
+        device.work_moved_to, device.work_moved_at = None, None
+    if events is not None:
+        _log_work_events(device, events, now)
+    else:
+        _log_work_change(device, data, now)
+
+    if not device.member_id or (start is None and data["work_state"] not in ACTIVE_WORK_STATES):
+        return True
+    midnight = day_start(today, tz)
+    rivals = list(
+        Device.objects.filter(
+            member_id=device.member_id, is_revoked=False, work_moved_to__isnull=True,
+            work_state__in=ACTIVE_WORK_STATES, work_since__gte=midnight,
+        ).exclude(pk=device.pk)
+    )
+    if not rivals:
+        if start is not None:  # back on this PC after the day ended elsewhere: no move, but the timer still carries on
+            device.work_carry = _carry(device, _start_line(device, start), tz)
+        return True
+    mine = start or _last_start(device, midnight) or min(data.get("work_changed_at") or now, now)
+    contenders = [(mine, device), *((_last_start(r, midnight) or r.work_since, r) for r in rivals)]
+    # The latest start wins; a tie goes to the PC reporting now.
+    at, winner = max(contenders, key=lambda c: (c[0], c[1] is device))
+    for _, pc in contenders:
+        if pc is not winner:
+            _hand_over(pc, winner, at, tz)
+    return winner is device
 
 
 class NotABreak(Exception):
@@ -795,43 +954,45 @@ def record_heartbeat(device: Device, data: dict[str, Any], ip: str | None) -> di
     # that omits these, so validated_data always carries them. A newer agent sends the
     # exact list of changes; an older one only its current state (we log what changed).
     # Plan enforcement: the work log (Activity) is only kept on plans with work hours.
-    if not ent.has(plan.WORK_TIME):
-        pass
-    elif data.get("work_events") is not None:
-        _log_work_events(device, data["work_events"], now)
-    else:
-        _log_work_change(device, data, now)
-    _record_consent(device, data, now)
-    if ent.has(plan.WORK_TIME):
-        if data["work_state"] != device.work_state or data.get("work_changed_at"):
-            # When this state began (the widget's last change; older agents: when we first heard of it).
-            since = data.get("work_changed_at") or now
-            device.work_since = min(since, now)
-        device.work_state = data["work_state"]
-        device.worked_seconds = data["worked_seconds"]
-        device.break_seconds = data["break_seconds"]
-    else:
-        # Plan enforcement: no work hours on this plan, so the PC's work day isn't kept either
-        # (the dashboard shows it as plain online/offline).
-        device.work_state = Device.WorkState.NOT_STARTED
-        device.worked_seconds = 0
-        device.break_seconds = 0
-        device.work_since = None
-    device.work_updated_at = now
-    # "Restore USB" (J5-02): told once, on the first heartbeat after the owner pressed it.
-    usb_restore = bool(
-        device.usb_restore_requested_at
-        and (device.usb_restore_delivered_at is None or device.usb_restore_delivered_at < device.usb_restore_requested_at)
-    )
-    if usb_restore:
-        device.usb_restore_delivered_at = now
-    device.save(
-        update_fields=[
-            "last_seen_at", "last_ip", "agent_version", "os_version", "hostname",
-            "work_state", "worked_seconds", "break_seconds", "work_updated_at", "work_since",
-            "consent_version", "consent_at", "consent_declined_at", "usb_restore_delivered_at",
-        ]
-    )
+    with transaction.atomic():  # the member's row locks their day (_settle_work_day): PostgreSQL needs a transaction
+        owns_day = ent.has(plan.WORK_TIME) and _settle_work_day(device, data, now)
+        _record_consent(device, data, now)
+        if owns_day:
+            if data["work_state"] != device.work_state or data.get("work_changed_at"):
+                # When this state began (the widget's last change; older agents: when we first heard of it).
+                since = data.get("work_changed_at") or now
+                device.work_since = min(since, now)
+            device.work_state = data["work_state"]
+            # Until the timer has taken the carry-over (and for ever on an older agent) the day still adds up to it.
+            carry = device.work_carry or {}
+            device.worked_seconds = max(data["worked_seconds"], carry.get("worked_seconds", 0))
+            device.break_seconds = max(data["break_seconds"], carry.get("break_seconds", 0))
+        elif not ent.has(plan.WORK_TIME):
+            # Plan enforcement: no work hours on this plan, so the PC's work day isn't kept either
+            # (the dashboard shows it as plain online/offline).
+            device.work_state = Device.WorkState.NOT_STARTED
+            device.worked_seconds = 0
+            device.break_seconds = 0
+            device.work_since = None
+            device.work_moved_to = None
+            device.work_moved_at = None
+            device.work_carry = None
+        device.work_updated_at = now
+        # "Restore USB" (J5-02): told once, on the first heartbeat after the owner pressed it.
+        usb_restore = bool(
+            device.usb_restore_requested_at
+            and (device.usb_restore_delivered_at is None or device.usb_restore_delivered_at < device.usb_restore_requested_at)
+        )
+        if usb_restore:
+            device.usb_restore_delivered_at = now
+        device.save(
+            update_fields=[
+                "last_seen_at", "last_ip", "agent_version", "os_version", "hostname",
+                "work_state", "worked_seconds", "break_seconds", "work_updated_at", "work_since",
+                "work_moved_to", "work_moved_at", "work_carry",
+                "consent_version", "consent_at", "consent_declined_at", "usb_restore_delivered_at",
+            ]
+        )
     response = {
         "device_id": device.id,
         "server_time": device.last_seen_at,
@@ -843,6 +1004,12 @@ def record_heartbeat(device: Device, data: dict[str, Any], ip: str | None) -> di
         "usb_restore": usb_restore,
         **employer_names(device),
     }
+    # The day moved (keys omitted otherwise, like "update"). Sent on every heartbeat of that day, so a lost response
+    # costs nothing: the old PC hears where the day went, the new PC what to carry on from (it takes each one once).
+    if device.work_moved_to_id:
+        response["day_moved"] = {"to_hostname": device.work_moved_to.hostname, "at": device.work_moved_at}
+    elif device.work_carry:
+        response["day_carry"] = device.work_carry
     # Updates (M12 + Releases): a newer published release is offered to the agent ("update"),
     # and a required one (or the env minimum) also pauses the member's work ("update_required").
     # Keys are omitted entirely when no update is due, so the response shape is unchanged.
