@@ -7,8 +7,9 @@ from typing import Any
 from rest_framework import serializers
 
 from .events import EVENT_TYPE_PATTERN, build_title, event_kind
+from .member_todos import MAX_STEPS as MAX_TODO_STEPS
 from .models import (
-    Device, DeviceEvent, Member, Message, NotificationPrefs, Policy, ReportSchedule, Task, WorkLog,
+    Device, DeviceEvent, Member, MemberTodo, Message, NotificationPrefs, Policy, ReportSchedule, Task, WorkLog,
 )
 
 
@@ -812,4 +813,55 @@ class TaskListQuerySerializer(serializers.Serializer):
     """GET /api/devices/tasks/?status=open|done|all&member=<id> (owner)."""
 
     status = serializers.ChoiceField(choices=["open", "done", "all"], required=False, default="open")
+    member = serializers.IntegerField(required=False, min_value=1, default=None)
+
+
+# --- A member's own to-dos ------------------------------------------------------
+
+
+class MemberTodoSerializer(serializers.Serializer):
+    """One to-do, for the member's Zinwe window and (read-only) the owner's dashboard."""
+
+    id = serializers.IntegerField(read_only=True)
+    client_id = serializers.CharField(read_only=True)
+    member_id = serializers.IntegerField(read_only=True)
+    member_name = serializers.CharField(source="member.name", read_only=True)
+    title = serializers.CharField(read_only=True)
+    due_date = serializers.DateField(read_only=True, allow_null=True)
+    steps = serializers.JSONField(read_only=True)
+    status = serializers.CharField(read_only=True)
+    done_at = serializers.DateTimeField(read_only=True, allow_null=True)
+    created_at = serializers.DateTimeField(read_only=True)
+    updated_at = serializers.DateTimeField(read_only=True)
+    deleted = serializers.SerializerMethodField()
+
+    def get_deleted(self, obj: Any) -> bool:
+        return obj.deleted_at is not None
+
+
+class MemberTodoStepSerializer(serializers.Serializer):
+    title = serializers.CharField(max_length=200, trim_whitespace=True)
+    done = serializers.BooleanField(required=False, default=False)
+
+
+class MemberTodoSaveSerializer(serializers.Serializer):
+    """PUT /api/devices/todos/<client_id>/ -- {title, due_date?, steps?: [{title, done?}], status?, updated_at}."""
+
+    title = serializers.CharField(max_length=200, trim_whitespace=True)
+    due_date = serializers.DateField(required=False, allow_null=True, default=None)
+    steps = MemberTodoStepSerializer(many=True, required=False, default=list, max_length=MAX_TODO_STEPS)
+    status = serializers.ChoiceField(choices=MemberTodo.Status.choices, required=False, default=MemberTodo.Status.OPEN)
+    updated_at = serializers.DateTimeField()
+
+
+class MemberTodoDeleteSerializer(serializers.Serializer):
+    """DELETE /api/devices/todos/<client_id>/ -- {updated_at}."""
+
+    updated_at = serializers.DateTimeField()
+
+
+class MemberTodoListQuerySerializer(serializers.Serializer):
+    """GET /api/devices/todos/?status=open|done|all&member=<id> (owner)."""
+
+    status = serializers.ChoiceField(choices=["open", "done", "all"], required=False, default="all")
     member = serializers.IntegerField(required=False, min_value=1, default=None)

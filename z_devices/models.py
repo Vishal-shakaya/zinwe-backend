@@ -459,6 +459,42 @@ class TaskActivity(models.Model):
         return f"{self.by} {self.action} @ {self.at:%Y-%m-%d %H:%M}"
 
 
+class MemberTodo(models.Model):
+    """
+    A member's own to-do from their Zinwe window. The owner can read it but never change it; it follows the member to
+    a new PC. `client_id` is the id the Windows app gave it, so a retry is the same row.
+
+    `updated_at` is the member's own change time, not the server's: the last write wins by that time, and a delete wins
+    over any edit older than it. Rules: `member_todos.py`.
+    """
+
+    class Status(models.TextChoices):
+        OPEN = "open", "Open"
+        DONE = "done", "Done"
+
+    owner = models.ForeignKey("z_auth.User", on_delete=models.CASCADE, related_name="member_todos")
+    member = models.ForeignKey(Member, on_delete=models.CASCADE, related_name="todos")
+    client_id = models.CharField(max_length=64)
+    title = models.CharField(max_length=200, blank=True)
+    due_date = models.DateField(null=True, blank=True)
+    # [{"title": str, "done": bool}], in order.
+    steps = models.JSONField(default=list, blank=True)
+    status = models.CharField(max_length=4, choices=Status.choices, default=Status.OPEN)
+    done_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField()
+    # Soft delete: the row stays so every PC of the member learns of it, but the owner no longer sees it.
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-updated_at", "-id"]
+        constraints = [models.UniqueConstraint(fields=["member", "client_id"], name="uniq_member_todo_client_id")]
+        indexes = [models.Index(fields=["owner", "member", "-updated_at"])]
+
+    def __str__(self) -> str:
+        return f"{self.title} ({self.member}, {self.status})"
+
+
 class DeviceEvent(models.Model):
     """
     Something the agent saw on a PC (a USB drive plugged in, a rule applied...).

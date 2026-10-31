@@ -8,6 +8,7 @@ from .models import (
     DeviceEvent,
     EnrollmentKey,
     Member,
+    MemberTodo,
     Message,
     Policy,
     Task,
@@ -123,6 +124,27 @@ class TaskAdmin(admin.ModelAdmin):
     readonly_fields = (
         "owner", "member", "message", "title", "note", "due_at", "priority", "status", "help_note",
         "status_changed_at", "status_changed_by", "nudged_at", "created_at", "updated_at",
+    )
+
+    def has_add_permission(self, request: HttpRequest) -> bool:
+        return False
+
+    def has_change_permission(self, request: HttpRequest, obj=None) -> bool:  # type: ignore[no-untyped-def]
+        return False
+
+
+@admin.register(MemberTodo)
+class MemberTodoAdmin(admin.ModelAdmin):
+    """A member's own to-dos: a read-only audit view (only their Zinwe window changes them)."""
+
+    list_display = ("updated_at", "title", "status", "deleted_at", "member", "owner")
+    list_filter = ("status",)
+    search_fields = ("title", "member__name", "member__email", "owner__email")
+    list_select_related = ("member", "owner")
+    raw_id_fields = ("owner", "member")
+    readonly_fields = (
+        "owner", "member", "client_id", "title", "due_date", "steps", "status", "done_at", "updated_at",
+        "deleted_at", "created_at",
     )
 
     def has_add_permission(self, request: HttpRequest) -> bool:
