@@ -1,6 +1,8 @@
 """Thin HTTP layer for z_devices. Validation in serializers, logic in services."""
 from __future__ import annotations
 
+import re
+
 from django.http import FileResponse, Http404, HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -15,7 +17,7 @@ from rest_framework.views import APIView
 from z_auth import entitlements as plan
 from z_main.client import get_client_ip
 
-from . import pictures, services, work_tasks
+from . import member_todos, pictures, services, work_tasks
 from .models import AgentRelease, DeviceEvent, WorkLog
 from .authentication import DeviceScopedThrottle, DeviceTokenAuthentication, IsDevice, IsOwner
 from .serializers import (
@@ -857,6 +859,10 @@ def _is_device(request: Request) -> bool:
     return isinstance(request.auth, Device)
 
 
+# The Windows app's id for a to-do (a guid without dashes); anything else never reaches the database.
+TODO_CLIENT_ID = re.compile(r"[A-Za-z0-9_-]{8,64}")
+
+
 class _TaskView(APIView):
     """Owner or device. Device calls are throttled per PC; owner calls aren't."""
 
@@ -965,6 +971,92 @@ class TaskActionView(_TaskView):
         except work_tasks.TaskRefused as exc:
             return _refused(exc)
         return Response(TaskSerializer(task, context={"request": request}).data)
+
+
+# --- A member's own to-dos (the member's PC writes, the owner only reads) -----------------------------------
+
+
+class TodoListView(_TaskView):
+    """
+    GET /api/devices/todos/ -- same plan module as tasks (team_chat); without it, 403 and the Windows app stays local.
+    - owner: ?status=open|done|all (default all) &member=<id> -> [Todo], newest change first; deleted ones left out.
+    - device: {member_id, todos: [Todo]}: the PC's member's to-dos, with `deleted` ones, so their other PCs drop them.
+    """
+
+    def get(self, request: Request) -> Response:
+        from .serializers import MemberTodoListQuerySerializer, MemberTodoSerializer
+
+        if _is_device(request):
+            plan.require(request.auth.owner, plan.TEAM_CHAT)
+            todos = member_todos.todos_for_device(request.auth)
+            return Response({"member_id": request.auth.member_id, "todos": MemberTodoSerializer(todos, many=True).data})
+        plan.require(request.user, plan.TEAM_CHAT)
+        query = MemberTodoListQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        todos = member_todos.todos_for_owner(request.user, query.validated_data["status"], query.validated_data["member"])
+        return Response(MemberTodoSerializer(todos, many=True).data)
+
+
+class MemberTodosView(APIView):
+    """GET /api/devices/members/<id>/todos/ -- ?status=open|done|all (default all) -> [Todo] (owner, read-only)."""
+
+    permission_classes = [IsOwner]
+
+    def get(self, request: Request, member_id: int) -> Response:
+        from .serializers import MemberTodoListQuerySerializer, MemberTodoSerializer
+
+        plan.require(request.user, plan.TEAM_CHAT)
+        member = get_object_or_404(request.user.members, pk=member_id)
+        query = MemberTodoListQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        todos = member_todos.todos_for_owner(request.user, query.validated_data["status"], member.pk)
+        return Response(MemberTodoSerializer(todos, many=True).data)
+
+
+class DeviceTodoView(APIView):
+    """
+    `Authorization: Device <token>` -- the member's own to-do, from their Zinwe window. Safe to send twice or late.
+    PUT /api/devices/todos/<client_id>/ -- {title, due_date?, steps?: [{title, done?}], status?, updated_at} -> Todo
+    (201 when new). DELETE -- {updated_at} -> Todo. Either way the answer is the row as it stands: a write older than
+    the row changes nothing. 409 when the PC isn't linked to a member.
+    """
+
+    authentication_classes = [DeviceTokenAuthentication]
+    permission_classes = [IsDevice]
+    throttle_classes = [DeviceScopedThrottle]
+    throttle_scope = "device_tasks"
+
+    def _refused(self, request: Request, client_id: str) -> Response | None:
+        plan.require(request.auth.owner, plan.TEAM_CHAT)
+        if not TODO_CLIENT_ID.fullmatch(client_id):
+            return Response({"client_id": ["Not a to-do id."]}, status=status.HTTP_400_BAD_REQUEST)
+        if request.auth.member_id is None:
+            return Response(
+                {"code": "no_member", "detail": "This PC isn't linked to a member."}, status=status.HTTP_409_CONFLICT
+            )
+        return None
+
+    def put(self, request: Request, client_id: str) -> Response:
+        from .serializers import MemberTodoSaveSerializer, MemberTodoSerializer
+
+        if (refused := self._refused(request, client_id)) is not None:
+            return refused
+        serializer = MemberTodoSaveSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        todo, created = member_todos.save_todo(request.auth, client_id, serializer.validated_data)
+        return Response(
+            MemberTodoSerializer(todo).data, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK
+        )
+
+    def delete(self, request: Request, client_id: str) -> Response:
+        from .serializers import MemberTodoDeleteSerializer, MemberTodoSerializer
+
+        if (refused := self._refused(request, client_id)) is not None:
+            return refused
+        serializer = MemberTodoDeleteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        todo = member_todos.delete_todo(request.auth, client_id, serializer.validated_data["updated_at"])
+        return Response(MemberTodoSerializer(todo).data)
 
 
 # --- FR-44: team pictures -----------------------------------------------------------------------------------
