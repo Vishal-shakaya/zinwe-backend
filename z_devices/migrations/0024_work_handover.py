@@ -7,7 +7,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('z_devices', '0022_member_picture'),
+        ('z_devices', '0023_member_todos'),
     ]
 
     operations = [
