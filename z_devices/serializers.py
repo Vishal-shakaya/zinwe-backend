@@ -309,7 +309,7 @@ class WorkLogSerializer(serializers.ModelSerializer):
         model = WorkLog
         fields = [
             "id", "device_id", "hostname", "member_id", "member_name", "state", "previous_state", "at",
-            "reason", "note", "approval", "decided_at", "decision_note",
+            "reason", "note", "approval", "decided_at", "decision_note", "moved_from", "left_off_at",
         ]
 
     def get_member_name(self, obj: WorkLog) -> str | None:

@@ -5,6 +5,10 @@ A person's work log is a list of changes (log in, break, back, log out). Each ch
 their next change. A stretch that crosses midnight is split between the days: log in 22:00, log out 02:00 = 2 h on
 each day. Breaks are split the same way (the break itself is counted once, on the day it began).
 
+The changes are one sequence per person, across all their PCs, so a day that moved to another PC (WorkLog.moved_from)
+counts once: the stretch on the old PC ends at the move, or at its last heartbeat if it had gone quiet by then
+(WorkLog.left_off_at), and nothing that PC reports afterwards opens a stretch.
+
 - A stretch inside one day counts in full. The last, still-open stretch counts up to "now" when it began today; on a
   past day an open stretch (they never logged out) isn't counted and the day is flagged `open_ended`.
 - A stretch that crosses midnight counts, split by day, when it lasts at most MAX_OVERNIGHT. Longer is a forgotten
@@ -93,9 +97,11 @@ def _until(entry: WorkLog, nxt: WorkLog | None, now: datetime, tz: tzinfo) -> da
         device = entry.device
         running = _online(device, now) and device.work_state == entry.state
         return now if running and now - entry.at <= MAX_OVERNIGHT else None
+    # The day moved on from a PC that had gone quiet: its stretch stops where that PC left off.
+    end = nxt.at if nxt.left_off_at is None else max(entry.at, min(nxt.at, nxt.left_off_at))
     if local_day(entry.at, tz) == local_day(nxt.at, tz):
-        return nxt.at
-    return nxt.at if nxt.at - entry.at <= MAX_OVERNIGHT else None
+        return end
+    return end if nxt.at - entry.at <= MAX_OVERNIGHT else None
 
 
 def split_by_day(seq: list[WorkLog], lo: datetime, hi: datetime, now: datetime, tz: tzinfo) -> dict[date, DayWork]:
@@ -154,6 +160,15 @@ def _spread(days: dict[date, DayWork], entry: WorkLog, until: datetime, lo: date
         if until > midnight:
             w.continues = True
         a = upto
+
+
+def day_so_far(logs: Any, at: datetime, tz: tzinfo) -> DayWork:
+    """One person's day (`logs` are their changes) from its midnight up to `at`, for the PC that carries it on."""
+    day = local_day(at, tz)
+    lo = day_start(day, tz)
+    for seq in load_window(window_queryset(logs, lo, at), lo, at).values():
+        return split_by_day(seq, lo, at, at, tz).get(day, DayWork())
+    return DayWork()
 
 
 def load_window(logs: Iterable[WorkLog], lo: datetime, hi: datetime) -> dict[Key, list[WorkLog]]:

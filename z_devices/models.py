@@ -168,6 +168,15 @@ class Device(models.Model):
     # When the current work state began (the widget's last change). The widget reports *settled*
     # seconds only, so the running stretch is added at read time (FR-03): see live_work_seconds().
     work_since = models.DateTimeField(null=True, blank=True)
+    # One person, one work day, across PCs: the server decides which of a member's PCs owns the day (last Start day
+    # wins, services._settle_work_day). While this PC's day has moved, `work_moved_to` is the PC it went to and
+    # `work_moved_at` when; this PC's work state is then no longer counted (an older agent that keeps reporting it is
+    # ignored). The PC itself stays enrolled, connected and protected: only the work session moved.
+    work_moved_to = models.ForeignKey("self", null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
+    work_moved_at = models.DateTimeField(null=True, blank=True)
+    # What this PC's timer carries on from after the day moved here, as the heartbeat hands it over: at, worked_seconds,
+    # break_seconds, breaks, first_start, from_hostname. Good for that day only.
+    work_carry = models.JSONField(null=True, blank=True)
 
     # The member's own consent to monitoring on this PC (DPDP: free, specific, informed,
     # affirmative), given on the Zinwe widget's consent screen and reported on the heartbeat.
@@ -571,6 +580,8 @@ class WorkLog(models.Model):
     Recorded by the heartbeat when the reported work state changes. `at` is when the
     widget says the change happened (`work_changed_at`), else when we heard about it.
     A break shorter than one heartbeat can be missed; the totals on the device stay exact.
+
+    A person's lines are one sequence across all their PCs, so a day that moved between PCs is one day.
     """
 
     class State(models.TextChoices):
@@ -602,6 +613,14 @@ class WorkLog(models.Model):
     approval = models.CharField(max_length=10, choices=Approval.choices, blank=True)
     decided_at = models.DateTimeField(null=True, blank=True)
     decision_note = models.CharField(max_length=280, blank=True)
+    # The day moved here from another PC (a "working" line: the dashboard shows "Moved to <this PC>"). No approval,
+    # no reason: a move is not a log-out.
+    moved_from = models.CharField(
+        max_length=255, blank=True, help_text="The PC the work day moved from, on the line that moved it."
+    )
+    left_off_at = models.DateTimeField(
+        null=True, blank=True, help_text="When the old PC was last heard from, if that was well before the move."
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
