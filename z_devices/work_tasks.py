@@ -25,7 +25,9 @@ from django.utils import timezone
 from z_analytics.services import track
 from z_auth.models import User
 
+from . import web_push
 from .models import Device, Member, Message, Task, TaskActivity, TaskStep
+from .owner_feed import TASK_ACTIONS
 
 S = Task.Status
 BY_OWNER = Task.By.OWNER
@@ -327,7 +329,9 @@ def member_action(
     if action == "help":
         task.help_note = note[:1000]
     task.save()
-    _log(task, BY_MEMBER, _ACTIVITY[action], note, at=now)
+    activity = _log(task, BY_MEMBER, _ACTIVITY[action], note, at=now)
+    if activity.action in TASK_ACTIONS:
+        web_push.announce(task.owner_id, "task", [activity.pk])
     if action == "seen" and task.message_id:
         Message.objects.filter(pk=task.message_id, read_by_member=False).update(
             read_by_member=True, read_by_member_at=now, delivered_at=Coalesce(F("delivered_at"), Value(now))

@@ -693,6 +693,25 @@ class NotificationPrefs(models.Model):
         return f"Notifications for {self.owner}"
 
 
+class PushSubscription(models.Model):
+    """
+    One browser that gets web push for its owner (z_devices/web_push.py): what pushManager.subscribe() gave it. The
+    endpoint is the browser's address at its vendor's push service and is treated as a secret. Deleted when the owner
+    turns notifications off there or logs out, and when the push service says it's gone (404 / 410).
+    """
+
+    owner = models.ForeignKey("z_auth.User", on_delete=models.CASCADE, related_name="push_subscriptions")
+    endpoint = models.URLField(max_length=1024, unique=True)
+    p256dh = models.CharField(max_length=128)
+    auth = models.CharField(max_length=64)
+    user_agent = models.CharField(max_length=255, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_success_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self) -> str:
+        return f"Push for {self.owner_id}: {self.user_agent[:40] or 'a browser'}"
+
+
 class ReportSchedule(models.Model):
     """
     A report the owner gets by email on a schedule (FR-22): the whole team or one person, for the period that

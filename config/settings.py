@@ -366,6 +366,12 @@ RAZORPAY_KEY_SECRET = env_str("RAZORPAY_KEY_SECRET", "")
 RAZORPAY_WEBHOOK_SECRET = env_str("RAZORPAY_WEBHOOK_SECRET", "")
 ZINWE_RAZORPAY_ENABLED = env_bool("ZINWE_RAZORPAY_ENABLED", True)
 ZINWE_RAZORPAY_ALLOW_TEST = env_bool("ZINWE_RAZORPAY_ALLOW_TEST", False)
+# Web push (z_devices/web_push.py): browser notifications with the dashboard closed. On only when all three are set;
+# unset, the API says so and the open dashboard's poll works as before. The public key goes to the browser; the private
+# key never leaves the server. The subject is a mailto: or https: address the push services can reach us at.
+WEBPUSH_VAPID_PUBLIC_KEY = env_str("WEBPUSH_VAPID_PUBLIC_KEY", "")
+WEBPUSH_VAPID_PRIVATE_KEY = env_str("WEBPUSH_VAPID_PRIVATE_KEY", "")
+WEBPUSH_VAPID_SUBJECT = env_str("WEBPUSH_VAPID_SUBJECT", "")
 # Shared quotes (z_auth.quotes): the PDF emailed to the owner and the public /quote/<token> page.
 ZINWE_QUOTE_VALID_DAYS = 15
 # The internal admin app, for links in team emails (support tickets).

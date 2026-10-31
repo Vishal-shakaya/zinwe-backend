@@ -18,3 +18,5 @@ uharfbuzz>=0.39,<1
 Pillow>=11,<13
 # UPI QR codes on the payment page (pure Python)
 segno>=1.6,<2
+# Web push to the owner's browsers (z_devices/web_push.py): encrypts and signs each push
+pywebpush>=2.0,<3
