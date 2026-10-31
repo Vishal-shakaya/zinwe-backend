@@ -23,6 +23,7 @@ from z_auth.entitlements import Entitlements, entitlements_for
 from z_auth.models import User
 from z_notification.services import notify
 
+from . import web_push
 from .events import USB_LOCKED_DOWN, USB_RESTORED, build_title, is_confirmation
 from .models import (
     AgentRelease,
@@ -343,6 +344,7 @@ def reply_from_member(device: Device, body: str) -> Message | None:
     transaction.on_commit(
         lambda: track("member.message_reply", {"member_id": member.id}, actor_email=member.email, ref=message)
     )
+    web_push.announce(member.owner_id, "chat", [message.pk])
     return message
 
 
@@ -644,11 +646,14 @@ def _log_work_change(device: Device, data: dict[str, Any], now: Any) -> WorkLog 
     needs_ok = new_state in APPROVED_STATES
     reason = (data.get(f"{prefix}_reason") or "").strip()[:120] if prefix else ""
     note = (data.get(f"{prefix}_note") or "").strip()[:280] if prefix else ""
-    return WorkLog.objects.create(
+    log = WorkLog.objects.create(
         owner_id=device.owner_id, device=device, member_id=device.member_id,
         state=new_state, previous_state=device.work_state or "", at=at, reason=reason, note=note,
         approval=WorkLog.Approval.PENDING if needs_ok else "",
     )
+    if needs_ok:
+        web_push.announce(device.owner_id, "approval", [log.pk])
+    return log
 
 
 WORK_EVENT_MAX_AGE = timedelta(days=7)
@@ -667,6 +672,7 @@ def _log_work_events(device: Device, events: list[dict[str, Any]], now: Any) -> 
     "back from break". Returns how many rows were added.
     """
     added = 0
+    waiting: list[int] = []  # rows that wait for the owner's OK
     for event in sorted(events, key=lambda e: e["at"]):
         at, state = event["at"], event["state"]
         if at > now + WORK_EVENT_MAX_SKEW or at < now - WORK_EVENT_MAX_AGE:
@@ -686,7 +692,7 @@ def _log_work_events(device: Device, events: list[dict[str, Any]], now: Any) -> 
         if previous == state:
             continue
         explained = state in APPROVED_STATES
-        WorkLog.objects.create(
+        log = WorkLog.objects.create(
             owner_id=device.owner_id, device=device, member_id=device.member_id,
             state=state, previous_state=previous, at=at,
             reason=(event.get("reason") or "").strip()[:120] if explained else "",
@@ -694,6 +700,9 @@ def _log_work_events(device: Device, events: list[dict[str, Any]], now: Any) -> 
             approval=WorkLog.Approval.PENDING if explained else "",
         )
         added += 1
+        if explained:
+            waiting.append(log.pk)
+    web_push.announce(device.owner_id, "approval", waiting)
     return added
 
 
@@ -1246,6 +1255,7 @@ def store_events(device: Device, events: list[dict[str, Any]]) -> tuple[int, int
     critical = [row for row in stored if row.severity == DeviceEvent.Severity.CRITICAL and not is_confirmation(row.type)]
     if critical:
         transaction.on_commit(lambda: tell_owner_critical(device, critical))
+    web_push.announce(device.owner_id, "alert", [row.pk for row in stored])
     return accepted + dropped, len(events) - accepted
 
 

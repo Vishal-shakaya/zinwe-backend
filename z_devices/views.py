@@ -15,13 +15,15 @@ from rest_framework.views import APIView
 from z_auth import entitlements as plan
 from z_main.client import get_client_ip
 
-from . import pictures, services, work_tasks
+from . import pictures, services, web_push, work_tasks
 from .models import AgentRelease, DeviceEvent, WorkLog
 from .authentication import DeviceScopedThrottle, DeviceTokenAuthentication, IsDevice, IsOwner
 from .serializers import (
     MemberFeedbackSerializer,
     MemberUpdateSerializer,
     NotificationPrefsSerializer,
+    PushEndpointSerializer,
+    PushSubscriptionSerializer,
     DevicePolicySerializer,
     DeviceSerializer,
     EnrollSerializer,
@@ -179,6 +181,48 @@ class NotificationPrefsView(APIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data)
+
+
+class PushStatusView(APIView):
+    """GET /api/devices/notifications/push/ -- {enabled, public_key}: is web push on, and the key to subscribe with."""
+
+    permission_classes = [IsOwner]
+
+    def get(self, request: Request) -> Response:
+        return Response(web_push.status())
+
+
+class PushSubscribeView(APIView):
+    """
+    POST /api/devices/notifications/push/subscribe/ -- {endpoint, keys: {p256dh, auth}}: this browser gets web push for
+    the signed-in owner. Safe to repeat. With push off nothing is saved: {subscribed: false}.
+    """
+
+    permission_classes = [IsOwner]
+
+    def post(self, request: Request) -> Response:
+        if not web_push.enabled():
+            return Response({"subscribed": False})
+        serializer = PushSubscriptionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        web_push.save_subscription(
+            request.user, data["endpoint"], data["keys"]["p256dh"], data["keys"]["auth"],
+            request.META.get("HTTP_USER_AGENT", ""),
+        )
+        return Response({"subscribed": True})
+
+
+class PushUnsubscribeView(APIView):
+    """POST /api/devices/notifications/push/unsubscribe/ -- {endpoint}: this browser stops. Safe to repeat."""
+
+    permission_classes = [IsOwner]
+
+    def post(self, request: Request) -> Response:
+        serializer = PushEndpointSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        web_push.remove_subscription(request.user, serializer.validated_data["endpoint"])
+        return Response({"subscribed": False})
 
 
 class DeviceFeedbackView(APIView):

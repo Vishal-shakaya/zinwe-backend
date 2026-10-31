@@ -6,6 +6,7 @@ from typing import Any
 
 from rest_framework import serializers
 
+from . import web_push
 from .events import EVENT_TYPE_PATTERN, build_title, event_kind
 from .models import (
     Device, DeviceEvent, Member, Message, NotificationPrefs, Policy, ReportSchedule, Task, WorkLog,
@@ -193,6 +194,30 @@ class MemberReplySerializer(serializers.Serializer):
     """POST /api/devices/messages/ (Device auth) -- the member replies in the thread."""
 
     body = serializers.CharField(max_length=2000, trim_whitespace=True)
+
+
+class PushKeysSerializer(serializers.Serializer):
+    """The browser's own encryption keys, base64url (PushSubscription.toJSON()): 65 bytes and 16 bytes."""
+
+    p256dh = serializers.RegexField(r"^[A-Za-z0-9_-]{80,120}={0,2}$")
+    auth = serializers.RegexField(r"^[A-Za-z0-9_-]{16,60}={0,2}$")
+
+
+class PushEndpointSerializer(serializers.Serializer):
+    """POST notifications/push/unsubscribe/ -- {endpoint}."""
+
+    endpoint = serializers.URLField(max_length=1024)
+
+
+class PushSubscriptionSerializer(PushEndpointSerializer):
+    """POST notifications/push/subscribe/ -- {endpoint, keys: {p256dh, auth}}, as the browser gave them."""
+
+    keys = PushKeysSerializer()
+
+    def validate_endpoint(self, value: str) -> str:
+        if not web_push.is_push_service(value):
+            raise serializers.ValidationError("This isn't a browser push address.")
+        return value
 
 
 class NotificationPrefsSerializer(serializers.ModelSerializer):
