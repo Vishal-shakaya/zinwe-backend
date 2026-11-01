@@ -598,6 +598,45 @@ class Feedback(models.Model):
         return f"{self.owner} rated {self.rating}/10"
 
 
+class Testimonial(models.Model):
+    """
+    A customer's words on the website, typed in the admin app or started from a good `Feedback` (which stays private and
+    untouched). Home shows the published ones. `permission` says how the person agreed: it is required to publish and
+    never leaves the admin app.
+    """
+
+    RATING_MIN = 8
+    RATING_MAX = 10
+    PUBLIC_LIMIT = 6
+
+    class Kind(models.TextChoices):
+        OWNER = "owner", "Business owner"
+        MEMBER = "member", "Team member"
+
+    kind = models.CharField(max_length=10, choices=Kind.choices, default=Kind.OWNER)
+    quote = models.TextField(max_length=500)
+    rating = models.PositiveSmallIntegerField(validators=[MinValueValidator(RATING_MIN), MaxValueValidator(RATING_MAX)])
+    name = models.CharField(max_length=80)
+    role = models.CharField(max_length=80, blank=True, help_text='e.g. "Founder". Blank shows the kind instead.')
+    company = models.CharField(max_length=120)
+    permission = models.CharField(max_length=200, blank=True, help_text="How they agreed, e.g. Email on 3 Nov.")
+    is_published = models.BooleanField(default=False, db_index=True)
+    source_feedback = models.OneToOneField(
+        Feedback, null=True, blank=True, on_delete=models.SET_NULL, related_name="testimonial"
+    )
+    created_by = models.ForeignKey(
+        "z_auth.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+
+    def __str__(self) -> str:
+        return f"{self.name}, {self.company} ({self.rating}/10)"
+
+
 class CustomerRemark(models.Model):
     """The Zinwe team's internal note about a customer (never shown to the customer)."""
 

@@ -30,6 +30,7 @@ urlpatterns = [
     path("announcements/", views.AnnouncementsView.as_view(), name="announcements"),
     path("announcements/public/", views.WebsiteAnnouncementsView.as_view(), name="announcements-public"),
     path("whats-new/", views.ReleaseNotesView.as_view(), name="whats-new"),
+    path("testimonials/", views.TestimonialsView.as_view(), name="testimonials"),
     path("plans/", views.PlanListView.as_view(), name="plans"),
     path("plans/activate/", views.PlanActivateView.as_view(), name="plan-activate"),
     path("subscription/", portal_views.SubscriptionView.as_view(), name="subscription"),

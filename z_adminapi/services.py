@@ -653,7 +653,7 @@ def review_payment(
 
 
 def feedback_rows() -> list[Feedback]:
-    return list(Feedback.objects.select_related("owner__owned_company", "member", "device").all())
+    return list(Feedback.objects.select_related("owner__owned_company", "member", "device", "testimonial").all())
 
 
 def feedback_summary() -> dict[str, Any]:

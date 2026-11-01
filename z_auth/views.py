@@ -524,6 +524,23 @@ class PlanActivateView(APIView):
         )
 
 
+class TestimonialsView(APIView):
+    """GET /api/auth/testimonials/ -- the published testimonials for Home, newest first. Public, no sign-in needed."""
+
+    authentication_classes: list = []
+    permission_classes = [AllowAny]
+
+    def get(self, request: Request) -> Response:
+        from .models import Testimonial
+
+        rows = Testimonial.objects.filter(is_published=True)[: Testimonial.PUBLIC_LIMIT]
+        return Response([
+            {"id": t.pk, "kind": t.kind, "quote": t.quote, "rating": t.rating, "name": t.name, "role": t.role,
+             "company": t.company}
+            for t in rows
+        ])
+
+
 class ReleaseNotesView(APIView):
     """
     GET /api/auth/whats-new/ -- published release notes, newest first (FR-21): the website's /whats-new page and the

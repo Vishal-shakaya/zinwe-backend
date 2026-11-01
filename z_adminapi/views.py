@@ -522,6 +522,54 @@ class InvoicePdfView(StaffView):
         return invoice_pdf_response(payment)
 
 
+class TestimonialListView(StaffView):
+    """GET /api/admin/testimonials/ -- every testimonial, newest first. POST -- add one, unpublished unless it's asked."""
+
+    def get(self, request: Request) -> Response:
+        from z_auth.models import Testimonial
+
+        from .serializers import TestimonialSerializer
+
+        return Response(TestimonialSerializer(Testimonial.objects.all(), many=True).data)
+
+    def post(self, request: Request) -> Response:
+        from .serializers import TestimonialSerializer
+
+        data = TestimonialSerializer(data=request.data)
+        data.is_valid(raise_exception=True)
+        row = data.save(created_by=request.user)
+        _audit(request, "testimonial_created", {"id": row.pk, "published": row.is_published}, row)
+        return Response(TestimonialSerializer(row).data, status=status.HTTP_201_CREATED)
+
+
+class TestimonialDetailView(StaffView):
+    """PATCH /api/admin/testimonials/<id>/ -- edit, publish or unpublish. DELETE -- remove (its feedback stays)."""
+
+    def patch(self, request: Request, pk: int) -> Response:
+        from z_auth.models import Testimonial
+
+        from .serializers import TestimonialSerializer
+
+        row = get_object_or_404(Testimonial, pk=pk)
+        was_published = row.is_published
+        data = TestimonialSerializer(row, data=request.data, partial=True)
+        data.is_valid(raise_exception=True)
+        row = data.save()
+        props = {"id": pk, "fields": sorted(data.validated_data)}
+        if was_published != row.is_published:
+            _audit(request, "testimonial_published" if row.is_published else "testimonial_unpublished", props, row)
+        else:
+            _audit(request, "testimonial_updated", props, row)
+        return Response(TestimonialSerializer(row).data)
+
+    def delete(self, request: Request, pk: int) -> Response:
+        from z_auth.models import Testimonial
+
+        get_object_or_404(Testimonial, pk=pk).delete()
+        _audit(request, "testimonial_deleted", {"id": pk})
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
 class ReleaseNoteListView(StaffView):
     """GET /api/admin/release-notes/ -- every note (drafts too), newest first. POST -- write one (FR-21)."""
 

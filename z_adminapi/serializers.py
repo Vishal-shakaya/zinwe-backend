@@ -8,7 +8,7 @@ from django.utils import timezone
 from rest_framework import serializers
 
 from z_auth import billing
-from z_auth.models import Announcement, Feedback, Invoice, ManualPayment, Plan, ReleaseNote, Subscription
+from z_auth.models import Announcement, Feedback, Invoice, ManualPayment, Plan, ReleaseNote, Subscription, Testimonial
 from z_devices.models import AgentRelease
 from z_devices.services import release_adoption
 from z_notification.models import Notification
@@ -234,10 +234,15 @@ class PaymentQueueSerializer(serializers.Serializer):
 class FeedbackRowSerializer(serializers.ModelSerializer):
     customer = serializers.SerializerMethodField()
     member = serializers.SerializerMethodField()
+    testimonial_id = serializers.SerializerMethodField()
 
     class Meta:
         model = Feedback
-        fields = ["id", "rating", "message", "page", "created_at", "customer", "source", "member"]
+        fields = ["id", "rating", "message", "page", "created_at", "customer", "source", "member", "testimonial_id"]
+
+    def get_testimonial_id(self, obj: Feedback) -> int | None:
+        testimonial = getattr(obj, "testimonial", None)
+        return testimonial.pk if testimonial else None
 
     def get_member(self, obj: Feedback) -> dict[str, Any] | None:
         """Who sent it from their Zinwe window (FR-14); None for the owner's own feedback."""
@@ -554,6 +559,37 @@ class AdminSubscriptionSerializer(serializers.ModelSerializer):
         if value and not value.startswith("https://"):
             raise serializers.ValidationError("Paste the full https:// payment link.")
         return value
+
+
+class TestimonialSerializer(serializers.ModelSerializer):
+    """GET/POST /api/admin/testimonials/ and PATCH /<id>/. Nothing goes public without a note of how the person agreed."""
+
+    class Meta:
+        model = Testimonial
+        fields = (
+            "id", "kind", "quote", "rating", "name", "role", "company", "permission", "is_published", "source_feedback",
+            "created_at", "updated_at",
+        )
+        read_only_fields = ("id", "created_at", "updated_at")
+        extra_kwargs = {
+            "rating": {"error_messages": {
+                "min_value": "Testimonials show ratings of 8 to 10.",
+                "max_value": "Testimonials show ratings of 8 to 10.",
+            }},
+        }
+
+    def validate_quote(self, value: str) -> str:
+        if not value.strip():
+            raise serializers.ValidationError("Add their words.")
+        return value.strip()
+
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        current = self.instance
+        published = attrs.get("is_published", current.is_published if current else False)
+        permission = attrs.get("permission", current.permission if current else "")
+        if published and not permission.strip():
+            raise serializers.ValidationError({"permission": "Note how they agreed before this goes on the website."})
+        return attrs
 
 
 class ReleaseNoteSerializer(serializers.ModelSerializer):
