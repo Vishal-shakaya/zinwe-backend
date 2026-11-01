@@ -346,7 +346,7 @@ class MemberTests(DeviceTestCase):
             set(row),
             {
                 "id", "name", "email", "member_id", "role", "is_active", "created_at",
-                "online", "device", "download_url", "unread", "picture",
+                "online", "device", "download_url", "unread", "last_message", "picture",
             },
         )
 

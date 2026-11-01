@@ -67,8 +67,10 @@ class MemberSerializer(serializers.Serializer):
     # Where this member downloads the agent — same link the invite email carries,
     # so the owner's "copy details / share" button can hand over everything at once.
     download_url = serializers.SerializerMethodField()
-    # Unread replies from this member (for the Team list chat badge).
+    # Unread replies from this member (the chat badges), and the newest line of the chat for its tile on the Chat
+    # page: {text (one short line), sender, at}, or null with no messages or no Chat on the plan (services.chat_tiles).
     unread = serializers.SerializerMethodField()
+    last_message = serializers.SerializerMethodField()
     # FR-44: null, {kind: avatar, key}, or {kind: photo, url, updated_at} (z_devices.pictures.picture_payload).
     picture = serializers.SerializerMethodField()
 
@@ -82,10 +84,18 @@ class MemberSerializer(serializers.Serializer):
 
         return settings.ZINWE_AGENT_DOWNLOAD_URL
 
-    def get_unread(self, obj: Member) -> int:
+    def _tile(self, obj: Member) -> dict[str, Any]:
+        """The list view passes every member's tile in `chat_tiles`; one-member responses work theirs out here."""
         from . import services
 
-        return services.unread_from_member(obj)
+        tiles = self.context.get("chat_tiles")
+        return tiles[obj.pk] if tiles is not None else services.chat_tiles(obj.owner, [obj])[obj.pk]
+
+    def get_unread(self, obj: Member) -> int:
+        return self._tile(obj)["unread"]
+
+    def get_last_message(self, obj: Member) -> dict[str, Any] | None:
+        return self._tile(obj)["last_message"]
 
     def _current_device(self, obj: Member):  # type: ignore[no-untyped-def]
         from . import services
