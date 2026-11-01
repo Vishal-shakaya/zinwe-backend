@@ -20,6 +20,7 @@ from datetime import date, timedelta
 from typing import Any
 
 from django.conf import settings
+from django.core.mail import make_msgid
 from django.db import close_old_connections, transaction
 from django.db.models import Count, Q
 from django.utils import timezone
@@ -341,7 +342,10 @@ def _deliver(step: CampaignEmail, contact: Contact, to: str, test: bool = False)
     site = settings.ZINWE_APP_URL
     url = f"{site}/api/marketing/unsubscribe/{contact.token}/"
     context = _context(step, contact, url)
-    headers = {"List-Unsubscribe": f"<{url}>", "List-Unsubscribe-Post": "List-Unsubscribe=One-Click"}
+    headers = {
+        "List-Unsubscribe": f"<{url}>", "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+        "Message-ID": make_msgid(domain=sender_domain()),  # else the server's own hostname shows in every email
+    }
     if test:
         context["subject"] = f"[Test] {context['subject']}"
     return notify(

@@ -164,6 +164,7 @@ class SendTests(Base):
         self.assertNotIn("{{", m.body + m.subject)
         self.assertIn(f"/api/marketing/unsubscribe/{c.token}/", m.extra_headers["List-Unsubscribe"])
         self.assertEqual(m.extra_headers["List-Unsubscribe-Post"], "List-Unsubscribe=One-Click")
+        self.assertTrue(m.extra_headers["Message-ID"].endswith("@zinwe.tech>"))
         self.assertIn("SKYTECHNO", m.body)
         c.refresh_from_db()
         self.assertEqual((c.status, c.last_email, c.next_email), (Status.COLD, 1, 2))
