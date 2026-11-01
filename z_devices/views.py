@@ -365,8 +365,9 @@ class MemberListCreateView(APIView):
     permission_classes = [IsOwner]
 
     def get(self, request: Request) -> Response:
-        members = services.members_for_owner(request.user)
-        return Response(MemberSerializer(members, many=True, context={"request": request}).data)
+        members = list(services.members_for_owner(request.user))
+        tiles = services.chat_tiles(request.user, members)
+        return Response(MemberSerializer(members, many=True, context={"request": request, "chat_tiles": tiles}).data)
 
     def post(self, request: Request) -> Response:
         serializer = MemberCreateSerializer(data=request.data)

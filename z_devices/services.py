@@ -8,13 +8,14 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import re
+from collections.abc import Iterable
 from datetime import timedelta
 from typing import Any
 
 from django.conf import settings
 from django.db import IntegrityError, transaction
-from django.db.models import F, Q, QuerySet, Sum, Value
-from django.db.models.functions import Coalesce
+from django.db.models import Count, F, OuterRef, Q, QuerySet, Subquery, Sum, Value
+from django.db.models.functions import Coalesce, Left
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
@@ -42,6 +43,8 @@ from .work_time import day_so_far, day_start, local_day, work_zone
 
 # How many of a member's recent messages the agent is handed per poll.
 MESSAGE_FEED_LIMIT = 50
+# The Chat tiles carry one short line of the latest message, never the message itself.
+TILE_TEXT_MAX = 80
 
 
 class EnrollmentRejected(Exception):
@@ -410,11 +413,44 @@ def mark_thread_read_by_owner(member: Member) -> int:
     ).update(read_by_owner=True)
 
 
-def unread_from_member(member: Member) -> int:
-    """How many of this member's replies the admin hasn't seen yet (for the Team list badge)."""
-    return Message.objects.filter(
-        member=member, sender=Message.Sender.MEMBER, read_by_owner=False
-    ).count()
+def _tile_text(kind: str, title: str, body: str) -> str:
+    """One short line for a Chat tile: the first line of what was said, or "Task: <title>" for a task line."""
+    if kind == Message.Kind.TASK:
+        text = f"Task: {title}"
+    else:
+        text = next((line.strip() for line in body.splitlines() if line.strip()), title)
+    return text if len(text) <= TILE_TEXT_MAX else f"{text[:TILE_TEXT_MAX - 1].rstrip()}…"
+
+
+def chat_tiles(owner: User, members: Iterable[Member]) -> dict[int, dict[str, Any]]:
+    """
+    What the Chat page's tiles need, by member id, in a fixed number of queries however many members there are:
+    {"unread": int, "last_message": {"text", "sender", "at"} | None}. The newest line uses the
+    Message(member, -created_at) index.
+
+    The text is the conversation's own, so it follows the thread's rule: without the plan's Chat module
+    (`plan.require` in MemberThreadView) `last_message` stays None. Reading tiles marks nothing read.
+    """
+    ids = [member.pk for member in members]
+    unread = dict(
+        Message.objects.filter(member_id__in=ids, sender=Message.Sender.MEMBER, read_by_owner=False)
+        .order_by()
+        .values_list("member_id")
+        .annotate(count=Count("id"))
+    )
+    last: dict[int, dict[str, Any]] = {}
+    if entitlements_for(owner).has(plan.TEAM_CHAT):
+        newest = Message.objects.filter(member=OuterRef("pk")).order_by("-created_at", "-id").values("pk")[:1]
+        rows = Message.objects.filter(
+            pk__in=Member.objects.filter(pk__in=ids, owner=owner).annotate(newest=Subquery(newest)).values("newest")
+        ).order_by().values("member_id", "kind", "sender", "title", "created_at", start=Left("body", 2 * TILE_TEXT_MAX))
+        for row in rows:
+            last[row["member_id"]] = {
+                "text": _tile_text(row["kind"], row["title"], row["start"]),
+                "sender": row["sender"],
+                "at": row["created_at"],
+            }
+    return {pk: {"unread": unread.get(pk, 0), "last_message": last.get(pk)} for pk in ids}
 
 
 def current_device_for(member: Member) -> Device | None:
