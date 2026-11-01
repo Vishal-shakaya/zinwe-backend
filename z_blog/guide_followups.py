@@ -24,6 +24,7 @@ from django.utils import timezone
 from z_notification.models import Notification
 from z_notification.services import notify
 
+from .newsletter import sender as newsletter_sender
 from . import guides as gsvc
 from .drip import zone
 from .models import Guide, GuideDownload, GuideFollowupSend, NewsletterSubscriber, SeriesSend
@@ -106,7 +107,7 @@ def _send(guide: Guide, step_no: int, sub: NewsletterSubscriber | None, to: str,
             "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
         }
     return notify(
-        "email", to, "guide_followup", _context(guide, step_no, step, sub, test), ref=guide, headers=headers, fallback=False,
+        "email", to, "guide_followup", _context(guide, step_no, step, sub, test), ref=guide, headers=headers, **newsletter_sender(),
     )
 
 

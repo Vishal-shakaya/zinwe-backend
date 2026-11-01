@@ -4,6 +4,7 @@ from __future__ import annotations
 from django.conf import settings
 from django.core.mail import EmailMultiAlternatives
 
+from ..backends import outreach_connection
 from .base import Attachment, Channel
 
 
@@ -26,15 +27,18 @@ class EmailChannel(Channel):
         headers: dict[str, str] | None = None,
         attachments: list[Attachment] | None = None,
         reply_to: list[str] | None = None,
+        from_email: str | None = None,
         fallback: bool = True,
+        smtp: str = "",
     ) -> None:
         message = EmailMultiAlternatives(
             subject=subject,
             body=body,
-            from_email=settings.DEFAULT_FROM_EMAIL,
+            from_email=from_email or settings.DEFAULT_FROM_EMAIL,
             to=[recipient],
             headers=headers or None,
             reply_to=reply_to or None,
+            connection=outreach_connection() if smtp == "outreach" else None,
         )
         if html:
             message.attach_alternative(html, "text/html")

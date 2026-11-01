@@ -81,6 +81,7 @@ INSTALLED_APPS = [
     "z_blog",
     "z_forms",
     "z_payments",
+    "z_marketing",
 ]
 
 MIDDLEWARE = [
@@ -288,6 +289,29 @@ SECURE_REFERRER_POLICY = "same-origin"
 EMAIL_BACKEND = env_str("EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend")
 DEFAULT_FROM_EMAIL = env_str("DEFAULT_FROM_EMAIL", "Zinwe <hello@zinwe.io>")
 SERVER_EMAIL = DEFAULT_FROM_EMAIL
+# The blog newsletter sends from its own domain (authenticated in the same Brevo account), so spam reports on
+# bulk mail never touch the reputation of zinwe.io's sign-in codes and invoices. Replies go to the main inbox.
+ZINWE_NEWSLETTER_FROM = env_str("ZINWE_NEWSLETTER_FROM", "Zinwe <hello@zinwe.tech>")
+ZINWE_NEWSLETTER_REPLY_TO = env_str("ZINWE_NEWSLETTER_REPLY_TO", "hello@zinwe.tech")
+# Cold outreach (z_marketing) never shares the product mail account: it has its own mailbox SMTP, and nothing is
+# sent until this host is set. Brevo requires opted-in recipients, and a suspended Brevo account would stop sign-in
+# codes and invoices. No fallback: a failed outreach email simply stays due.
+ZINWE_OUTREACH_FROM = env_str("ZINWE_OUTREACH_FROM", "Vishal Shakaya <hello@zinwe.tech>")
+ZINWE_OUTREACH_REPLY_TO = env_str("ZINWE_OUTREACH_REPLY_TO", "hello@zinwe.tech")
+ZINWE_OUTREACH_POSTAL_ADDRESS = env_str(
+    "ZINWE_OUTREACH_POSTAL_ADDRESS",
+    "SKYTECHNO, Plot No-42, Shiv Park, Kakrola, Near NSUT College, Dwarka Sector 14, New Delhi 110078, India",
+)
+EMAIL_OUTREACH_HOST = env_str("EMAIL_OUTREACH_HOST", "")
+EMAIL_OUTREACH_PORT = int(env_str("EMAIL_OUTREACH_PORT", "587"))
+EMAIL_OUTREACH_HOST_USER = env_str("EMAIL_OUTREACH_HOST_USER", "")
+EMAIL_OUTREACH_HOST_PASSWORD = env_str("EMAIL_OUTREACH_HOST_PASSWORD", "")
+EMAIL_OUTREACH_USE_TLS = env_bool("EMAIL_OUTREACH_USE_TLS", True)
+# Seconds between two outreach emails: one person writing, not a blast.
+ZINWE_OUTREACH_GAP_SECONDS = int(env_str("ZINWE_OUTREACH_GAP_SECONDS", "45"))
+# What the DNS check in admin -> Marketing -> Settings looks for (Zoho defaults).
+ZINWE_OUTREACH_SPF_INCLUDE = env_str("ZINWE_OUTREACH_SPF_INCLUDE", "include:zoho.in")
+ZINWE_OUTREACH_DKIM_SELECTOR = env_str("ZINWE_OUTREACH_DKIM_SELECTOR", "zmail")
 EMAIL_HOST = env_str("EMAIL_HOST", "localhost")
 EMAIL_PORT = int(env_str("EMAIL_PORT", "25"))
 EMAIL_HOST_USER = env_str("EMAIL_HOST_USER", "")

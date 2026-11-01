@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en">
+<body style="margin:0;padding:16px;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.55;color:#141210;">
+  <div style="max-width:560px;">
+    {{ body_html|safe }}
+    <div style="margin-top:20px;padding-top:12px;border-top:1px solid #e5e5e5;font-size:12px;line-height:1.5;color:#6b6b6b;">
+      {% include "z_notification/_brand.html" %}
+      This is a promotional email. To stop hearing from me, reply "no" or <a href="{{ unsubscribe_url }}" style="color:#6b6b6b;">unsubscribe</a>.<br>
+      {{ postal_address }}<br>
+      Zinwe · Security, simplified. IT Is OK.
+    </div>
+  </div>
+</body>
+</html>

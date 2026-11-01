@@ -68,6 +68,14 @@ def _smtp(prefix: str) -> SMTPBackend | None:
     )
 
 
+def outreach_connection() -> SMTPBackend:
+    """The outreach mailbox (EMAIL_OUTREACH_*). Raises when it isn't set up: outreach never borrows the product account."""
+    connection = _smtp("OUTREACH_")
+    if connection is None:
+        raise RuntimeError("The outreach mailbox is not set up (EMAIL_OUTREACH_HOST)")
+    return connection
+
+
 class FailoverEmailBackend(BaseEmailBackend):
     """Primary SMTP first; on any failure, the fallback SMTP. See the module docstring."""
 

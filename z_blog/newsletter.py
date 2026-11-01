@@ -48,6 +48,12 @@ def _site() -> str:
     return settings.ZINWE_APP_URL
 
 
+def sender() -> dict[str, Any]:
+    """Newsletter mail: From and Reply-To on its own domain, primary SMTP only (never the backup Gmail)."""
+    reply_to = (settings.ZINWE_NEWSLETTER_REPLY_TO or "").strip()
+    return {"from_email": settings.ZINWE_NEWSLETTER_FROM, "reply_to": [reply_to] if reply_to else None, "fallback": False}
+
+
 # --- Subscribers ------------------------------------------------------------------
 
 
@@ -107,7 +113,7 @@ def subscribe(email: str, source: str = "", tz: str = "", ref: str = "") -> None
         notify(
             "email", email, "newsletter_access",
             {"reading_url": f"{_site()}{reading_page(source)}?k={sub.access_key}"},
-            ref=sub, fallback=False,
+            ref=sub, **sender(),
         )
     else:
         notify(
@@ -117,7 +123,7 @@ def subscribe(email: str, source: str = "", tz: str = "", ref: str = "") -> None
                 **dict(zip(("series_title", "series_blurb"), _live_series(source))),
                 **_guide_context(source),
             },
-            ref=sub, fallback=False,
+            ref=sub, **sender(),
         )
 
 
@@ -312,8 +318,7 @@ def _send(article: Article, subject: str, sub: NewsletterSubscriber | None, to: 
         template = context["look"].template
     else:
         template, context = "newsletter_issue", _context(article, subject, page)
-    # From hello@zinwe.io like every other email; primary SMTP only: bulk mail never goes out through the backup Gmail.
-    return notify("email", to, template, context, ref=article, headers=headers, fallback=False)
+    return notify("email", to, template, context, ref=article, headers=headers, **sender())
 
 
 def send_test(article: Article, to: str) -> Notification | None:

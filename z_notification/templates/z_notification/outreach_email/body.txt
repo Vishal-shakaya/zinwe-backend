@@ -1,0 +1,6 @@
+{{ body_text }}
+
+--
+This is a promotional email. To stop hearing from me, reply "no" or unsubscribe: {{ unsubscribe_url }}
+{{ postal_address }}
+Zinwe · Security, simplified. IT Is OK.

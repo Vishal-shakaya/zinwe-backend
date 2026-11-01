@@ -14,6 +14,8 @@ urlpatterns = [
     path("api/blog/", include("z_blog.urls")),
     path("api/admin/blog/", include("z_blog.staff_urls")),
     path("api/admin/forms/", include("z_forms.staff_urls")),
+    path("api/admin/marketing/", include("z_marketing.staff_urls")),
+    path("api/marketing/", include("z_marketing.urls")),
     path("", include("z_blog.site_urls")),  # /blog pre-rendered for search engines
     path("", include("z_main.site_urls")),  # /robots.txt, /sitemap.xml, /sitemap-pages.xml
     path("api/admin/", include("z_adminapi.urls")),

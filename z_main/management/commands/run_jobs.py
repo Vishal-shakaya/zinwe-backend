@@ -25,6 +25,7 @@ from z_blog.guide_followups import send_due as send_guide_followups
 from z_blog.newsletter import send_pending as send_newsletters
 from z_devices.report_schedules import send_due as send_scheduled_reports
 from z_devices.retention import prune_history
+from z_marketing.outreach import send_pending as send_outreach
 from z_notification.retry import run as retry_failed_emails
 from z_payments.services import reconcile as check_online_payments
 
@@ -39,6 +40,7 @@ JOBS = (
     ("feedback requests", send_feedback_requests),
     ("newsletters", send_newsletters),
     ("series emails", send_series_emails),
+    ("outreach emails", send_outreach),  # only what staff already approved; nothing here picks new contacts
     ("guide follow-ups", send_guide_followups),  # after the series: one Zinwe email a day per member
     ("scheduled reports", send_scheduled_reports),  # FR-22: daily / weekly / monthly reports by email
     ("history clean-up", prune_history),
