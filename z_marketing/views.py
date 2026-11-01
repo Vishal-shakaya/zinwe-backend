@@ -1,6 +1,7 @@
 """Marketing endpoints. Staff: /api/admin/marketing/... Public: /api/marketing/unsubscribe/<token>/ (in every email)."""
 from __future__ import annotations
 
+import hmac
 from typing import Any
 
 from django.conf import settings
@@ -255,6 +256,30 @@ class BlockedView(Staff):
     def get(self, request: Request) -> Response:
         rows = Suppression.objects.all()[:2000]
         return Response([{"email": r.email, "reason": r.reason, "created_at": r.created_at} for r in rows])
+
+
+class SheetImportThrottle(AnonRateThrottle):
+    rate = "60/hour"
+
+
+class SheetImportView(APIView):
+    """POST /api/marketing/sheet-import/: the team's daily sheet run (Google Apps Script). Adds contacts only.
+
+    Answers 404 until ZINWE_SHEET_IMPORT_TOKEN is set, and to a wrong token."""
+
+    permission_classes = [AllowAny]
+    authentication_classes: list = []
+    throttle_classes = [SheetImportThrottle]
+
+    def post(self, request: Request) -> Response:
+        expected = settings.ZINWE_SHEET_IMPORT_TOKEN
+        given = request.headers.get("X-Import-Token", "")
+        if not expected or not hmac.compare_digest(expected, given):
+            return Response(status=status.HTTP_404_NOT_FOUND)
+        rows = request.data.get("rows") if isinstance(request.data, dict) else None
+        if not isinstance(rows, list) or len(rows) > 500 or not all(isinstance(r, dict) for r in rows):
+            return Response({"detail": "Send up to 500 rows."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"rows": outreach.import_sheet_rows(rows)})
 
 
 class UnsubscribeThrottle(AnonRateThrottle):

@@ -309,6 +309,49 @@ class ApiTests(Base):
         self.assertIn("Finish these first", r.json()["detail"])
 
 
+@override_settings(ZINWE_SHEET_IMPORT_TOKEN="secret")
+class SheetImportTests(Base):
+    URL = "/api/marketing/sheet-import/"
+
+    def post(self, rows, token="secret"):  # type: ignore[no-untyped-def]
+        return APIClient().post(self.URL, {"rows": rows}, format="json", HTTP_X_IMPORT_TOKEN=token)
+
+    def row(self, n, **extra):  # type: ignore[no-untyped-def]
+        return {"row": n, "first_name": "Ella", "firm": "Prairie CPAs", "email": "ella@prairie.example", "city": "Dallas", **extra}
+
+    def test_a_wrong_token_or_no_token_setting_finds_nothing(self) -> None:
+        self.assertEqual(self.post([self.row(2)], token="nope").status_code, 404)
+        with override_settings(ZINWE_SHEET_IMPORT_TOKEN=""):
+            self.assertEqual(self.post([self.row(2)], token="").status_code, 404)
+        self.assertEqual(Contact.objects.count(), 0)
+
+    def test_each_row_gets_a_status_and_remark(self) -> None:
+        Suppression.objects.create(email="no@firm.example", reason="Unsubscribed")
+        data = self.post([
+            self.row(2),
+            self.row(3),  # the same person again
+            self.row(4, email="jon@prairie.example"),
+            self.row(5, email="info@other.example"),
+            self.row(6, email="sam@gmail.com"),
+            self.row(7, email="no@firm.example"),
+            self.row(8, firm=""),
+        ]).json()["rows"]
+        self.assertEqual([(r["row"], r["status"], r["remark"]) for r in data], [
+            (2, "Added", "Added"), (3, "Added", "Already in Zinwe"), (4, "Skip", "Firm already in the list, skipped"),
+            (5, "Skip", "Shared inbox, find a named person"), (6, "Skip", "Free email, use a work address"),
+            (7, "Skip", "Blocked, skipped"), (8, "Need info", "Check the format"),
+        ])
+        self.assertEqual(Contact.objects.count(), 1)
+        self.assertEqual(Contact.objects.get().events.get().text, "Added from the team's sheet")
+
+    def test_it_only_adds_contacts(self) -> None:
+        self.post([self.row(2)])
+        self.assertEqual(mail.outbox, [])
+        self.assertEqual(OutreachSend.objects.count(), 0)
+        self.campaign.refresh_from_db()
+        self.assertEqual(self.campaign.status, Campaign.Status.DRAFT)
+
+
 class UnsubscribeTests(Base):
     def test_opening_the_link_changes_nothing_but_the_button_does(self) -> None:
         c = self.contact()

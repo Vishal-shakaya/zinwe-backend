@@ -39,6 +39,7 @@ Send = OutreachSend.Status
 LAST_EMAIL = 12
 SENDABLE = [Status.NEW, Status.COLD, Status.OPTED, Status.SIGNED]
 SHARED_INBOXES = {"info", "admin", "hello", "contact", "sales", "marketing", "support", "office", "accounts", "team"}
+FREE_MAIL = {"gmail.com", "yahoo.com", "outlook.com", "hotmail.com", "icloud.com", "aol.com", "proton.me"}
 DAILY_LIMITS = (10, 20, 25)
 STUCK_AFTER = timedelta(minutes=15)
 STOP_AFTER_FAILURES = 3  # in a row: the mailbox is down, stop instead of failing the whole batch
@@ -77,36 +78,59 @@ def blocked(email: str) -> bool:
     )
 
 
+def add_contact(campaign: Campaign, first_name: str, firm: str, email: str, city: str, actor: str, source: str) -> dict[str, str]:
+    """Add one person, or say why not. `result` is good, warn or bad; a good result can also be someone already added."""
+    email = (email or "").strip().lower()
+    if not first_name or not firm or not _EMAIL.match(email):
+        return {"line": email or firm, "result": "bad", "message": "Check the format"}
+    local, domain = email.split("@")
+    if campaign.contacts.filter(email__iexact=email).exists():
+        return {"line": email, "result": "good", "message": "Already in Zinwe"}
+    if blocked(email):
+        return {"line": email, "result": "bad", "message": "Blocked, skipped"}
+    if campaign.contacts.filter(email__iendswith=f"@{domain}").exists():
+        return {"line": email, "result": "warn", "message": "Firm already in the list, skipped"}
+    if local in SHARED_INBOXES:
+        return {"line": email, "result": "warn", "message": "Shared inbox, find a named person"}
+    if domain in FREE_MAIL:
+        return {"line": email, "result": "warn", "message": "Free email, use a work address"}
+    if domain.endswith("zinwe.io") or domain.endswith("zinwe.tech"):
+        return {"line": email, "result": "warn", "message": "Our own address, skipped"}
+    contact = Contact.objects.create(
+        campaign=campaign, first_name=first_name[:80], firm=firm[:160], email=email, city=(city or "")[:80],
+        next_date=today(), added_by=actor,
+    )
+    _log(contact, source, actor)
+    return {"line": email, "result": "good", "message": "Added"}
+
+
 def import_contacts(campaign: Campaign, text: str, actor: str) -> list[dict[str, str]]:
     """One line per person: first name, firm, email, city. One contact per firm; returns a result per line."""
     results = []
-    domains = {e.split("@")[-1] for e in Contact.objects.filter(campaign=campaign).values_list("email", flat=True)}
     for line in (text or "").splitlines():
         if not line.strip():
             continue
         parts = [p.strip() for p in line.split(",")]
-        email = parts[2].lower() if len(parts) > 2 else ""
-        if len(parts) < 4 or not _EMAIL.match(email) or not parts[0] or not parts[1]:
+        if len(parts) < 4:
             results.append({"line": line.strip(), "result": "bad", "message": "Check the format"})
-            continue
-        local, domain = email.split("@")
-        if blocked(email):
-            results.append({"line": email, "result": "bad", "message": "Blocked, skipped"})
-        elif domain in domains:
-            results.append({"line": email, "result": "warn", "message": "Firm already in the list, skipped"})
-        elif local in SHARED_INBOXES:
-            results.append({"line": email, "result": "warn", "message": "Shared inbox, find a named person"})
-        elif domain.endswith("zinwe.io") or domain.endswith("zinwe.tech"):
-            results.append({"line": email, "result": "warn", "message": "Our own address, skipped"})
         else:
-            contact = Contact.objects.create(
-                campaign=campaign, first_name=parts[0][:80], firm=parts[1][:160], email=email, city=parts[3][:80],
-                next_date=today(), added_by=actor,
-            )
-            _log(contact, "Added by hand", actor)
-            domains.add(domain)
-            results.append({"line": email, "result": "good", "message": "Added"})
+            result = add_contact(campaign, parts[0], parts[1], parts[2], parts[3], actor, "Added by hand")
+            results.append({**result, "line": parts[2].lower() if result["message"] != "Check the format" else line.strip()})
     return results
+
+
+def import_sheet_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The daily sheet run. Adds contacts to the first campaign and sends nothing; each row gets a status and remark."""
+    campaign = Campaign.objects.order_by("id").first()
+    out = []
+    for row in rows:
+        result = add_contact(
+            campaign, str(row.get("first_name", "")).strip(), str(row.get("firm", "")).strip(), str(row.get("email", "")),
+            str(row.get("city", "")).strip(), "sheet", "Added from the team's sheet",
+        )
+        status = "Added" if result["result"] == "good" else "Need info" if result["message"] == "Check the format" else "Skip"
+        out.append({"row": row.get("row"), "status": status, "remark": result["message"]})
+    return out
 
 
 def _suppress(contact: Contact, reason: str, actor: str) -> None:

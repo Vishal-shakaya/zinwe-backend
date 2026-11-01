@@ -314,6 +314,8 @@ EMAIL_OUTREACH_PORT = int(env_str("EMAIL_OUTREACH_PORT", "587"))
 EMAIL_OUTREACH_HOST_USER = env_str("EMAIL_OUTREACH_HOST_USER", "")
 EMAIL_OUTREACH_HOST_PASSWORD = env_str("EMAIL_OUTREACH_HOST_PASSWORD", "")
 EMAIL_OUTREACH_USE_TLS = env_bool("EMAIL_OUTREACH_USE_TLS", True)
+# Shared with the Apps Script in the team's sheet. Empty: the sheet import is off.
+ZINWE_SHEET_IMPORT_TOKEN = env_str("ZINWE_SHEET_IMPORT_TOKEN", "")
 # Seconds between two outreach emails: one person writing, not a blast.
 ZINWE_OUTREACH_GAP_SECONDS = int(env_str("ZINWE_OUTREACH_GAP_SECONDS", "45"))
 # What the DNS check in admin -> Marketing -> Settings looks for (Zoho defaults).
