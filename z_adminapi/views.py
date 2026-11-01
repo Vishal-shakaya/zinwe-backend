@@ -1,6 +1,10 @@
 """Thin staff-only HTTP layer for the internal admin app. All views require IsAdminUser."""
 from __future__ import annotations
 
+from pathlib import Path
+
+from django.conf import settings
+from django.http import Http404, HttpResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
@@ -53,14 +57,23 @@ def _audit(request: Request, action: str, properties: dict | None = None, ref: o
     track(f"admin.{action}", properties or {}, actor_email=request.user.email, ref=ref)
 
 
+def _docs_file(name: str) -> Path | None:
+    """A rendered documentation file on this server, if it has one."""
+    if not settings.DOCS_DIR:
+        return None
+    path = Path(settings.DOCS_DIR) / name
+    return path if path.is_file() else None
+
+
 class MeView(StaffView):
     """GET /api/admin/me/ -- confirm the operator is staff; used by the app guard."""
 
     def get(self, request: Request) -> Response:
         user = request.user
-        return Response(
-            {"id": user.id, "email": user.email, "full_name": user.full_name, "is_staff": user.is_staff}
-        )
+        return Response({
+            "id": user.id, "email": user.email, "full_name": user.full_name, "is_staff": user.is_staff,
+            "has_docs": _docs_file("index.json") is not None,
+        })
 
 
 class MetricsView(StaffView):
@@ -520,6 +533,32 @@ class InvoicePdfView(StaffView):
         if payment.status != ManualPayment.Status.VERIFIED:
             return Response({"detail": "Only a confirmed payment has an invoice."}, status=status.HTTP_409_CONFLICT)
         return invoice_pdf_response(payment)
+
+
+class DocsView(StaffView):
+    """The project documentation is in no repo and no bundle, so this staff check is what keeps it private."""
+
+    def send(self, name: str) -> HttpResponse:
+        path = _docs_file(name)
+        if path is None:
+            raise Http404
+        response = HttpResponse(path.read_bytes(), content_type="application/json; charset=utf-8")
+        response["Cache-Control"] = "no-store"
+        return response
+
+
+class DocsIndexView(DocsView):
+    """GET /api/admin/docs/ -- every page: slug, title, section, headings and plain text for search."""
+
+    def get(self, request: Request) -> HttpResponse:
+        return self.send("index.json")
+
+
+class DocsPageView(DocsView):
+    """GET /api/admin/docs/<slug>/ -- one page as HTML."""
+
+    def get(self, request: Request, slug: str) -> HttpResponse:
+        return self.send(f"page-{slug}.json")
 
 
 class TestimonialListView(StaffView):

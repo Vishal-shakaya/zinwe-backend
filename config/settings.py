@@ -377,6 +377,9 @@ WEBPUSH_VAPID_SUBJECT = env_str("WEBPUSH_VAPID_SUBJECT", "")
 # Website lists (z_devices/blocklists.py): where the weekly rebuild publishes, outside the release. Set on the servers
 # only; unset, the lists are the files in this release and rebuild_blocklists --publish refuses to run.
 BLOCKLIST_DIR = env_str("ZINWE_BLOCKLIST_DIR", "")
+# Project documentation (admin's Documentation tab): rendered pages that deploy.ps1 uploads. They are in no repo, and
+# only staff can read them. Set on the servers only.
+DOCS_DIR = env_str("ZINWE_DOCS_DIR", "")
 # Shared quotes (z_auth.quotes): the PDF emailed to the owner and the public /quote/<token> page.
 ZINWE_QUOTE_VALID_DAYS = 15
 # The internal admin app, for links in team emails (support tickets).
