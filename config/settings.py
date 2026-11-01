@@ -374,6 +374,9 @@ ZINWE_RAZORPAY_ALLOW_TEST = env_bool("ZINWE_RAZORPAY_ALLOW_TEST", False)
 WEBPUSH_VAPID_PUBLIC_KEY = env_str("WEBPUSH_VAPID_PUBLIC_KEY", "")
 WEBPUSH_VAPID_PRIVATE_KEY = env_str("WEBPUSH_VAPID_PRIVATE_KEY", "")
 WEBPUSH_VAPID_SUBJECT = env_str("WEBPUSH_VAPID_SUBJECT", "")
+# Website lists (z_devices/blocklists.py): where the weekly rebuild publishes, outside the release. Set on the servers
+# only; unset, the lists are the files in this release and rebuild_blocklists --publish refuses to run.
+BLOCKLIST_DIR = env_str("ZINWE_BLOCKLIST_DIR", "")
 # Shared quotes (z_auth.quotes): the PDF emailed to the owner and the public /quote/<token> page.
 ZINWE_QUOTE_VALID_DAYS = 15
 # The internal admin app, for links in team emails (support tickets).

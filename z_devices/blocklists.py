@@ -11,6 +11,8 @@ PC: the resolved set, (lists switched on - allow list) + the owner's own sites. 
 PC fetches it only when it changes. It moves when the owner's choices change or when a new list version ships.
 
 Rebuilding the lists: manage.py rebuild_blocklists (z_devices/blocklist_build.py, sources in blocklist_data/SOURCES.md).
+On a server the weekly timer publishes each rebuild into its own folder under ZINWE_BLOCKLIST_DIR, outside the release,
+and current.txt there names the live one. Whichever is newer of that folder and the files in this release is what's read.
 """
 from __future__ import annotations
 
@@ -23,8 +25,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from django.conf import settings
+
 DATA_DIR = Path(__file__).resolve().parent / "blocklist_data"
 MANIFEST_NAME = "manifest.json"
+CURRENT_NAME = "current.txt"
 
 MASK = "•••"
 ID_PREFIX = "h:"
@@ -125,9 +130,33 @@ _lock = threading.Lock()
 _cache: _Data | None = None
 
 
+def live_dir() -> Path | None:
+    """Where automatic rebuilds publish on this server; None where they don't run."""
+    return Path(settings.BLOCKLIST_DIR) if settings.BLOCKLIST_DIR else None
+
+
+def _built_at(folder: Path) -> str:
+    return json.loads((folder / MANIFEST_NAME).read_text("utf-8")).get("built_at", "")
+
+
+def active_dir() -> Path:
+    """The folder to read: the last published rebuild, unless this release shipped newer lists."""
+    root = live_dir()
+    if root is None:
+        return DATA_DIR
+    try:
+        name = (root / CURRENT_NAME).read_text("utf-8").strip()
+    except OSError:
+        return DATA_DIR
+    if not name or not (root / name / MANIFEST_NAME).is_file():
+        return DATA_DIR
+    return root / name if _built_at(root / name) >= _built_at(DATA_DIR) else DATA_DIR
+
+
 def _read(signature: tuple[Any, ...]) -> _Data:
-    manifest = json.loads((DATA_DIR / MANIFEST_NAME).read_text("utf-8"))
-    domains = {item.key: tuple(load_lines(DATA_DIR / f"{item.key}.txt")) for item in LISTS}
+    folder = active_dir()
+    manifest = json.loads((folder / MANIFEST_NAME).read_text("utf-8"))
+    domains = {item.key: tuple(load_lines(folder / f"{item.key}.txt")) for item in LISTS}
     ids: dict[str, str] = {}
     member: dict[str, list[str]] = {}
     for item in LISTS:
@@ -150,7 +179,14 @@ def _data() -> _Data:
     """The lists in memory. A stat per call: a rebuild is picked up without a restart, in every worker."""
     global _cache
     stat = (DATA_DIR / MANIFEST_NAME).stat()
-    signature = (str(DATA_DIR), stat.st_mtime_ns, stat.st_size)
+    signature: tuple[Any, ...] = (str(DATA_DIR), stat.st_mtime_ns, stat.st_size)
+    root = live_dir()
+    if root is not None:
+        try:
+            pointer = (root / CURRENT_NAME).stat()
+            signature += (pointer.st_mtime_ns, pointer.st_size)
+        except OSError:
+            pass  # Nothing published yet.
     cached = _cache
     if cached is not None and cached.signature == signature:
         return cached

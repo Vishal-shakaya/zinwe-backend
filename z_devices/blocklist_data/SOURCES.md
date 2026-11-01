@@ -33,6 +33,9 @@ name upstreams. The licence on the list itself is what we rely on.
 - Malware and Phishing & scams: **every week**. Sites in these lists last days to weeks.
   `manage.py rebuild_blocklists`, then commit `blocklist_data/` and ship it with a release.
 - Adult and Gambling: **every three months** is enough. `manage.py rebuild_blocklists --all`.
+- On the servers this is automatic: a timer runs `manage.py rebuild_blocklists --publish` weekly, adding Adult and
+  Gambling every 90 days. Each result goes live on that server without a release, into `ZINWE_BLOCKLIST_DIR`, and only
+  if no list lost more than 40% and the Majestic file arrived whole. A failure keeps the old lists and emails the owner.
 - Social media and Video streaming: by hand, when a service changes.
 
 `manifest.json` holds the version, sizes and file hashes. PCs pick up a new version on their next heartbeat after the

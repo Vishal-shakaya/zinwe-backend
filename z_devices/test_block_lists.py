@@ -8,16 +8,17 @@ from __future__ import annotations
 import json
 import shutil
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from django.core.management import call_command
-from django.test import SimpleTestCase
+from django.core.management import CommandError, call_command
+from django.test import SimpleTestCase, override_settings
 from rest_framework import status
 
 from . import blocklist_build, blocklists
+from .management.commands import rebuild_blocklists
 from .models import Device, Policy
 from .serializers import MAX_ALLOW_DOMAINS
 from .services import UNREACHABLE_BYTES
@@ -527,6 +528,21 @@ class BuildTests(SimpleTestCase):
         self.run_build(write=False)
         self.assertEqual((self.folder / "malware.txt").read_bytes(), before)
 
+    def test_a_cut_off_majestic_file_stops_the_build(self) -> None:
+        before = self.lines("malware")
+        with self.assertRaises(ValueError):
+            self.run_build(min_ranks=1000)
+        self.assertEqual(self.lines("malware"), before)
+
+    def test_a_rebuild_of_every_sourced_list_is_dated(self) -> None:
+        self.run_build()
+        manifest = json.loads((self.folder / blocklists.MANIFEST_NAME).read_text("utf-8"))
+        self.assertEqual(manifest["built_at"], "2026-11-01T00:00:00+00:00")
+        self.assertNotEqual(manifest["full_built_at"], manifest["built_at"])
+        self.run_build(only=blocklist_build.ALL_SOURCED, resolves=lambda host: True)
+        manifest = json.loads((self.folder / blocklists.MANIFEST_NAME).read_text("utf-8"))
+        self.assertEqual(manifest["full_built_at"], manifest["built_at"])
+
     def test_public_suffixes(self) -> None:
         psl = blocklist_build.PublicSuffixes.parse(PSL)
         self.assertEqual(psl.registrable("a.b.example.co.in"), "example.co.in")
@@ -540,3 +556,145 @@ class BuildTests(SimpleTestCase):
         with mock.patch("z_devices.management.commands.rebuild_blocklists.download", self.fetch), \
                 mock.patch.object(blocklist_build.build, "__kwdefaults__", {**blocklist_build.build.__kwdefaults__, "data_dir": self.folder}):
             call_command("rebuild_blocklists", "--dry-run", "--no-dns", verbosity=0, stdout=mock.MagicMock())
+
+
+class PublishTests(SimpleTestCase):
+    """The weekly run on a server: lists go live outside the release, and only when they pass."""
+
+    fetch = BuildTests.fetch
+
+    def setUp(self) -> None:
+        self.shipped = Path(tempfile.mkdtemp())
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.shipped, ignore_errors=True)
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        write_lists(self.shipped, "2026.11.01.1", hidden=("tube8.com",))
+        (self.shipped / "safelist.txt").write_text("google.com\n", "utf-8")
+        (self.shipped / "gambling-hand.txt").write_text("# hand\nhandbet.com\n", "utf-8")
+        for patcher in (
+            mock.patch.object(blocklists, "DATA_DIR", self.shipped),
+            mock.patch.object(blocklist_build, "DATA_DIR", self.shipped),
+            mock.patch.object(blocklist_build, "MIN_RANKS", 1),
+            override_settings(BLOCKLIST_DIR=str(self.root)),
+        ):
+            (patcher.enable if hasattr(patcher, "enable") else patcher.start)()
+            self.addCleanup(patcher.disable if hasattr(patcher, "disable") else patcher.stop)
+        self.now = datetime(2026, 11, 8, tzinfo=timezone.utc)
+
+    def run_publish(self, **kw: Any) -> blocklist_build.BuildResult:
+        kw.setdefault("resolves", lambda host: "dead" not in host)
+        kw.setdefault("now", self.now)
+        fetch = kw.pop("fetch", self.fetch)
+        return blocklist_build.publish(fetch, self.root, **kw)
+
+    def assert_nothing_went_live(self) -> None:
+        self.assertEqual(blocklists.version(), "2026.11.01.1")
+        self.assertEqual(list(self.root.glob(".stage-*")), [])
+        self.assertFalse((self.root / blocklists.CURRENT_NAME).exists())
+
+    def test_goes_live_without_a_release_or_a_restart(self) -> None:
+        self.assertEqual(blocklists.version(), "2026.11.01.1")
+        result = self.run_publish()
+        self.assertEqual(result.version, "2026.11.08.1")
+        self.assertEqual(blocklists.version(), "2026.11.08.1")
+        self.assertIn("new-phish.xyz", blocklists.resolve(["phishing"], [], [])["phishing"])
+        self.assertEqual(blocklists.load_lines(self.shipped / "phishing.txt"), list(PUBLIC["phishing"]))
+        self.assertEqual(list(self.root.glob(".stage-*")), [])
+
+    def test_lists_it_did_not_rebuild_come_across_whole(self) -> None:
+        self.run_publish()
+        self.assertEqual(blocklists.resolve(["social"], [], [])["social"], list(PUBLIC["social"]))
+        self.assertEqual(blocklists.resolve(["adult"], [], [])["adult"], ["tube8.com"])
+
+    def test_nothing_changed_stays_on_the_same_build(self) -> None:
+        self.run_publish()
+        result = self.run_publish(now=self.now + timedelta(days=7))
+        self.assertEqual(result.changed, [])
+        self.assertEqual(blocklists.version(), "2026.11.08.1")
+        self.assertEqual(list(self.root.glob(".stage-*")), [])
+
+    def test_a_list_that_shrinks_too_far_is_refused(self) -> None:
+        names = [f"old-{n}.top" for n in range(10)]
+        (self.shipped / "malware.txt").write_text("\n".join(names) + "\n", "utf-8")
+        with self.assertRaisesRegex(ValueError, "malware list fell from 10 to 3"):
+            self.run_publish()
+        self.assert_nothing_went_live()
+
+    def test_a_source_that_fails_leaves_the_live_lists(self) -> None:
+        def broken(url: str) -> bytes:
+            if url == blocklist_build.CERT_PL_URL:
+                raise OSError("timed out")
+            return self.fetch(url)
+
+        with self.assertRaises(OSError):
+            self.run_publish(fetch=broken)
+        self.assert_nothing_went_live()
+
+    def test_dns_going_down_leaves_the_live_lists(self) -> None:
+        with self.assertRaises(ValueError):
+            self.run_publish(resolves=lambda host: False)
+        self.assert_nothing_went_live()
+
+    def test_a_cut_off_majestic_file_is_refused(self) -> None:
+        with mock.patch.object(blocklist_build, "MIN_RANKS", 500_000), self.assertRaisesRegex(ValueError, "Majestic"):
+            self.run_publish()
+        self.assert_nothing_went_live()
+
+    def test_a_release_with_newer_lists_wins_and_the_next_run_builds_on_it(self) -> None:
+        self.run_publish()
+        write_lists(self.shipped, "2026.11.09.1", hidden=("tube8.com",))
+        manifest = json.loads((self.shipped / blocklists.MANIFEST_NAME).read_text("utf-8"))
+        manifest["built_at"] = "2026-11-09T00:00:00+00:00"
+        (self.shipped / blocklists.MANIFEST_NAME).write_text(json.dumps(manifest), "utf-8")
+        self.assertEqual(blocklists.version(), "2026.11.09.1")
+        self.run_publish(now=self.now + timedelta(days=7))
+        self.assertEqual(blocklists.version(), "2026.11.15.1")
+
+    def test_a_safelist_edit_in_the_release_reaches_the_next_run(self) -> None:
+        self.run_publish()
+        (self.shipped / "safelist.txt").write_text("google.com\nnew-phish.xyz\n", "utf-8")
+        with mock.patch.object(blocklist_build, "MIN_KEEP_SHARE", 0):
+            self.run_publish(now=self.now + timedelta(days=7))
+        self.assertNotIn("new-phish.xyz", blocklists.resolve(["phishing"], [], [])["phishing"])
+
+    def test_adult_and_gambling_join_every_90_days(self) -> None:
+        self.assertEqual(self.run_publish().changed, ["malware", "phishing"])
+        full = datetime(2026, 11, 1, 6, tzinfo=timezone.utc)  # The shipped lists' build.
+        with mock.patch.object(blocklist_build, "MIN_KEEP_SHARE", 0):  # The sample phishing names age out by then.
+            self.assertNotIn("adult", self.run_publish(now=full + timedelta(days=89)).changed)
+            result = self.run_publish(now=full + timedelta(days=90))
+        self.assertEqual(result.changed[:2], ["adult", "gambling"])
+        manifest = json.loads((self.root / result.version / blocklists.MANIFEST_NAME).read_text("utf-8"))
+        self.assertEqual(manifest["full_built_at"], manifest["built_at"])
+
+    def test_old_builds_are_cleared_but_the_live_one_and_a_few_stay(self) -> None:
+        for week in range(8):
+            now = self.now + timedelta(days=7 * week)
+            cert = f"head\n1\tnew-{week}.xyz\t{now.isoformat()}\t\n".encode()
+            self.run_publish(
+                fetch=lambda url, cert=cert: cert if url == blocklist_build.CERT_PL_URL else self.fetch(url), now=now
+            )
+        builds = sorted(item.name for item in self.root.iterdir() if item.is_dir())
+        self.assertEqual(len(builds), blocklist_build.KEEP_BUILDS)
+        self.assertIn(blocklists.version(), builds)
+
+    def test_a_bad_pointer_falls_back_to_the_release(self) -> None:
+        (self.root / blocklists.CURRENT_NAME).write_text("2020.01.01.1\n", "utf-8")
+        self.assertEqual(blocklists.version(), "2026.11.01.1")
+
+    def test_the_command_needs_a_folder_to_publish_to(self) -> None:
+        with override_settings(BLOCKLIST_DIR=""), self.assertRaisesRegex(CommandError, "ZINWE_BLOCKLIST_DIR"):
+            call_command("rebuild_blocklists", "--publish")
+
+    def test_the_command_reports_a_refused_rebuild_as_a_failure(self) -> None:
+        with mock.patch.object(blocklist_build, "publish", side_effect=ValueError("fell")):
+            with self.assertRaisesRegex(CommandError, "fell"):
+                call_command("rebuild_blocklists", "--publish")
+
+    def test_a_download_is_tried_again(self) -> None:
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = b"ok"
+        with mock.patch("urllib.request.urlopen", side_effect=[OSError("reset"), response]) as opened:
+            with mock.patch.object(rebuild_blocklists.time, "sleep"):
+                self.assertEqual(rebuild_blocklists.download("https://example.com/list"), b"ok")
+        self.assertEqual(opened.call_count, 2)

@@ -13,6 +13,9 @@ block. So every list keeps only what we can stand behind:
 
 Everything then goes through safelist.txt, so a common legitimate site can't get in whatever a source says. Fetching
 and DNS are passed in, so the tests run without a network.
+
+`publish` is the unattended run on a server: it builds in a scratch folder and only a result that passes its checks
+goes live, in one step. Anything else leaves the live lists as they were, and the failure reaches the owner.
 """
 from __future__ import annotations
 
@@ -20,6 +23,9 @@ import csv
 import hashlib
 import io
 import json
+import os
+import re
+import shutil
 import socket
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
@@ -28,7 +34,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from .blocklists import DATA_DIR, LIST_KEYS, MANIFEST_NAME, clean_host, covered_by, load_lines
+from .blocklists import CURRENT_NAME, DATA_DIR, LIST_KEYS, MANIFEST_NAME, active_dir, clean_host, covered_by, load_lines
 
 Fetch = Callable[[str], bytes]
 Resolves = Callable[[str], bool]
@@ -56,6 +62,17 @@ ADULT_WORDS = ("porn", "xxx", "hentai", "xvideo", "xnxx", "sexcam", "camgirl", "
 GAMBLING_WORDS = ("casino", "poker", "betting", "sportsbook", "roulette", "blackjack", "slots", "bingo", "lottery", "1xbet", "22bet", "melbet", "mostbet")
 
 STALE_LISTS = ("malware", "phishing")
+ALL_SOURCED = ("adult", "gambling", "malware", "phishing")
+
+# Publishing. The rebuild runs weekly; adult and gambling barely move, so they join it every 90 days.
+FULL_EVERY = timedelta(days=90)
+# A list that falls below this share of its size means a source or DNS went wrong, not that the internet got safer.
+MIN_KEEP_SHARE = 0.6
+# The popularity check is what keeps a hacked popular site off the threat lists, so a cut-off file must stop the run.
+MIN_RANKS = 500_000
+KEEP_BUILDS = 4
+INPUT_FILES = ("safelist.txt", "gambling-hand.txt")
+VERSION_RE = re.compile(r"^\d{4}\.\d{2}\.\d{2}\.\d+$")
 
 
 # --- Reading sources ----------------------------------------------------------------------------------------------
@@ -244,6 +261,7 @@ def build(
     resolves: Resolves | None = dns_resolves,
     now: datetime | None = None,
     write: bool = True,
+    min_ranks: int = 0,
 ) -> BuildResult:
     """Rebuild the lists in `only`. Lists not named keep their file; the manifest always covers all six."""
     now = now or datetime.now(timezone.utc)
@@ -252,6 +270,8 @@ def build(
         ranks=majestic_ranks(fetch(MAJESTIC_URL)),
         suffixes=PublicSuffixes.parse(fetch(PSL_URL)),
     )
+    if len(guards.ranks) < min_ranks:
+        raise ValueError(f"The Majestic Million came back with only {len(guards.ranks):,} sites. Nothing was written.")
     fresh: dict[str, list[str]] = {}
     if "adult" in only:
         fresh["adult"] = well_known(
@@ -306,9 +326,12 @@ def build(
     version = next_version(old.get("version", ""), now)
     counts = {key: len(fresh[key]) if key in fresh else _count(data_dir / f"{key}.txt") for key in LIST_KEYS}
     if changed and write:
+        built_at = now.replace(microsecond=0).isoformat()
+        full_built_at = built_at if set(ALL_SOURCED) <= set(fresh) else old.get("full_built_at", old.get("built_at", ""))
         manifest = {
             "version": version,
-            "built_at": now.replace(microsecond=0).isoformat(),
+            "built_at": built_at,
+            "full_built_at": full_built_at,
             "lists": {
                 key: {
                     "count": counts[key],
@@ -323,6 +346,71 @@ def build(
 
 def _count(path: Path) -> int:
     return len(load_lines(path)) if path.exists() else 0
+
+
+# --- Publishing, for the weekly timer -----------------------------------------------------------------------------
+
+
+def full_rebuild_due(data_dir: Path, now: datetime) -> bool:
+    manifest = json.loads((data_dir / MANIFEST_NAME).read_text("utf-8"))
+    last = manifest.get("full_built_at") or manifest.get("built_at")
+    return not last or now - datetime.fromisoformat(last) >= FULL_EVERY
+
+
+def check_rebuild(built: Path, before: Path, rebuilt: tuple[str, ...]) -> None:
+    """Refuse a rebuild that lost too much of a list. Raises ValueError saying which."""
+    for key in rebuilt:
+        old, new = _count(before / f"{key}.txt"), _count(built / f"{key}.txt")
+        if new < old * MIN_KEEP_SHARE:
+            raise ValueError(f"The {key} list fell from {old:,} to {new:,} sites. Nothing was published.")
+
+
+def publish(
+    fetch: Fetch,
+    root: Path,
+    *,
+    full: bool = False,
+    resolves: Resolves | None = dns_resolves,
+    now: datetime | None = None,
+) -> BuildResult:
+    """Rebuild into root/<version>/ and point root/current.txt at it. Builds are never edited once live."""
+    now = now or datetime.now(timezone.utc)
+    root.mkdir(parents=True, exist_ok=True)
+    for leftover in root.glob(".stage-*"):
+        shutil.rmtree(leftover, ignore_errors=True)
+    before = active_dir()
+    only = ALL_SOURCED if full or full_rebuild_due(before, now) else STALE_LISTS
+    stage = root / f".stage-{now:%Y%m%d%H%M%S}"
+    stage.mkdir()
+    try:
+        for source in before.iterdir():
+            if source.is_file():
+                shutil.copy2(source, stage / source.name)
+        # What the build reads comes from this release, so an edited safelist applies from the next run.
+        for name in INPUT_FILES:
+            shutil.copy2(DATA_DIR / name, stage / name)
+        result = build(fetch, only=only, data_dir=stage, resolves=resolves, now=now, min_ranks=MIN_RANKS)
+        if not result.changed:
+            return result
+        check_rebuild(stage, before, only)
+        target = root / result.version
+        if target.exists():
+            shutil.rmtree(target)
+        stage.rename(target)
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+    pointer = root / f"{CURRENT_NAME}.tmp"
+    pointer.write_text(result.version + "\n", encoding="utf-8")
+    os.replace(pointer, root / CURRENT_NAME)
+    _prune(root, result.version)
+    return result
+
+
+def _prune(root: Path, live: str) -> None:
+    builds = [item for item in root.iterdir() if item.is_dir() and VERSION_RE.match(item.name) and item.name != live]
+    builds.sort(key=lambda item: item.stat().st_mtime, reverse=True)
+    for old in builds[KEEP_BUILDS - 1 :]:
+        shutil.rmtree(old, ignore_errors=True)
 
 
 def next_version(previous: str, now: datetime) -> str:
