@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 
 from django.http import FileResponse, Http404, HttpResponse
 from django.shortcuts import get_object_or_404
@@ -17,10 +18,11 @@ from rest_framework.views import APIView
 from z_auth import entitlements as plan
 from z_main.client import get_client_ip
 
-from . import member_todos, pictures, services, web_push, work_tasks
+from . import blocklists, member_todos, pictures, services, web_push, work_tasks
 from .models import AgentRelease, DeviceEvent, WorkLog
 from .authentication import DeviceScopedThrottle, DeviceTokenAuthentication, IsDevice, IsOwner
 from .serializers import (
+    BlockListSitesQuerySerializer,
     MemberFeedbackSerializer,
     MemberUpdateSerializer,
     NotificationPrefsSerializer,
@@ -113,6 +115,21 @@ class CurrentPolicyView(APIView):
         # member's consent (declined = every monitoring feature off on this PC).
         data = services.policy_for_device(request.auth, DevicePolicySerializer(policy).data, policy)
         return Response(data)
+
+
+class DeviceBlockSetView(APIView):
+    """
+    GET /api/devices/policy/blocklist/ -- the sites this PC blocks. The agent asks only when the `list_version` in its
+    policy or heartbeat moves. Clamped to the plan and the member's consent, like the policy itself.
+    """
+
+    authentication_classes = [DeviceTokenAuthentication]
+    permission_classes = [IsDevice]
+    throttle_classes = [DeviceScopedThrottle]
+    throttle_scope = "device_blocklist"
+
+    def get(self, request: Request) -> Response:
+        return Response(services.device_block_set(request.auth, services.get_policy(request.auth.owner)))
 
 
 class DeviceMessagesView(APIView):
@@ -510,6 +527,36 @@ class PolicyView(APIView):
         serializer.is_valid(raise_exception=True)
         policy = services.update_policy(request.user, serializer.validated_data)
         return Response(PolicySerializer(policy).data)
+
+
+def _require_web_plan(owner: Any) -> None:
+    if not plan.entitlements_for(owner).has(plan.WEB):
+        raise plan.FeatureLocked(plan.WEB)
+
+
+class BlockListsView(APIView):
+    """GET /api/devices/lists/ -- the site lists on Rules, with their true sizes."""
+
+    permission_classes = [IsOwner]
+
+    def get(self, request: Request) -> Response:
+        _require_web_plan(request.user)
+        return Response(blocklists.overview())
+
+
+class BlockListSitesView(APIView):
+    """GET /api/devices/lists/<key>/sites/?q=&page=&page_size= -- one page of a list. Adult names are masked."""
+
+    permission_classes = [IsOwner]
+
+    def get(self, request: Request, key: str) -> Response:
+        _require_web_plan(request.user)
+        if key not in blocklists.LIST_BY_KEY:
+            raise Http404
+        query = BlockListSitesQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        values = query.validated_data
+        return Response(blocklists.sites_page(key, values["q"], values["page"], values["page_size"]))
 
 
 class EventFeedView(APIView):

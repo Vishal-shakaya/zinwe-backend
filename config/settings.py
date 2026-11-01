@@ -251,6 +251,8 @@ REST_FRAMEWORK = {
         # 20 batches (plus one-by-one retries of a refused batch), metrics in a few batches after each heartbeat.
         "device_heartbeat": env_str("ZINWE_THROTTLE_DEVICE_HEARTBEAT", "120/min"),
         "device_events": env_str("ZINWE_THROTTLE_DEVICE_EVENTS", "300/min"),
+        # The site set: fetched only when it changes, plus a retry each heartbeat after a failed fetch.
+        "device_blocklist": env_str("ZINWE_THROTTLE_DEVICE_BLOCKLIST", "120/hour"),
         "device_metrics": env_str("ZINWE_THROTTLE_DEVICE_METRICS", "60/min"),
         # FR-20: the member's task taps (seen, start, a step ticked...) from their Zinwe window, per PC.
         "device_tasks": env_str("ZINWE_THROTTLE_DEVICE_TASKS", "120/min"),

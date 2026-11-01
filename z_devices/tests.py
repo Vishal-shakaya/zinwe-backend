@@ -50,16 +50,18 @@ METRICS_UPLOAD_URL = "/api/devices/metrics/upload/"
 HEARTBEAT_RESPONSE_KEYS = {
     "device_id", "server_time", "next_heartbeat_seconds", "policy_version", "consent_state", "usb_restore",
     "company_name", "owner_name",
+    "web_list_version",  # names the set of blocked sites this PC should hold
     "picture",  # FR-44: the PC's member's picture (null = initials)
 }
 
 # The non-usb feature blocks as a freshly created policy emits them (see contract defaults).
-DEFAULT_WEB = {"enabled": True, "mode": "monitor", "categories": [], "custom_domains": []}
+DEFAULT_WEB = {"enabled": True, "mode": "monitor", "categories": [], "custom_domains": [], "allow_domains": []}
 DEFAULT_DATA_TRANSFER = {
     "enabled": True,
     "usb_warn_bytes": 52428800,
     "lan_warn_bytes": 52428800,
     "email_warn_bytes": 20971520,
+    "web_upload_warn_bytes": 1073741824,
     "include_details": False,
     "usb_lockdown": False,
 }
@@ -116,10 +118,12 @@ class DeviceTestCase(APITestCase):
 
     def agent_policy(self, saved_version: int, usb_mode: str) -> dict[str, Any]:
         """The full policy a Businesses-plan PC receives (nothing clamped)."""
+        blocks = default_policy_blocks()
+        blocks["web"]["list_version"] = ""  # default rules are Watch only: no set of sites to hold
         return {
             "version": self.agent_version(saved_version),
             "usb": {"mode": usb_mode},
-            **default_policy_blocks(),
+            **blocks,
             "entitlements": sorted(entitlements_for(self.owner).modules),
             "max_devices": 50,
             "consent_state": "pending",
@@ -455,7 +459,7 @@ class PolicyTests(DeviceTestCase):
         body = response.json()
         self.assertEqual(body["version"], 1)
         self.assertEqual(body["usb"], {"mode": "allow"})
-        self.assertEqual(body["web"], DEFAULT_WEB)
+        self.assertEqual(body["web"], {**DEFAULT_WEB, "allow_sites": []})
         self.assertEqual(body["data_transfer"], DEFAULT_DATA_TRANSFER)
         self.assertEqual(body["remote_software"], DEFAULT_REMOTE_SOFTWARE)
         self.assertIn("updated_at", body)
@@ -610,7 +614,7 @@ class MultiBlockPolicyTests(DeviceTestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         result = response.json()
         self.assertEqual(result["version"], 2)
-        self.assertEqual(result["web"], body["web"])
+        self.assertEqual(result["web"], {**body["web"], "allow_domains": [], "allow_sites": []})
         policy = Policy.objects.get(owner=self.owner)
         self.assertEqual(policy.web_mode, "block")
         self.assertEqual(policy.web_categories, ["adult", "malware"])
@@ -630,7 +634,10 @@ class MultiBlockPolicyTests(DeviceTestCase):
         response = self.put(body)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.json()["version"], 2)
-        self.assertEqual(response.json()["data_transfer"], body["data_transfer"])
+        self.assertEqual(
+            response.json()["data_transfer"],
+            {**body["data_transfer"], "web_upload_warn_bytes": Policy.DEFAULT_UPLOAD_WARN_BYTES},
+        )
         self.assertTrue(Policy.objects.get().data_transfer_usb_lockdown)
 
     def test_remote_software_block_applies(self) -> None:

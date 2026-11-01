@@ -166,6 +166,11 @@ class OwnerListTests(TaskTestCase):
         self.owner_act(c["id"], "approve")
         self.owner_act(b["id"], "cancel")
         self.member_act(a["id"], "start")  # a has the newest activity now
+        # Three saves can land on one clock tick here (it failed now and then on Windows): spell the order out.
+        now = timezone.now()
+        Task.objects.filter(pk=b["id"]).update(updated_at=now - timedelta(seconds=1))
+        Task.objects.filter(pk=c["id"]).update(updated_at=now - timedelta(seconds=2))
+        Task.objects.filter(pk=a["id"]).update(updated_at=now)
         self.as_owner()
         self.assertEqual([t["title"] for t in self.client.get(TASKS_URL).json()], ["A"])
         self.assertEqual([t["title"] for t in self.client.get(TASKS_URL, {"status": "open"}).json()], ["A"])

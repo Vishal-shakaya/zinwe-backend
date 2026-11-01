@@ -1,0 +1,30 @@
+{
+  "version": "2026.11.01.4",
+  "built_at": "2026-11-01T06:55:53+00:00",
+  "lists": {
+    "adult": {
+      "count": 2589,
+      "sha256": "b72297ee10455d2799c8dea8ebdd61c6ebc1badba1f456bf87f44a5f9cd99419"
+    },
+    "gambling": {
+      "count": 476,
+      "sha256": "0b614ab650c7d717acf0a6d6e22db67ab9ca60feb6d14f0833cf0157672fe789"
+    },
+    "malware": {
+      "count": 3000,
+      "sha256": "039c53b43eda720abe6a1b6d2ad3b8c5f67d146f4c6be0ccc54390191cb22c71"
+    },
+    "phishing": {
+      "count": 4000,
+      "sha256": "150f71ae2292df47944f924ef2204f76dcc4d6b5991e47dcfa490be87421f3d9"
+    },
+    "social": {
+      "count": 42,
+      "sha256": "fd3ad4c458c072bf4016de93ec0e458e783b87c4b35ba93e579b48223b0db2e5"
+    },
+    "video": {
+      "count": 48,
+      "sha256": "f8edb814b3162566d8ac3962fd4105665d56c7930ffddb252f3d1b2e348da30b"
+    }
+  }
+}

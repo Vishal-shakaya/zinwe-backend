@@ -1,0 +1,28 @@
+# Well-known betting, casino, poker and real-money gaming sites used in India that the public lists miss or rank low.
+# Edited by hand; rebuild_blocklists adds these to the gambling list.
+10cric.com
+1xbet.com
+22bet.com
+4rabet.com
+888casino.com
+888poker.com
+a23.com
+ace2three.com
+adda52.com
+bet365.com
+betfair.com
+betway.com
+dafabet.com
+dream11.com
+fun88.com
+jungleerummy.com
+mostbet.com
+melbet.com
+my11circle.com
+parimatch.com
+parimatch.in
+pokerbaazi.com
+pokerstars.com
+rummycircle.com
+stake.com
+williamhill.com
