@@ -25,7 +25,7 @@ from z_auth.entitlements import Entitlements, entitlements_for
 from z_auth.models import User
 from z_notification.services import notify
 
-from . import web_push
+from . import blocklists, web_push
 from .events import USB_LOCKED_DOWN, USB_RESTORED, build_title, is_confirmation
 from .models import (
     AgentRelease,
@@ -1038,13 +1038,16 @@ def record_heartbeat(device: Device, data: dict[str, Any], ip: str | None) -> di
                 "consent_version", "consent_at", "consent_declined_at", "usb_restore_delivered_at",
             ]
         )
+    policy = get_policy(device.owner)
     response = {
         "device_id": device.id,
         "server_time": device.last_seen_at,
         "next_heartbeat_seconds": settings.ZINWE_DEVICE_HEARTBEAT_SECONDS,
         # The agent re-fetches GET policy/current/ whenever this differs from its cache (a declined
         # consent changes it too: that PC's policy has monitoring off).
-        "policy_version": effective_policy_version(get_policy(device.owner), device_entitlements(device, ent)),
+        "policy_version": effective_policy_version(policy, device_entitlements(device, ent)),
+        # The set of sites this PC should hold: moves on its own when a new list version ships.
+        "web_list_version": device_list_version(device, policy, ent),
         "consent_state": device.consent_state,
         "usb_restore": usb_restore,
         **employer_names(device),
@@ -1220,6 +1223,7 @@ def apply_entitlements(data: dict[str, Any], policy: Policy, ent: Entitlements) 
     if not ent.has(plan.DATA_TRANSFER):
         out["data_transfer"]["lan_warn_bytes"] = UNREACHABLE_BYTES
         out["data_transfer"]["email_warn_bytes"] = UNREACHABLE_BYTES
+        out["data_transfer"]["web_upload_warn_bytes"] = UNREACHABLE_BYTES
     if not ent.has(plan.REMOTE_ACCESS):
         out["remote_software"]["blocking_enabled"] = False
         if not ent.has(plan.SOFTWARE_INSTALLS):
@@ -1254,7 +1258,38 @@ def policy_for_device(device: Device, data: dict[str, Any], policy: Policy) -> d
         out["remote_software"]["enabled"] = False
         out["remote_software"]["blocking_enabled"] = False
         out["web"]["enabled"] = False
+    out["web"]["list_version"] = device_list_version(device, policy)
     return out
+
+
+def blocks_websites(device: Device, policy: Policy, ent: Entitlements | None = None) -> bool:
+    """This PC blocks sites: the owner chose Block & watch, the plan has it and the member hasn't declined."""
+    return (
+        policy.web_enabled
+        and policy.web_mode == Policy.WebMode.BLOCK
+        and device_entitlements(device, ent).has(plan.WEB)
+        and device.consent_state != Device.CONSENT_DECLINED
+    )
+
+
+def device_list_version(device: Device, policy: Policy, ent: Entitlements | None = None) -> str:
+    """
+    Names the set of sites this PC should have ("" = none). In the policy and on every heartbeat: a new list version
+    changes it without the owner touching anything, so the policy version alone wouldn't tell the PC.
+    """
+    if not blocks_websites(device, policy, ent):
+        return ""
+    return blocklists.set_version(policy.web_categories, policy.web_allow_domains, policy.web_custom_domains)
+
+
+def device_block_set(device: Device, policy: Policy) -> dict[str, Any]:
+    """GET policy/blocklist/: the sites this PC blocks, by list. Empty when it blocks nothing."""
+    if not blocks_websites(device, policy):
+        return {"version": "", "sites": {}}
+    return {
+        "version": device_list_version(device, policy),
+        "sites": blocklists.resolve(policy.web_categories, policy.web_allow_domains, policy.web_custom_domains),
+    }
 
 
 # --- USB lockdown / restore (J5-02) ------------------------------------------------------------
@@ -1326,6 +1361,7 @@ _POLICY_BLOCKS: list[tuple[str, dict[str, str]]] = [
             "mode": "web_mode",
             "categories": "web_categories",
             "custom_domains": "web_custom_domains",
+            "allow_domains": "web_allow_domains",
         },
     ),
     (
@@ -1335,6 +1371,7 @@ _POLICY_BLOCKS: list[tuple[str, dict[str, str]]] = [
             "usb_warn_bytes": "data_transfer_usb_warn_bytes",
             "lan_warn_bytes": "data_transfer_lan_warn_bytes",
             "email_warn_bytes": "data_transfer_email_warn_bytes",
+            "web_upload_warn_bytes": "web_upload_warn_bytes",
             "include_details": "data_transfer_include_details",
             "usb_lockdown": "data_transfer_usb_lockdown",
         },
@@ -1365,12 +1402,20 @@ def update_policy(owner: User, data: dict[str, Any]) -> Policy:
     get_policy(owner)  # make sure the row exists before locking it
     policy = Policy.objects.select_for_update().get(owner=owner)
 
+    web = data.get("web")
+    if web is not None:
+        # Own sites come off the allow list, and a hidden name is stored as its id, whichever way it was sent.
+        allow = blocklists.clean_allow(web.get("allow_domains", policy.web_allow_domains), web["custom_domains"])
+        data = {**data, "web": {**web, "allow_domains": allow}}
+
     changed: dict[str, Any] = {}
     for block_key, field_map in _POLICY_BLOCKS:
         block = data.get(block_key)
         if block is None:
             continue
         for wire_key, model_field in field_map.items():
+            if wire_key not in block:
+                continue  # an optional field an older dashboard doesn't send: the saved value stays
             new_value = block[wire_key]
             if getattr(policy, model_field) != new_value:
                 setattr(policy, model_field, new_value)

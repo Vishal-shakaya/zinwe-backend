@@ -69,7 +69,7 @@ class PolicyAdmin(admin.ModelAdmin):
     readonly_fields = (
         "owner", "version", "created_at", "updated_at",
         "usb_mode",
-        "web_enabled", "web_mode", "web_categories", "web_custom_domains",
+        "web_enabled", "web_mode", "web_categories", "web_custom_domains", "web_allow_domains", "web_upload_warn_bytes",
         "data_transfer_enabled", "data_transfer_usb_warn_bytes",
         "data_transfer_lan_warn_bytes", "data_transfer_email_warn_bytes",
         "data_transfer_include_details",

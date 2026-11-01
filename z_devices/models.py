@@ -264,10 +264,11 @@ class Policy(models.Model):
         MONITOR = "monitor", "Monitor"  # record usage only
         BLOCK = "block", "Block"        # record usage and block the list
 
-    # Warn-size defaults: 50 MiB for USB/LAN, 20 MiB for email attachments.
+    # Warn-size defaults: 50 MiB for USB/LAN, 20 MiB for email attachments, 1 GiB for website uploads.
     DEFAULT_USB_WARN_BYTES = 52428800
     DEFAULT_LAN_WARN_BYTES = 52428800
     DEFAULT_EMAIL_WARN_BYTES = 20971520
+    DEFAULT_UPLOAD_WARN_BYTES = 1073741824  # to one site within the agent's window
 
     owner = models.OneToOneField(
         "z_auth.User", on_delete=models.CASCADE, related_name="device_policy"
@@ -280,6 +281,11 @@ class Policy(models.Model):
     web_mode = models.CharField(max_length=16, choices=WebMode.choices, default=WebMode.MONITOR)
     web_categories = models.JSONField(default=list, blank=True)
     web_custom_domains = models.JSONField(default=list, blank=True)
+    # Sites that stay open whatever a list says: names, and the stable id of a hidden name (blocklists.py). Never the
+    # full name of a hidden site, so this column is safe to send back to the owner's browser.
+    web_allow_domains = models.JSONField(default=list, blank=True)
+    # Website uploads limit. Lives with the other limits on the wire ("data_transfer" block, plan module data_transfer).
+    web_upload_warn_bytes = models.PositiveBigIntegerField(default=DEFAULT_UPLOAD_WARN_BYTES)
 
     # Data-transfer visibility. Details off by default (DPDP / consent-first).
     data_transfer_enabled = models.BooleanField(default=True)

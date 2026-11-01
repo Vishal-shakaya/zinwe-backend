@@ -6,7 +6,7 @@ from typing import Any
 
 from rest_framework import serializers
 
-from . import web_push
+from . import blocklists, web_push
 from .events import EVENT_TYPE_PATTERN, build_title, event_kind
 from .member_todos import MAX_STEPS as MAX_TODO_STEPS
 from .models import (
@@ -405,15 +405,41 @@ class UsbRuleSerializer(serializers.Serializer):
     mode = serializers.ChoiceField(choices=Policy.UsbMode.choices)
 
 
+# Every name of every list, unticked one by one, still fits (see blocklist_build's caps).
+MAX_ALLOW_DOMAINS = 20000
+
+
 class WebRuleSerializer(serializers.Serializer):
-    """`{"enabled", "mode", "categories": [...], "custom_domains": [...]}`."""
+    """`{"enabled", "mode", "categories": [...], "custom_domains": [...], "allow_domains": [...]}`."""
 
     enabled = serializers.BooleanField()
     mode = serializers.ChoiceField(choices=Policy.WebMode.choices)
-    # Any string is accepted; the dashboard offers the known vocabulary, but an
-    # unknown category is harmless (it just won't match until real lists ship).
     categories = _StringListField()
     custom_domains = _StringListField()
+    # Optional: an older dashboard leaves it out and the saved list stays. Names, or ids of hidden names.
+    allow_domains = _StringListField(required=False, max_length=MAX_ALLOW_DOMAINS)
+
+    def validate_categories(self, value: list[str]) -> list[str]:
+        unknown = sorted(set(value) - set(blocklists.LIST_KEYS))
+        if unknown:
+            raise serializers.ValidationError(f"Unknown list: {', '.join(unknown)}.")
+        return value
+
+    def validate_allow_domains(self, value: list[str]) -> list[str]:
+        bad = next((entry for entry in value if not blocklists.is_allow_entry(entry)), None)
+        if bad is not None:
+            raise serializers.ValidationError(f"{bad[:80]} doesn't look like a site name. Try something like example.com.")
+        return value
+
+
+class BlockListSitesQuerySerializer(serializers.Serializer):
+    """Query params for GET /api/devices/lists/<key>/sites/."""
+
+    q = serializers.CharField(max_length=100, required=False, allow_blank=True, default="")
+    page = serializers.IntegerField(min_value=1, default=1)
+    page_size = serializers.IntegerField(
+        min_value=1, max_value=blocklists.MAX_PAGE_SIZE, default=blocklists.DEFAULT_PAGE_SIZE
+    )
 
 
 class DataTransferRuleSerializer(serializers.Serializer):
@@ -423,6 +449,8 @@ class DataTransferRuleSerializer(serializers.Serializer):
     usb_warn_bytes = serializers.IntegerField(min_value=0)
     lan_warn_bytes = serializers.IntegerField(min_value=0)
     email_warn_bytes = serializers.IntegerField(min_value=0)
+    # Optional: an older dashboard leaves it out and the saved limit stays.
+    web_upload_warn_bytes = serializers.IntegerField(min_value=0, required=False)
     include_details = serializers.BooleanField()
     # Optional for back-compat: an older dashboard omits it → lockdown stays off.
     usb_lockdown = serializers.BooleanField(required=False, default=False)
@@ -483,6 +511,7 @@ class DevicePolicySerializer(serializers.ModelSerializer):
             "mode": obj.web_mode,
             "categories": obj.web_categories,
             "custom_domains": obj.web_custom_domains,
+            "allow_domains": blocklists.device_allow(obj.web_allow_domains),
         }
 
     def get_data_transfer(self, obj: Policy) -> dict[str, Any]:
@@ -491,6 +520,7 @@ class DevicePolicySerializer(serializers.ModelSerializer):
             "usb_warn_bytes": obj.data_transfer_usb_warn_bytes,
             "lan_warn_bytes": obj.data_transfer_lan_warn_bytes,
             "email_warn_bytes": obj.data_transfer_email_warn_bytes,
+            "web_upload_warn_bytes": obj.web_upload_warn_bytes,
             "include_details": obj.data_transfer_include_details,
             "usb_lockdown": obj.data_transfer_usb_lockdown,
         }
@@ -505,10 +535,17 @@ class DevicePolicySerializer(serializers.ModelSerializer):
 
 
 class PolicySerializer(DevicePolicySerializer):
-    """Owner view: the device shape plus `updated_at`."""
+    """Owner view: the device shape plus `updated_at`. Hidden names stay ids here; `allow_sites` is what to show."""
 
     class Meta(DevicePolicySerializer.Meta):
         fields = [*DevicePolicySerializer.Meta.fields, "updated_at"]
+
+    def get_web(self, obj: Policy) -> dict[str, Any]:
+        return {
+            **super().get_web(obj),
+            "allow_domains": blocklists.owner_allow(obj.web_allow_domains),
+            "allow_sites": blocklists.allow_sites(blocklists.owner_allow(obj.web_allow_domains)),
+        }
 
 
 # --- Events -----------------------------------------------------------------
