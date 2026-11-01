@@ -293,6 +293,13 @@ SERVER_EMAIL = DEFAULT_FROM_EMAIL
 # bulk mail never touch the reputation of zinwe.io's sign-in codes and invoices. Replies go to the main inbox.
 ZINWE_NEWSLETTER_FROM = env_str("ZINWE_NEWSLETTER_FROM", "Zinwe <hello@zinwe.tech>")
 ZINWE_NEWSLETTER_REPLY_TO = env_str("ZINWE_NEWSLETTER_REPLY_TO", "hello@zinwe.tech")
+# The newsletter's own SMTP account. Until this host is set the newsletter stays on the primary SMTP as
+# DEFAULT_FROM_EMAIL: zinwe.tech only sends once an account is authenticated to sign for it.
+EMAIL_NEWSLETTER_HOST = env_str("EMAIL_NEWSLETTER_HOST", "")
+EMAIL_NEWSLETTER_PORT = int(env_str("EMAIL_NEWSLETTER_PORT", "587"))
+EMAIL_NEWSLETTER_HOST_USER = env_str("EMAIL_NEWSLETTER_HOST_USER", "")
+EMAIL_NEWSLETTER_HOST_PASSWORD = env_str("EMAIL_NEWSLETTER_HOST_PASSWORD", "")
+EMAIL_NEWSLETTER_USE_TLS = env_bool("EMAIL_NEWSLETTER_USE_TLS", True)
 # Cold outreach (z_marketing) never shares the product mail account: it has its own mailbox SMTP, and nothing is
 # sent until this host is set. Brevo requires opted-in recipients, and a suspended Brevo account would stop sign-in
 # codes and invoices. No fallback: a failed outreach email simply stays due.

@@ -49,9 +49,15 @@ def _site() -> str:
 
 
 def sender() -> dict[str, Any]:
-    """Newsletter mail: From and Reply-To on its own domain, primary SMTP only (never the backup Gmail)."""
+    """Newsletter mail: never the backup Gmail. With its own SMTP account (EMAIL_NEWSLETTER_HOST) it sends From and
+    Reply-To its own domain; until then it stays on the primary SMTP as DEFAULT_FROM_EMAIL."""
+    if not settings.EMAIL_NEWSLETTER_HOST:
+        return {"fallback": False}
     reply_to = (settings.ZINWE_NEWSLETTER_REPLY_TO or "").strip()
-    return {"from_email": settings.ZINWE_NEWSLETTER_FROM, "reply_to": [reply_to] if reply_to else None, "fallback": False}
+    return {
+        "from_email": settings.ZINWE_NEWSLETTER_FROM, "reply_to": [reply_to] if reply_to else None,
+        "fallback": False, "smtp": "newsletter",
+    }
 
 
 # --- Subscribers ------------------------------------------------------------------

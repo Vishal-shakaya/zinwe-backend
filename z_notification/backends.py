@@ -76,6 +76,14 @@ def outreach_connection() -> SMTPBackend:
     return connection
 
 
+def newsletter_connection() -> SMTPBackend:
+    """The newsletter's own SMTP account (EMAIL_NEWSLETTER_*)."""
+    connection = _smtp("NEWSLETTER_")
+    if connection is None:
+        raise RuntimeError("The newsletter SMTP is not set up (EMAIL_NEWSLETTER_HOST)")
+    return connection
+
+
 class FailoverEmailBackend(BaseEmailBackend):
     """Primary SMTP first; on any failure, the fallback SMTP. See the module docstring."""
 

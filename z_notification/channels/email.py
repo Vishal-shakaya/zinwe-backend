@@ -4,7 +4,7 @@ from __future__ import annotations
 from django.conf import settings
 from django.core.mail import EmailMultiAlternatives
 
-from ..backends import outreach_connection
+from ..backends import newsletter_connection, outreach_connection
 from .base import Attachment, Channel
 
 
@@ -38,7 +38,7 @@ class EmailChannel(Channel):
             to=[recipient],
             headers=headers or None,
             reply_to=reply_to or None,
-            connection=outreach_connection() if smtp == "outreach" else None,
+            connection=outreach_connection() if smtp == "outreach" else newsletter_connection() if smtp == "newsletter" else None,
         )
         if html:
             message.attach_alternative(html, "text/html")

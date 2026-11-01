@@ -98,7 +98,7 @@ def _sender() -> dict[str, Any]:
         "domain": outreach.sender_domain(),
         "mailbox_ready": outreach.mailbox_ready(),
         "smtp_host": settings.EMAIL_OUTREACH_HOST,
-        "newsletter_from": settings.ZINWE_NEWSLETTER_FROM,
+        "newsletter_from": settings.ZINWE_NEWSLETTER_FROM if settings.EMAIL_NEWSLETTER_HOST else settings.DEFAULT_FROM_EMAIL,
         "postal_address": settings.ZINWE_OUTREACH_POSTAL_ADDRESS,
         "limits": outreach.DAILY_LIMITS,
     }

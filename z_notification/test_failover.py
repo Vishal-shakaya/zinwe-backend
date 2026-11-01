@@ -13,6 +13,7 @@ from .services import notify
 
 PRIMARY_HOST = "smtp-relay.brevo.com"
 FALLBACK_HOST = "smtp.gmail.com"
+NEWSLETTER_HOST = "smtp-newsletter.example"
 
 FAILOVER = override_settings(
     EMAIL_BACKEND="z_notification.backends.FailoverEmailBackend",
@@ -125,7 +126,10 @@ class NotifyThroughFailoverTests(TestCase):
 
 
 @FAILOVER
-@override_settings(ZINWE_NEWSLETTER_FROM="Zinwe <hello@zinwe.tech>", ZINWE_NEWSLETTER_REPLY_TO="hello@zinwe.tech")
+@override_settings(
+    ZINWE_NEWSLETTER_FROM="Zinwe <hello@zinwe.tech>", ZINWE_NEWSLETTER_REPLY_TO="hello@zinwe.tech",
+    EMAIL_NEWSLETTER_HOST=NEWSLETTER_HOST, EMAIL_NEWSLETTER_HOST_USER="n", EMAIL_NEWSLETTER_HOST_PASSWORD="k",
+)
 class NewsletterSenderTests(TestCase):
     """The blog newsletter: its own From and Reply-To domain, never the backup Gmail account."""
 
@@ -141,7 +145,14 @@ class NewsletterSenderTests(TestCase):
         from z_blog.newsletter import subscribe
 
         subscribe("reader@acme.in", source="/blog")
-        self.assertEqual(FakeSMTP.calls, [(PRIMARY_HOST, "Zinwe <hello@zinwe.tech>", ["reader@acme.in"], ["hello@zinwe.tech"])])
+        self.assertEqual(FakeSMTP.calls, [(NEWSLETTER_HOST, "Zinwe <hello@zinwe.tech>", ["reader@acme.in"], ["hello@zinwe.tech"])])
+
+    def test_without_its_own_smtp_the_newsletter_stays_on_the_product_sender(self) -> None:
+        from z_blog.newsletter import subscribe
+
+        with override_settings(EMAIL_NEWSLETTER_HOST=""):
+            subscribe("reader@acme.in", source="/blog")
+        self.assertEqual(FakeSMTP.calls, [(PRIMARY_HOST, "Zinwe <hello@zinwe.io>", ["reader@acme.in"], [])])
 
     def test_newsletter_never_falls_back_to_gmail(self) -> None:
         FakeSMTP.failing = {PRIMARY_HOST}

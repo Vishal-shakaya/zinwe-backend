@@ -103,7 +103,8 @@ def notify(
     `from_email`: sender instead of DEFAULT_FROM_EMAIL (email only), e.g. the newsletter's own domain.
     `fallback=False`: primary SMTP only, never the backup Gmail account (email only; bulk mail like the
     newsletter must not go out through it).
-    `smtp="outreach"`: send through the outreach mailbox (EMAIL_OUTREACH_*), not the product mail account.
+    `smtp`: "outreach" or "newsletter" send through that SMTP account (EMAIL_OUTREACH_*, EMAIL_NEWSLETTER_*), not
+    the product mail account.
     `retry`: whether `run_jobs` sends a failed email again later (z_notification/retry.py). None (the default)
     follows the template's policy there; never for one-time codes, anything redacted or `fallback=False` mail.
 
